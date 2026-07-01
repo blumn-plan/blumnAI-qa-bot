@@ -1,0 +1,17 @@
+{
+  "name": "planner-qa-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker — heythere_planer 정책·스토리보드 챗 백엔드. qa.html 이 호출하는 REST API.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.0.0"
+  }
+}

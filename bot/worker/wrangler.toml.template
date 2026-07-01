@@ -1,0 +1,17 @@
+# Cloudflare Worker 설정 — planner QA bot.
+#
+# secrets (배포 후 별도 등록 — DEPLOY.md 참고):
+#   wrangler secret put ANTHROPIC_API_KEY
+#   wrangler secret put GITHUB_TOKEN
+#
+# vars 는 public — 여기 그대로 둬도 됨.
+
+name = "planner-qa-bot"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+workers_dev = true
+
+[vars]
+GITHUB_REPO = "lunasoft-org/heythere_planer"
+ALLOWED_ORIGINS = "https://lunasoft-org.github.io,https://verbose-chainsaw-2qw8p2w.pages.github.io"
+CLAUDE_MODEL = "claude-sonnet-4-6"

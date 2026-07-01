@@ -1,0 +1,13 @@
+{
+  "name": "planner-qa-local-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "planner QA bot 로컬 서버 (C 모드) — Claude Max OAuth + 로컬 FS. Cloudflare Tunnel 통해 외부 노출.",
+  "scripts": {
+    "start": "node server.js",
+    "start-with-tunnel": "node launcher.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

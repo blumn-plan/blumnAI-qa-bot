@@ -1,0 +1,44 @@
+# blumnAI-qa-bot.config.yml
+# 사용자 레포 루트에 두세요. 이 파일이 봇의 모든 동작을 결정합니다.
+# 빈 칸은 `npx create-blumnAI-qa-bot` 가 자동으로 채워줍니다.
+
+# ─── 1) UI / 브랜딩 ────────────────────────────────────
+ui:
+  brand_name: "blumnAI QA Bot"          # 화면 상단 타이틀
+  team_name: "{{TEAM_NAME}}"            # "○○ 팀" 같은 부제
+
+# ─── 2) 배포 정보 (CLI 가 자동 채움) ─────────────────────
+deployment:
+  github_repo: "{{GITHUB_REPO}}"        # 예: lunasoft-org/ad-team-policies
+  worker_url: ""                        # CLI 가 npm run deploy 후 채움
+  pages_url: ""                         # CLI 가 Pages 활성화 후 채움
+
+# ─── 3) 프로젝트 목록 (1개 이상) ───────────────────────
+projects:
+  - id: sample                          # 영문 snake_case (URL·식별자에 노출)
+    label: "샘플 프로젝트"               # 사이드바 select 에 보일 이름
+    policies_dir: "projects/sample/docs/policies"
+    storyboards_dir: ""                 # 빈 칸 = 미사용 (storyboard 없는 팀)
+    storyboard_layout: "flat"           # subfolder | flat
+    code_repo: ""                       # (선택) 코드 검증용 GitHub 레포
+
+# ─── 4) 저장 위치 ──────────────────────────────────────
+storage:
+  decisions_dir: "qa/decisions"         # 변경요청 합의문
+  feedback_dir: "qa/feedback"           # AI 답변 개선 룰
+
+# ─── 5) 봇 동작 ────────────────────────────────────────
+bot:
+  mode: "auto"                          # auto: TUNNEL_URL 있으면 C, 없으면 A
+                                        # C  : Max 구독 우회 (무료, PC 필요)
+                                        # A  : 유료 API key
+  claude_model: "claude-sonnet-4-6"
+  answer_rules: ".blumnAI-qa-bot/answer-rules.md"
+  system_prompt:
+    locale: "ko"                        # 답변 언어
+    product_description: "{{PRODUCT_DESCRIPTION}}"   # 시스템 프롬프트에 주입
+
+# ─── 6) Worker 보안 ─────────────────────────────────────
+security:
+  allowed_origins:                      # CORS — Pages URL 은 자동 포함됨
+    - "https://${pages_url}"

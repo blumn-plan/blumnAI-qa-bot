@@ -1,0 +1,2288 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>heythere_planer · 정책 Q&A</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E📋%3C/text%3E%3C/svg%3E" />
+  <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --border: #e3e5e8;
+      --text: #1f2328;
+      --muted: #6b7280;
+      --primary: #6366f1;
+      --primary-fg: #ffffff;
+      --user-bg: #eef2ff;
+      --assistant-bg: #f3f4f6;
+      --success: #16a34a;
+      --error: #dc2626;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.55; }
+
+    .app { display: grid; grid-template-columns: var(--col-sidebar, 240px) 5px 1fr 5px var(--col-chat, 380px); height: 100vh; overflow: hidden; }
+
+    /* 컬럼 리사이저 — 사이드바/문서/채팅 가로 너비 드래그 조절 */
+    .resizer { background: var(--border); cursor: col-resize; user-select: none; transition: background 0.15s; position: relative; z-index: 5; }
+    .resizer:hover, .resizer.dragging { background: var(--primary); }
+    .resizer::before { content: ''; position: absolute; left: -3px; right: -3px; top: 0; bottom: 0; }
+
+    aside.docs { background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+    aside.docs .project-picker { padding: 12px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    aside.docs .project-picker label { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; display: block; margin-bottom: 4px; }
+    aside.docs .project-picker select { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; background: var(--panel); cursor: pointer; }
+    aside.docs .doc-list-wrap { flex: 1; overflow-y: auto; min-height: 0; }
+    aside.docs h2 { font-size: 12px; font-weight: 600; color: var(--muted); padding: 12px 16px 4px; margin: 0; text-transform: uppercase; letter-spacing: 0.04em; }
+    aside.docs ul { list-style: none; padding: 0; margin: 0 0 8px; }
+    aside.docs li button { width: 100%; text-align: left; padding: 7px 16px; border: 0; background: transparent; color: var(--text); font-size: 13px; cursor: pointer; }
+    aside.docs li button:hover { background: var(--user-bg); }
+    aside.docs li button.active { background: var(--primary); color: var(--primary-fg); }
+    aside.docs li button .ver { color: var(--muted); font-size: 11px; margin-left: 4px; }
+    aside.docs li button.active .ver { color: rgba(255,255,255,0.7); }
+
+    .header { padding: 12px 16px; font-weight: 600; font-size: 14px; border-bottom: 1px solid var(--border); background: var(--panel); flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+    aside.chat .header a:hover { text-decoration: underline !important; }
+    /* 사용자 식별 알림 배너 — 기획자가 내 요청을 처리하면 노출 */
+    .status-banner { padding: 8px 12px; background: #ecfdf5; border-bottom: 1px solid #a7f3d0; font-size: 12px; color: #166534; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .status-banner .msg { flex: 1; }
+    .status-banner button { background: var(--success); color: white; border: 0; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+    .status-banner .detail { color: #047857; cursor: pointer; text-decoration: underline; font-size: 11px; }
+    /* 글로벌 보기 범위 토글 — 전달이력 · 개선건 공통 */
+    aside.docs .view-mode-bar { padding: 8px 16px; border-bottom: 1px solid var(--border); background: #f8fafc; }
+    aside.docs .view-mode-bar .label { display: block; font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+    aside.docs .view-mode-bar .toggle { display: flex; gap: 8px; }
+    aside.docs .view-mode-bar .toggle label { display: flex; align-items: center; gap: 3px; font-size: 11px; cursor: pointer; }
+    /* 전체 모드 — 리스트 항목에 질문자 표기 */
+    aside.docs li button .user-tag { display: inline-block; padding: 0 5px; background: var(--user-bg); color: var(--primary); border-radius: 8px; font-size: 9px; margin-left: 4px; vertical-align: middle; }
+    aside.docs li button.active .user-tag { background: rgba(255,255,255,0.2); color: rgba(255,255,255,0.9); }
+    aside.docs .header a:hover { color: var(--primary) !important; }
+
+    main.doc { display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--border); min-width: 0; min-height: 0; }
+    main.doc .header { display: flex; align-items: center; gap: 12px; }
+    main.doc .header #doc-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    main.doc .view-toggle { display: none; gap: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex-shrink: 0; }
+    main.doc .view-toggle button { padding: 4px 10px; border: 0; background: transparent; cursor: pointer; font-size: 11px; color: var(--muted); border-right: 1px solid var(--border); }
+    main.doc .view-toggle button:last-child { border-right: 0; }
+    main.doc .view-toggle button.active { background: var(--primary); color: white; }
+    main.doc .view-toggle button:hover:not(.active) { background: #f1f5f9; color: var(--text); }
+    main.doc iframe.preview { flex: 1; min-height: 0; border: 0; width: 100%; background: white; }
+    main.doc article { padding: 24px 32px; overflow-y: auto; flex: 1; }
+    main.doc article h1, main.doc article h2, main.doc article h3 { margin-top: 24px; margin-bottom: 8px; }
+    main.doc article h1 { font-size: 22px; }
+    main.doc article h2 { font-size: 18px; }
+    main.doc article h3 { font-size: 15px; }
+    main.doc article table { border-collapse: collapse; margin: 12px 0; }
+    main.doc article table th, main.doc article table td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    main.doc article table th { background: #f8fafc; }
+    main.doc article code { background: #f1f3f5; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+    main.doc article pre { background: #f1f3f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
+    main.doc article pre code { background: none; padding: 0; }
+    main.doc article blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--muted); margin: 12px 0; }
+    main.doc .empty { padding: 60px 32px; color: var(--muted); text-align: center; }
+
+    aside.chat { display: flex; flex-direction: column; background: var(--bg); min-width: 0; min-height: 0; }
+    aside.chat .messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+    aside.chat .msg { padding: 10px 12px; border-radius: 10px; word-break: break-word; overflow-wrap: anywhere; min-width: 0; }
+    aside.chat .msg.user { background: var(--user-bg); align-self: flex-end; max-width: 90%; }
+    aside.chat .msg.assistant { background: var(--assistant-bg); align-self: flex-start; max-width: 95%; }
+    aside.chat .msg.assistant a { color: var(--primary); }
+    aside.chat .msg.error { background: #fee2e2; color: var(--error); }
+    aside.chat .msg .role { font-size: 11px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+    aside.chat .msg .body { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+    aside.chat .msg .body p { margin: 4px 0; }
+    aside.chat .msg .body :first-child { margin-top: 0; }
+    aside.chat .msg .body :last-child { margin-bottom: 0; }
+
+    /* 채팅 메시지 안 콘텐츠 — 가로 오버플로 방지 + 테이블/이미지/코드 채팅창 너비 맞춤 */
+    aside.chat .msg .body img { max-width: 100%; height: auto; display: block; margin: 8px 0; border-radius: 6px; }
+    aside.chat .msg .body pre { max-width: 100%; overflow-x: auto; background: #f1f3f5; padding: 8px 10px; border-radius: 6px; font-size: 11.5px; }
+    aside.chat .msg .body pre code { background: none; padding: 0; }
+    aside.chat .msg .body code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; font-size: 11.5px; }
+    aside.chat .msg .body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 8px 0; font-size: 11.5px; background: white; border-radius: 4px; }
+    aside.chat .msg .body table th, aside.chat .msg .body table td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; vertical-align: top; white-space: normal; }
+    aside.chat .msg .body table th { background: #f8fafc; font-weight: 600; }
+    aside.chat .msg .body blockquote { border-left: 3px solid var(--border); padding: 2px 10px; margin: 6px 0; color: var(--muted); background: rgba(0,0,0,0.02); border-radius: 0 4px 4px 0; }
+    aside.chat .msg .body ul, aside.chat .msg .body ol { padding-left: 20px; margin: 4px 0; }
+    aside.chat .msg .body h1, aside.chat .msg .body h2, aside.chat .msg .body h3, aside.chat .msg .body h4 { margin: 8px 0 4px; font-size: 13px; }
+    aside.chat .msg .actions { margin-top: 6px; display: flex; gap: 4px; }
+    aside.chat .msg .actions button { background: transparent; border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: var(--muted); }
+    aside.chat .msg .actions button:hover { background: white; color: var(--text); }
+    aside.chat .msg .actions button.sent { background: #ecfdf5; color: var(--success); border-color: #a7f3d0; cursor: default; }
+    /* 📝 답변 프롬프트 개선 버튼 — 사용자가 쉽게 발견할 수 있도록 amber 강조 */
+    aside.chat .msg .actions button.improve-btn { background: #fef3c7; color: #92400e; border-color: #fde68a; font-size: 12px; padding: 5px 12px; font-weight: 500; }
+    aside.chat .msg .actions button.improve-btn:hover { background: #fde68a; color: #78350f; }
+    aside.chat .msg .actions button.improve-btn.sent { background: #ecfdf5; color: var(--success); border-color: #a7f3d0; }
+
+    /* 답변 후 다음 액션 안내 — 툴바 바로 위 고정 (이전엔 매 답변 카드 끝에 반복 노출되던 것을 단일 영역으로) */
+    aside.chat .chat-cta {
+      padding: 8px 12px;
+      background: #f8fafc;
+      border-top: 1px solid var(--border);
+      font-size: 11px;
+      color: var(--muted);
+      flex-shrink: 0;
+      line-height: 1.6;
+    }
+    aside.chat .chat-cta a {
+      color: var(--primary);
+      text-decoration: none;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    aside.chat .chat-cta a:hover { text-decoration: underline; }
+
+    aside.chat .toolbar { padding: 10px 12px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: linear-gradient(to bottom, #fafbfc, var(--panel)); display: flex; gap: 8px; font-size: 12px; color: var(--muted); align-items: center; flex-wrap: wrap; flex-shrink: 0; row-gap: 6px; }
+    aside.chat .toolbar button { background: white; border: 1px solid var(--border); padding: 5px 11px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500; transition: all 0.12s; }
+    aside.chat .toolbar button:hover { background: var(--user-bg); border-color: var(--primary); }
+    aside.chat .toolbar button.primary { background: var(--success); color: white; border-color: var(--success); }
+    aside.chat .toolbar button.primary:hover { background: #15803d; border-color: #15803d; }
+    aside.chat .toolbar button.improve { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+    aside.chat .toolbar button.improve:hover { background: #fde68a; color: #78350f; border-color: #f59e0b; }
+    aside.chat .toolbar button:disabled { opacity: 0.55; cursor: not-allowed; }
+    aside.chat .toolbar button:disabled:hover { background: white; border-color: var(--border); }
+    aside.chat .toolbar button.primary:disabled:hover { background: var(--success); border-color: var(--success); }
+    aside.chat .toolbar button.improve:disabled:hover { background: #fef3c7; border-color: #fde68a; }
+    /* ? 정보 아이콘 + 즉시 호버 툴팁 */
+    aside.chat .toolbar .info-wrap { position: relative; display: inline-flex; align-items: center; }
+    aside.chat .toolbar .info-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%; background: #ede9fe; color: var(--primary); font-size: 11px; font-weight: 700; cursor: help; user-select: none; border: 1px solid #ddd6fe; transition: all 0.12s; }
+    aside.chat .toolbar .info-icon:hover, aside.chat .toolbar .info-icon:focus-visible { background: var(--primary); color: white; border-color: var(--primary); outline: none; transform: scale(1.08); }
+    aside.chat .toolbar .info-tooltip {
+      position: absolute;
+      bottom: calc(100% + 10px);
+      right: -6px;
+      width: 320px;
+      max-width: 90vw;
+      padding: 14px 16px;
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.06);
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--text);
+      line-height: 1.6;
+      opacity: 0;
+      transform: translateY(4px);
+      pointer-events: none;
+      transition: opacity 0.12s ease-out, transform 0.12s ease-out;
+      z-index: 200;
+      text-align: left;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    aside.chat .toolbar .info-wrap:hover .info-tooltip,
+    aside.chat .toolbar .info-icon:focus-visible + .info-tooltip {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    aside.chat .toolbar .info-tooltip::after {
+      content: '';
+      position: absolute;
+      top: 100%;
+      right: 10px;
+      border: 6px solid transparent;
+      border-top-color: white;
+      filter: drop-shadow(0 1px 0 var(--border));
+    }
+    aside.chat .toolbar .info-tooltip h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: #4338ca; display: flex; align-items: center; gap: 6px; }
+    aside.chat .toolbar .info-tooltip p { margin: 0 0 8px; color: var(--text); }
+    aside.chat .toolbar .info-tooltip .examples { margin: 6px 0 10px; padding: 8px 10px; background: #fef3c7; border-left: 3px solid #f59e0b; border-radius: 4px; }
+    aside.chat .toolbar .info-tooltip .examples .label { display: block; font-size: 10px; font-weight: 600; color: #92400e; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+    aside.chat .toolbar .info-tooltip .examples ul { margin: 0; padding-left: 16px; color: #78350f; font-size: 11.5px; }
+    aside.chat .toolbar .info-tooltip .examples ul li { margin: 2px 0; line-height: 1.5; }
+    aside.chat .toolbar .info-tooltip .how { font-size: 11px; color: var(--muted); padding-top: 8px; border-top: 1px dashed var(--border); }
+    aside.chat .toolbar .info-tooltip .how strong { color: var(--text); font-weight: 600; }
+    aside.chat .toolbar .grow { flex: 1; }
+
+    aside.chat form.ask { padding: 12px; background: var(--panel); border-top: 1px solid var(--border); flex-shrink: 0; }
+    aside.chat form.ask .textarea-wrap { display: flex; flex-direction: column; }
+    aside.chat form.ask .textarea-handle {
+      height: 6px;
+      cursor: ns-resize;
+      background: transparent;
+      border-radius: 3px 3px 0 0;
+      position: relative;
+      flex-shrink: 0;
+      transition: background 0.12s;
+      margin-bottom: -1px;
+      z-index: 2;
+    }
+    aside.chat form.ask .textarea-handle::before {
+      content: '';
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 32px;
+      height: 3px;
+      background: var(--border);
+      border-radius: 2px;
+      transition: background 0.12s, width 0.12s;
+    }
+    aside.chat form.ask .textarea-handle:hover::before { background: var(--primary); width: 48px; }
+    aside.chat form.ask .textarea-handle.dragging::before { background: var(--primary); width: 48px; }
+    aside.chat form.ask textarea { width: 100%; min-height: 130px; max-height: 500px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; resize: none; font-family: inherit; font-size: 13px; line-height: 1.55; }
+    aside.chat form.ask textarea:focus { outline: none; border-color: var(--primary); }
+    aside.chat form.ask textarea.drag-over { border-color: var(--primary); background: #eef2ff; }
+
+    /* 질문 첨부 이미지 thumbnail 영역 */
+    aside.chat form.ask .attachments { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 0 0; }
+    aside.chat form.ask .attachments .thumb { position: relative; width: 56px; height: 56px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); flex-shrink: 0; }
+    aside.chat form.ask .attachments .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    aside.chat form.ask .attachments .thumb .remove { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; background: rgba(0,0,0,0.7); color: white; border-radius: 50%; font-size: 11px; line-height: 14px; text-align: center; cursor: pointer; font-weight: 700; }
+    aside.chat form.ask .attachments .thumb .remove:hover { background: var(--error); }
+    aside.chat form.ask .attach-hint { font-size: 10px; color: var(--muted); margin-top: 4px; }
+    aside.chat form.ask .attach-hint a { color: var(--primary); cursor: pointer; text-decoration: none; }
+    aside.chat form.ask .row { display: flex; gap: 8px; margin-top: 6px; }
+    aside.chat form.ask button { padding: 6px 14px; border-radius: 6px; border: 0; background: var(--primary); color: var(--primary-fg); cursor: pointer; font-size: 13px; }
+    aside.chat form.ask button[disabled] { opacity: 0.5; cursor: not-allowed; }
+    aside.chat form.ask .hint { color: var(--muted); font-size: 11px; flex: 1; align-self: center; }
+
+    dialog.forward { border: 1px solid var(--border); border-radius: 12px; padding: 0; width: 480px; max-width: 90vw; }
+    dialog.forward::backdrop { background: rgba(0,0,0,0.4); }
+    dialog.forward .head { padding: 14px 18px; border-bottom: 1px solid var(--border); font-weight: 600; }
+    dialog.forward .body { padding: 14px 18px; }
+    dialog.forward label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--muted); }
+    dialog.forward input, dialog.forward textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; font-family: inherit; margin-bottom: 12px; }
+    dialog.forward textarea { min-height: 80px; resize: vertical; }
+    dialog.forward .foot { padding: 12px 18px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
+    dialog.forward .foot button { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border); background: white; cursor: pointer; font-size: 13px; }
+    dialog.forward .foot button.primary { background: var(--success); color: white; border-color: var(--success); }
+
+    .pill { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; background: var(--user-bg); color: var(--primary); font-weight: 600; margin-right: 4px; vertical-align: middle; }
+    .pill.storyboard { background: #fef3c7; color: #b45309; }
+
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--text); color: white; padding: 8px 16px; border-radius: 6px; font-size: 13px; z-index: 100; opacity: 0; transition: opacity 0.2s; }
+    .toast.show { opacity: 1; }
+    .toast.error { background: var(--error); }
+
+    /* 사이드바 — 접기/펼치기 가능한 섹션 (최근 대화 / 합의문 / 개선 요청) */
+    aside.docs h2.collapsible { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 4px; padding-right: 16px; }
+    aside.docs h2.collapsible::before { content: '▾'; font-size: 9px; transition: transform 0.15s; display: inline-block; width: 10px; }
+    aside.docs h2.collapsible.collapsed::before { transform: rotate(-90deg); }
+    aside.docs h2 .count { color: var(--muted); font-weight: 400; font-size: 10px; margin-left: auto; }
+    aside.docs .recent-search-wrap { padding: 0 16px 6px; }
+    aside.docs .recent-search-wrap input { width: 100%; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+    aside.docs .recent-search-wrap input:focus { outline: none; border-color: var(--primary); }
+    aside.docs .decisions-filter { padding: 0 16px 6px; display: flex; gap: 4px; }
+    aside.docs .decisions-filter select, aside.docs .decisions-filter input[type="date"] { flex: 1; min-width: 0; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; font-size: 11px; background: var(--panel); }
+    aside.docs .decisions-filter select:focus, aside.docs .decisions-filter input[type="date"]:focus { outline: none; border-color: var(--primary); }
+    aside.docs .decisions-reset { padding: 0 16px 8px; }
+    aside.docs .decisions-reset a { color: var(--muted); text-decoration: none; font-size: 11px; cursor: pointer; }
+    aside.docs .decisions-reset a:hover { color: var(--primary); text-decoration: underline; }
+    aside.docs .section-guide { padding: 0 16px 6px; }
+    aside.docs .section-guide a { display: block; padding: 4px 8px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 4px; font-size: 11px; color: #854d0e; text-decoration: none; cursor: pointer; }
+    aside.docs .section-guide a:hover { background: #fef3c7; }
+    aside.docs li button .status-icon { margin-right: 4px; font-size: 10px; }
+    aside.docs li button .status-icon.pending { color: #b45309; }
+    aside.docs li button .status-icon.applied { color: #16a34a; }
+    aside.docs li button .status-icon.rejected { color: #dc2626; }
+    aside.docs .pager { padding: 4px 16px 8px; display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--muted); }
+    aside.docs .pager button { background: transparent; border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; color: var(--text); }
+    aside.docs .pager button:disabled { opacity: 0.3; cursor: not-allowed; }
+    aside.docs .pager button:hover:not(:disabled) { background: var(--user-bg); }
+    aside.docs .pager .info { margin: 0 4px; flex: 1; }
+    aside.docs ul.hidden, aside.docs .hidden { display: none !important; }
+    /* 항목 = [선택 영역(좌)] | [삭제 영역(우)] — 두 영역을 sibling flex 로 분리해 클릭 경계 명확화 */
+    aside.docs li { display: flex; align-items: stretch; }
+    aside.docs li button.with-meta { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; padding: 7px 8px 7px 16px; }
+    aside.docs li button .meta { color: var(--muted); font-size: 10px; margin-left: auto; flex-shrink: 0; }
+    aside.docs li button.active .meta { color: rgba(255,255,255,0.7); }
+    /* 삭제 버튼 — 별도 셀로 분리 + 좌측 구분선 + 항상 또렷이 보이도록 */
+    aside.docs li .del-btn { flex-shrink: 0; width: 30px; display: flex; align-items: center; justify-content: center; background: transparent; border: 0; border-left: 1px solid var(--border); color: #6b7280; cursor: pointer; padding: 0; font-size: 16px; font-weight: 700; line-height: 1; transition: background 0.12s, color 0.12s; }
+    aside.docs li .del-btn:hover { background: #fee2e2; color: var(--error); }
+    /* 항목이 선택(active) 상태일 때도 삭제 버튼 영역은 흰 배경 유지 — 영역 구분 명확 */
+    aside.docs li:has(button.active) .del-btn { border-left-color: var(--primary); }
+
+    /* 최근 대화 — 전체 삭제 액션 */
+    aside.docs .recent-actions { padding: 4px 16px 8px; display: flex; align-items: center; gap: 6px; }
+    aside.docs .recent-actions a { font-size: 10px; color: var(--muted); cursor: pointer; text-decoration: none; }
+    aside.docs .recent-actions a:hover { color: var(--error); }
+    aside.docs .recent-actions a.danger:hover { background: #fee2e2; padding: 2px 6px; border-radius: 4px; }
+
+    /* 답변 직후 다음 스텝 안내 — 자연어로 흐름 가이드 */
+    aside.chat .msg .next-step { margin-top: 8px; padding: 6px 10px; background: #f8fafc; border: 1px dashed var(--border); border-radius: 6px; font-size: 11px; color: var(--muted); }
+    aside.chat .msg .next-step a { color: var(--primary); text-decoration: none; cursor: pointer; font-weight: 500; }
+    aside.chat .msg .next-step a:hover { text-decoration: underline; }
+
+    /* 답변 카드 — "피드백 룰 N개 반영됨" 칩 */
+    aside.chat .msg .applied-feedbacks { margin-bottom: 6px; }
+    aside.chat .msg .feedback-chip { display: inline-flex; align-items: center; gap: 4px; background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; padding: 1px 8px; border-radius: 10px; font-size: 10px; cursor: pointer; }
+    aside.chat .msg .feedback-chip:hover { background: #d1fae5; }
+    aside.chat .msg .feedback-list { margin-top: 6px; padding: 6px 10px; background: white; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; }
+    aside.chat .msg .feedback-list a { color: var(--primary); text-decoration: none; display: block; padding: 2px 0; }
+    aside.chat .msg .feedback-list a:hover { text-decoration: underline; }
+    aside.chat .msg.regenerated { border-left: 3px solid var(--success); padding-left: 9px; }
+    aside.chat .msg .regen-tag { display: inline-block; background: var(--success); color: white; padding: 1px 6px; border-radius: 10px; font-size: 10px; margin-bottom: 4px; }
+
+    /* 스트리밍 커서 (claude 답변 점진 도착 표시) */
+    aside.chat .msg .stream-cursor { display: inline-block; color: var(--muted); animation: cursor-blink 1s steps(2) infinite; margin-left: 1px; }
+    @keyframes cursor-blink { to { opacity: 0; } }
+
+    /* 답변 준비 중 로딩 인디케이터 (전송 직후 ~ 첫 청크 도착 전) — 회전 spinner */
+    aside.chat .msg.loading-placeholder {
+      border: 1px solid var(--primary);
+      background: rgba(16,185,129,0.06);
+    }
+    aside.chat .msg .loading-spinner {
+      width: 22px;
+      height: 22px;
+      border: 3px solid rgba(16,185,129,0.2);
+      border-top-color: var(--primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 10px;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* send 버튼 내 회전 spinner — 답변 중에 버튼 안에서 함께 회전 */
+    .btn-spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(255,255,255,0.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    aside.chat .msg .loading-body {
+      display: flex;
+      align-items: center;
+    }
+    aside.chat .msg .loading-label {
+      color: var(--foreground);
+      font-size: 14px;
+      font-weight: 500;
+    }
+    aside.chat .msg .loading-elapsed {
+      color: var(--muted);
+      font-size: 12px;
+      margin-left: 8px;
+      padding: 2px 8px;
+      background: rgba(0,0,0,0.05);
+      border-radius: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* §N 인용 링크 + 헤더 하이라이트 */
+    aside.chat .msg .body a.cite { color: var(--primary); text-decoration: underline; cursor: pointer; }
+    main.doc article :is(h1, h2, h3, h4).cite-highlight { background: #fef3c7; transition: background 1.5s ease-out; border-radius: 4px; padding-left: 4px; padding-right: 4px; }
+
+    /* 다이얼로그 체크박스 라인 */
+    dialog.forward .checkbox-row { display: flex; align-items: center; gap: 8px; margin: -4px 0 12px; font-size: 12px; color: var(--muted); }
+    dialog.forward .checkbox-row input { width: auto; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="docs">
+      <div class="header">📋 정책·스토리보드 <a href="qa-planner.html" style="margin-left:auto;font-size:11px;color:var(--muted);text-decoration:none" title="기획자 모드 — 변경 요청 관리">🎯 기획자 모드 →</a></div>
+      <div class="project-picker">
+        <label for="project-select">프로젝트</label>
+        <select id="project-select" disabled><option>로딩...</option></select>
+      </div>
+      <div class="view-mode-bar">
+        <span class="label">보기 범위 (전달이력 · 개선건)</span>
+        <div class="toggle">
+          <label><input type="radio" name="view-mode" value="mine" checked> 👤 내것만</label>
+          <label><input type="radio" name="view-mode" value="all"> 🌐 전체</label>
+        </div>
+      </div>
+      <div class="doc-list-wrap">
+        <h2 class="collapsible" data-section="policies">정책문서 <span class="count" id="policies-count"></span></h2>
+        <ul id="policy-list"><li class="loading"><button disabled>로딩 중...</button></li></ul>
+        <h2 class="collapsible" data-section="storyboards">화면설계서 <span class="count" id="storyboards-count"></span></h2>
+        <ul id="storyboard-list"></ul>
+        <h2 class="collapsible" data-section="recent">📜 최근 대화 <span class="count" id="recent-count"></span><span style="font-size:9px;color:var(--muted);margin-left:6px;font-weight:400">(브라우저별)</span></h2>
+        <div class="recent-search-wrap"><input id="recent-search" type="search" placeholder="대화 검색 (제목·본문)" autocomplete="off" /></div>
+        <div class="recent-actions"><a id="recent-clear-all" class="danger" title="모든 최근 대화 일괄 삭제">🗑️ 모두 지우기</a></div>
+        <ul id="recent-list"><li><button disabled>(아직 없음)</button></li></ul>
+        <h2 class="collapsible" data-section="decisions">📤 기획자 전달이력 <span class="count" id="decisions-count"></span></h2>
+        <div class="section-guide"><a href="#" data-guide-path="qa/decisions/README.md" data-guide-title="📘 기획자 전달 절차 안내">📘 기획자 전달 절차 안내 (가이드)</a></div>
+        <div class="decisions-filter">
+          <select id="decisions-status" title="상태 필터">
+            <option value="all">전체상태</option>
+            <option value="pending">📋 대기</option>
+            <option value="applied">✅ 적용</option>
+            <option value="rejected">🚫 보류</option>
+          </select>
+          <select id="decisions-period" title="기간 필터">
+            <option value="default">기본 (미처리+처리 3)</option>
+            <option value="7d">최근 7일</option>
+            <option value="30d">최근 30일</option>
+            <option value="all">전체</option>
+            <option value="custom">직접 지정</option>
+          </select>
+        </div>
+        <div class="decisions-filter" id="decisions-custom-date" style="display:none">
+          <input type="date" id="decisions-from" title="시작일 (inclusive)" />
+          <span style="font-size:11px;color:var(--muted);align-self:center">~</span>
+          <input type="date" id="decisions-to" title="종료일 (inclusive)" />
+        </div>
+        <div class="decisions-reset"><a id="decisions-reset" href="#">↻ 필터 초기화</a></div>
+        <ul id="decisions-list"><li><button disabled>(불러오는 중...)</button></li></ul>
+        <h2 class="collapsible" data-section="feedbacks">📝 AI봇 답변 개선건 <span class="count" id="feedbacks-count"></span></h2>
+        <div class="section-guide"><a href="#" data-guide-path="qa/feedback/README.md" data-guide-title="📘 AI봇 답변 개선건 작성 안내">📘 AI봇 답변 개선건 작성 안내 (가이드)</a></div>
+        <ul id="feedbacks-list"><li><button disabled>(불러오는 중...)</button></li></ul>
+      </div>
+    </aside>
+
+    <div class="resizer" id="resizer-left" title="드래그하여 사이드바 너비 조절"></div>
+
+    <main class="doc">
+      <div class="header">
+        <span id="doc-title">문서를 선택하세요</span>
+        <div class="view-toggle" id="view-toggle">
+          <button type="button" data-view="preview" class="active" title="화면설계서 HTML 미리보기 (마커·인터랙션 포함)">🎯 미리보기</button>
+          <button type="button" data-view="markdown" title="원본 마크다운 보기">📄 마크다운</button>
+        </div>
+      </div>
+      <article id="doc-content" class="empty">왼쪽에서 정책문서나 화면설계서를 클릭하세요.</article>
+      <iframe id="doc-iframe" class="preview" style="display:none" title="화면설계서 미리보기"></iframe>
+    </main>
+
+    <div class="resizer" id="resizer-right" title="드래그하여 채팅창 너비 조절"></div>
+
+    <aside class="chat">
+      <div class="header">
+        🤖 AI 에게 직접 질문
+        <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400">
+          <span id="user-display">👤 (이름 미설정)</span>
+          <a id="change-user-link" href="#" style="margin-left:6px;color:var(--primary);text-decoration:none">변경</a>
+        </span>
+      </div>
+      <div id="status-banner" class="status-banner" style="display:none">
+        <span class="msg" id="status-banner-msg"></span>
+        <a class="detail" id="status-banner-detail" href="#">자세히</a>
+        <button id="status-banner-close" type="button">확인</button>
+      </div>
+      <div id="messages" class="messages">
+        <div class="msg assistant">
+          <div class="role">제이나미봇</div>
+          <div class="body">왼쪽에서 정책·화면을 선택한 뒤, 궁금한 점을 자유롭게 물어보세요. 답변은 그 문서를 근거로 드립니다.</div>
+        </div>
+      </div>
+      <div class="chat-cta" id="chat-cta">
+        👉 이대로 진행: <a data-act="forward">📤 기획자에게 전달</a> · 추가로 물어보기: <a data-act="focus">아래 입력창</a> · 끝났으면: <a data-act="newchat">↻ 새 대화</a>
+      </div>
+
+      <div class="toolbar">
+        <button id="clear-btn" type="button" title="현재 대화를 지우고 새 질문 시작">↻ 새 대화</button>
+        <button id="forward-btn" class="primary" type="button" disabled title="이 답변을 기획자에게 변경 요청으로 전달 — qa/decisions/ 에 자동 저장됨">📤 기획자에게 전달</button>
+        <button id="improve-toolbar-btn" class="improve" type="button" title="답변 규칙 추가 — 언제든 가능">📝 답변 규칙 추가</button>
+        <span class="info-wrap">
+          <span class="info-icon" tabindex="0" aria-describedby="improve-tooltip">?</span>
+          <span class="info-tooltip" id="improve-tooltip" role="tooltip">
+            <h4>📝 답변 규칙 추가란?</h4>
+            <p>AI 답변의 <strong>규칙·톤·길이</strong>를 정해서 원하는 형태로 쉽게 받아볼 수 있는 기능이에요. 답변을 받기 전에도 미리 규칙을 추가해두면 다음 답변부터 자동 반영됩니다.</p>
+            <div class="examples">
+              <span class="label">💡 이렇게 써보세요</span>
+              <ul>
+                <li>"답변이 너무 개발자스러우니 초등학생도 알기 쉽게 설명해줘"</li>
+                <li>"5줄 안으로 요약해줘"</li>
+                <li>"색·문구·버튼처럼 시각적으로 묘사해줘"</li>
+                <li>"구체적 예시 1개 항상 포함해줘"</li>
+              </ul>
+            </div>
+            <div class="how">
+              <strong>작동 방식</strong> — qa/feedback/ 에 누적 저장 → <strong>다음 답변부터 자동 반영</strong>. ☑ 다시 받기 체크 시 이 답변 즉시 재생성 (답변이 있을 때만).
+            </div>
+          </span>
+        </span>
+      </div>
+      <form class="ask" id="ask-form">
+        <div class="textarea-wrap">
+          <div class="textarea-handle" id="textarea-handle" title="드래그하여 입력창 크기 조절 (위로 늘리기)"></div>
+          <textarea id="question" placeholder="예) 대시보드 필터에 초기화 버튼이 없는 이유가 뭔가요?&#10;&#10;💡 이미지 첨부: 텍스트박스에 Ctrl+V 로 붙여넣거나 파일을 드래그&#10;예: '정책에는 X 인데 화면은 Y 입니다. 비교해주세요' + 화면 캡처" required></textarea>
+        </div>
+        <div id="attachments" class="attachments"></div>
+        <input id="attach-file-input" type="file" accept="image/*" multiple style="display:none" />
+        <div class="row">
+          <span class="hint">Enter ↩︎ 전송 · Shift+Enter 줄바꿈 · <a id="attach-link" style="color:var(--primary);cursor:pointer">📎 이미지 첨부</a></span>
+          <button id="send-btn" type="submit">전송</button>
+        </div>
+      </form>
+    </aside>
+  </div>
+
+  <dialog id="forward-dialog" class="forward">
+    <form method="dialog">
+      <div class="head">📤 기획자에게 전달 — 변경 요청을 전달이력에 기록</div>
+      <div class="body">
+        <label for="fwd-topic">변경 요청 제목 (목록에 노출)</label>
+        <input id="fwd-topic" required placeholder="예: 대시보드 필터 초기화 버튼 위치 변경" />
+        <label for="fwd-summary">어디에 어떻게 반영해 달라 (한눈에 보이게)</label>
+        <textarea id="fwd-summary" required placeholder="예: 대시보드_v0.1.3.md §3-2 [필터 영역] — 현재 활성 시에만 노출 → 항상 노출로 변경. 사유: 사용자 혼동 줄임."></textarea>
+      </div>
+      <div class="foot">
+        <button value="cancel" formnovalidate>취소</button>
+        <button id="fwd-submit" value="default" class="primary">생성하기</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="user-dialog" class="forward">
+    <form method="dialog">
+      <div class="head">👤 사용자 설정</div>
+      <div class="body">
+        <label for="user-name-input">이름 또는 닉네임</label>
+        <input id="user-name-input" required placeholder="예: 홍길동, QA-김민지" maxlength="30" />
+        <p style="font-size:11px;color:var(--muted);margin:4px 0 0;line-height:1.4">
+          이 이름은 '기획자 전달이력' · 'AI봇 답변 개선건' 에 기록되어 누구의 요청인지 식별돼요.<br>
+          본인 PC 의 localStorage 에만 저장되며, 언제든 우상단 [변경] 으로 바꿀 수 있습니다.
+        </p>
+      </div>
+      <div class="foot">
+        <button value="cancel" formnovalidate id="user-cancel">취소</button>
+        <button value="default" class="primary">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="feedback-dialog" class="forward">
+    <form method="dialog">
+      <div class="head">📝 답변 규칙 추가 — qa/feedback/ 에 저장되어 다음 답변부터 자동 반영</div>
+      <div class="body">
+        <label for="fb-improvement">추가할 답변 규칙</label>
+        <textarea id="fb-improvement" required placeholder="AI 가 다음 답변부터 따라야 할 규칙을 한 줄로 명확히. 예시:
+
+· 답변은 5줄 이내로 요약해주세요
+· 기술용어 (component, props) 빼고 평이한 말로 설명해주세요
+· 구체적인 예시 1개를 항상 포함해주세요
+· 색상·문구·버튼 라벨을 시각적으로 묘사해주세요"></textarea>
+        <label for="fb-title">짧은 제목 (선택 — 파일명에 사용, 비우면 자동)</label>
+        <input id="fb-title" placeholder="예: 답변 길이 5줄 제한" />
+        <div class="checkbox-row">
+          <input type="checkbox" id="fb-reask" checked />
+          <label for="fb-reask" style="margin: 0; color: var(--text); font-weight: 400;">저장 후 이 답변 다시 받기 (새 규칙 반영)</label>
+        </div>
+      </div>
+      <div class="foot">
+        <button value="cancel" formnovalidate>취소</button>
+        <button id="fb-submit" value="default" class="primary">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    /* ────────── 컨피그 로드 ──────────
+       blumnAI-qa-bot.config.yml 의 deployment.worker_url 에서 자동 로드.
+       사용자 레포 루트에 yml 이 있어야 동작. */
+    let WORKER_URL = null;
+    let CONFIG = null;
+    async function getConfig() {
+      if (CONFIG) return CONFIG;
+      const tryPaths = ['../../blumnAI-qa-bot.config.yml', './blumnAI-qa-bot.config.yml', '/blumnAI-qa-bot.config.yml'];
+      for (const p of tryPaths) {
+        try {
+          const res = await fetch(p);
+          if (res.ok) {
+            CONFIG = jsyaml.load(await res.text());
+            return CONFIG;
+          }
+        } catch (e) {}
+      }
+      throw new Error('blumnAI-qa-bot.config.yml 을 찾을 수 없습니다 — 사용자 레포 루트에 있는지 확인하세요');
+    }
+    async function bootstrap() {
+      const cfg = await getConfig();
+      WORKER_URL = cfg?.deployment?.worker_url;
+      if (!WORKER_URL || WORKER_URL.startsWith('__')) {
+        throw new Error('blumnAI-qa-bot.config.yml 의 deployment.worker_url 를 채워주세요');
+      }
+    }
+
+    /* ────────── 상태 ────────── */
+    const PROJECT_STORAGE_KEY = 'planner-qa-project';
+    const SESSIONS_STORAGE_KEY = 'planner-qa-sessions-v1';
+    const COLLAPSED_STORAGE_KEY = 'planner-qa-collapsed-v1';
+    const MAX_SESSIONS = 20;
+    const state = {
+      projects: [],
+      currentProject: localStorage.getItem(PROJECT_STORAGE_KEY) || null,
+      docs: [],
+      currentDoc: null, // {path, title, kind}
+      history: [], // [{role, content, appliedFeedbacks?}]
+      sending: false,
+      sessions: [], // [{id, title, docPath, project, createdAt, updatedAt, history[]}] — localStorage 영속
+      currentSessionId: null,
+      decisions: [], // /list-decisions 결과
+      feedbacks: [], // /list-feedbacks 결과
+      collapsed: {}, // {sectionKey: true} — 사용자가 접어둔 섹션
+      recentPage: 0, // 최근 대화 페이지 (0 부터, RECENT_PAGE_SIZE 단위)
+      decisionsPage: 0, // 기획자 전달이력 페이지
+      feedbacksPage: 0, // AI봇 답변 개선건 페이지
+      // 기본 모드 'default' = 미처리 전체 + 최근 7일 내 처리된 최대 3건
+      decisionsFilter: { status: 'all', period: 'default', fromDate: '', toDate: '' },
+      user: { name: '' }, // localStorage 영속
+      seenDecisions: {}, // { path: status } — 마지막 본 시점 상태. 알림 비교용.
+      viewMode: 'mine', // 'mine' | 'all' — 전달이력·개선건 글로벌 보기 범위
+    };
+    const USER_STORAGE_KEY = 'planner-qa-user-v1';
+    const SEEN_DECISIONS_KEY = 'planner-qa-seen-decisions-v1';
+    const VIEW_MODE_KEY = 'planner-qa-view-mode-v1';
+    const RECENT_PAGE_SIZE = 3;
+    const DECISIONS_PAGE_SIZE = 3;
+    const FEEDBACKS_PAGE_SIZE = 3;
+    const DECISIONS_DEFAULT_DAYS = 7;
+    const DECISIONS_DEFAULT_PROCESSED_LIMIT = 3;
+    function isoDaysAgo(days) {
+      const d = new Date();
+      d.setDate(d.getDate() - days);
+      return d.toISOString().slice(0, 10);
+    }
+
+    /* ────────── DOM 헬퍼 ────────── */
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => document.querySelectorAll(sel);
+    function toast(msg, type = '') {
+      const el = $('#toast');
+      el.textContent = msg;
+      el.className = 'toast show' + (type ? ' ' + type : '');
+      setTimeout(() => { el.className = 'toast'; }, 3000);
+    }
+
+    /* ────────── 컬럼 가로 너비 리사이저 (사이드바/문서/채팅 사이) ────────── */
+    const COL_KEYS = { sidebar: 'qa-col-sidebar-v1', chat: 'qa-col-chat-v1' };
+    function setupColumnResizers() {
+      const app = $('.app');
+      // 저장된 너비 복원
+      const savedSidebar = localStorage.getItem(COL_KEYS.sidebar);
+      const savedChat = localStorage.getItem(COL_KEYS.chat);
+      if (savedSidebar) app.style.setProperty('--col-sidebar', savedSidebar);
+      if (savedChat) app.style.setProperty('--col-chat', savedChat);
+      bindResizer('#resizer-left', 'sidebar');
+      bindResizer('#resizer-right', 'chat');
+    }
+    function bindResizer(sel, side) {
+      const resizer = $(sel);
+      if (!resizer) return;
+      const app = $('.app');
+      const MIN = 180, MAX = 700;
+      resizer.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const cols = getComputedStyle(app).gridTemplateColumns.split(' ');
+        // cols = [sidebar, 5px, 1fr-actual-px, 5px, chat]
+        const startWidth = parseFloat(side === 'sidebar' ? cols[0] : cols[4]);
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+        function onMove(ev) {
+          const delta = side === 'sidebar' ? (ev.clientX - startX) : (startX - ev.clientX);
+          const next = Math.max(MIN, Math.min(MAX, startWidth + delta));
+          app.style.setProperty(side === 'sidebar' ? '--col-sidebar' : '--col-chat', next + 'px');
+        }
+        function onUp() {
+          resizer.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+          // 저장
+          const newCols = getComputedStyle(app).gridTemplateColumns.split(' ');
+          localStorage.setItem(COL_KEYS.sidebar, newCols[0]);
+          localStorage.setItem(COL_KEYS.chat, newCols[4]);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+      // 더블클릭 시 초기값 복원
+      resizer.addEventListener('dblclick', () => {
+        app.style.removeProperty(side === 'sidebar' ? '--col-sidebar' : '--col-chat');
+        localStorage.removeItem(side === 'sidebar' ? COL_KEYS.sidebar : COL_KEYS.chat);
+      });
+    }
+
+    /* ────────── 초기 로드 ────────── */
+    async function init() {
+      if (WORKER_URL.startsWith('__')) {
+        $('#doc-content').innerHTML = '<p style="color:var(--error)"><strong>설정 미완료</strong> — qa.html 안의 <code>WORKER_URL</code> 을 Worker 배포 후 받은 주소로 바꿔주세요. (DEPLOY.md 참고)</p>';
+        $('#policy-list').innerHTML = '';
+        return;
+      }
+      setupColumnResizers();
+      loadSessions();
+      loadCollapsed();
+      loadUser();
+      loadSeenDecisions();
+      setupCollapsibles();
+      setupUserUi();
+      renderRecentList();
+      $('#recent-clear-all')?.addEventListener('click', (e) => { e.preventDefault(); deleteAllSessions(); });
+      // 이름 미설정이면 즉시 사용자 설정 모달 (취소 가능 — 익명으로 시작)
+      if (!state.user.name) {
+        setTimeout(() => openUserDialog(true), 100); // 첫 진입 잠깐 뒤
+      }
+      // 최근 대화 검색 입력 — 타이핑할 때마다 즉시 필터 + 페이지 0 리셋
+      const searchInput = $('#recent-search');
+      if (searchInput) searchInput.addEventListener('input', () => {
+        state.recentPage = 0;
+        renderRecentList();
+      });
+
+      // 기획자 전달이력 — 상태 + 기간 select + 시작일~종료일 date 2개 + 초기화 링크
+      const statusSel = $('#decisions-status');
+      const periodSel = $('#decisions-period');
+      const fromInput = $('#decisions-from');
+      const toInput = $('#decisions-to');
+      const customRow = $('#decisions-custom-date');
+      const resetLink = $('#decisions-reset');
+
+      // 가이드 링크 — 섹션 헤더 아래 README 로 점프
+      $$('.section-guide a[data-guide-path]').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          showSidebarDoc(a.dataset.guidePath, a.dataset.guideTitle || a.textContent.trim());
+        });
+      });
+
+      if (statusSel) {
+        statusSel.addEventListener('change', () => {
+          state.decisionsFilter.status = statusSel.value;
+          state.decisionsPage = 0;
+          renderDecisionsList();
+        });
+      }
+      if (periodSel) {
+        periodSel.addEventListener('change', () => {
+          state.decisionsFilter.period = periodSel.value;
+          state.decisionsPage = 0;
+          if (customRow) customRow.style.display = periodSel.value === 'custom' ? 'flex' : 'none';
+          // custom 으로 진입 시 종료일은 오늘, 시작일은 7일 전으로 자동 채움
+          if (periodSel.value === 'custom') {
+            if (fromInput && !fromInput.value) {
+              fromInput.value = isoDaysAgo(DECISIONS_DEFAULT_DAYS);
+              state.decisionsFilter.fromDate = fromInput.value;
+            }
+            if (toInput && !toInput.value) {
+              toInput.value = new Date().toISOString().slice(0, 10);
+              state.decisionsFilter.toDate = toInput.value;
+            }
+          }
+          renderDecisionsList();
+        });
+      }
+      if (fromInput) {
+        fromInput.addEventListener('change', () => {
+          state.decisionsFilter.fromDate = fromInput.value;
+          state.decisionsPage = 0;
+          renderDecisionsList();
+        });
+      }
+      if (toInput) {
+        toInput.addEventListener('change', () => {
+          state.decisionsFilter.toDate = toInput.value;
+          state.decisionsPage = 0;
+          renderDecisionsList();
+        });
+      }
+      if (resetLink) {
+        resetLink.addEventListener('click', (e) => {
+          e.preventDefault();
+          state.decisionsFilter = { status: 'all', period: 'default', fromDate: '', toDate: '' };
+          state.decisionsPage = 0;
+          if (statusSel) statusSel.value = 'all';
+          if (periodSel) periodSel.value = 'default';
+          if (fromInput) fromInput.value = '';
+          if (toInput) toInput.value = '';
+          if (customRow) customRow.style.display = 'none';
+          renderDecisionsList();
+        });
+      }
+      try {
+        const projRes = await fetch(`${WORKER_URL}/list-projects`);
+        if (!projRes.ok) throw new Error(`projects HTTP ${projRes.status}`);
+        const projData = await projRes.json();
+        state.projects = projData.projects;
+        if (!state.projects.some((p) => p.id === state.currentProject)) {
+          state.currentProject = projData.default || state.projects[0]?.id;
+        }
+        renderProjectPicker();
+
+        // 문서 + 합의문/피드백 리스트 병렬 로드
+        await Promise.all([loadDocs(), loadDecisions(), loadFeedbacks()]);
+
+        // ?doc=<path> 쿼리로 들어왔으면 해당 문서 자동 선택 (기획자 모드 → 관련 정책 열기 진입)
+        const params = new URLSearchParams(location.search);
+        const docPath = params.get('doc');
+        if (docPath) {
+          const doc = state.docs.find((d) => d.path === docPath);
+          if (doc) {
+            await selectDoc(docPath);
+          } else {
+            // 정책·스토리보드 화이트리스트 밖이거나 qa/decisions/qa-feedback 인 경우
+            await showSidebarDoc(docPath, docPath.split('/').pop());
+          }
+        }
+      } catch (err) {
+        $('#policy-list').innerHTML = `<li><button disabled style="color:var(--error)">목록 로드 실패: ${friendlyError(err)}</button></li>`;
+      }
+    }
+
+    function renderProjectPicker() {
+      const sel = $('#project-select');
+      sel.innerHTML = state.projects
+        .map((p) => `<option value="${escapeAttr(p.id)}"${p.id === state.currentProject ? ' selected' : ''}>${escapeHtml(p.label)}</option>`)
+        .join('');
+      sel.disabled = false;
+      sel.onchange = async () => {
+        saveCurrentSession();
+        state.currentProject = sel.value;
+        localStorage.setItem(PROJECT_STORAGE_KEY, state.currentProject);
+        state.currentDoc = null;
+        startNewSession();
+        $('#doc-title').textContent = '문서를 선택하세요';
+        $('#doc-content').className = 'empty';
+        $('#doc-content').innerHTML = '왼쪽에서 정책문서나 화면설계서를 클릭하세요.';
+        $('#messages').innerHTML = '<div class="msg assistant"><div class="role">제이나미봇</div><div class="body">프로젝트가 바뀌었어요. 왼쪽에서 새 문서를 선택해주세요.</div></div>';
+        $('#forward-btn').disabled = true;
+        await loadDocs();
+      };
+    }
+
+    // README 등 가이드성 파일은 어느 리스트에서도 제외 — 별도 가이드 링크 통해서만 접근.
+    // server.js 가 이미 필터링하지만 옛 코드/캐시 대비 client 안전망.
+    function isGuidePath(p) {
+      return typeof p === 'string' && /\/readme\.md$/i.test(p);
+    }
+
+    async function loadDocs() {
+      $('#policy-list').innerHTML = '<li><button disabled>로딩 중...</button></li>';
+      $('#storyboard-list').innerHTML = '';
+      try {
+        const res = await fetch(`${WORKER_URL}/list-docs?project=${encodeURIComponent(state.currentProject)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        state.docs = (data.docs || []).filter((d) => !isGuidePath(d.path));
+        renderDocList();
+      } catch (err) {
+        $('#policy-list').innerHTML = `<li><button disabled style="color:var(--error)">목록 로드 실패: ${err.message}</button></li>`;
+      }
+    }
+
+    function renderDocList() {
+      const policies = state.docs.filter((d) => d.kind === 'policy');
+      const storyboards = state.docs.filter((d) => d.kind === 'storyboard');
+
+      $('#policy-list').innerHTML = policies.map(docButton).join('') || '<li><button disabled>(없음)</button></li>';
+      $('#storyboard-list').innerHTML = storyboards.map(docButton).join('') || '<li><button disabled>(없음)</button></li>';
+      $('#policies-count').textContent = policies.length ? `(${policies.length})` : '';
+      $('#storyboards-count').textContent = storyboards.length ? `(${storyboards.length})` : '';
+
+      $$('.docs li button[data-path]').forEach((btn) => {
+        btn.addEventListener('click', () => selectDoc(btn.dataset.path));
+      });
+    }
+
+    function docButton(d) {
+      const pill = d.kind === 'storyboard' ? '<span class="pill storyboard">화면</span>' : '<span class="pill">정책</span>';
+      const verMatch = d.path.match(/_v(\d+\.\d+\.\d+)\.md$/);
+      const ver = verMatch ? `<span class="ver">v${verMatch[1]}</span>` : '';
+      return `<li><button data-path="${escapeAttr(d.path)}">${pill}${escapeHtml(d.title)}${ver}</button></li>`;
+    }
+
+    /* ────────── 문서 선택·렌더 ────────── */
+    async function selectDoc(path) {
+      const doc = state.docs.find((d) => d.path === path);
+      if (!doc) return;
+      state.currentDoc = doc;
+      $$('.docs li button').forEach((b) => b.classList.toggle('active', b.dataset.path === path));
+      $('#doc-title').textContent = doc.title;
+      // 화면설계서면 기본 '미리보기' 모드로 진입, 정책이면 마크다운만
+      const isStoryboard = isStoryboardMdPath(path);
+      const toggle = $('#view-toggle');
+      toggle.style.display = isStoryboard ? 'flex' : 'none';
+      state.docView = isStoryboard ? (state.docView || 'preview') : 'markdown';
+      toggle.querySelectorAll('button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === state.docView));
+      await renderDocBody(path);
+      saveCurrentSession();
+    }
+
+    /* 화면설계서 md → html 후보 경로 매핑 (프로젝트별 폴더 구조 다름)
+       admin_v1   : .../storyboards/{화면}/{화면}_v.md ↔ .../storyboards/{화면}_v.html (parent 폴더)
+       backoffice : .../storyboards/{화면}_v.md       ↔ .../storyboards/{화면}_v.html (같은 폴더, 단 현재 HTML 부재)
+       URL 은 현재 qa.html origin 기준 절대 경로 (`/`) — 호스팅 도메인 변경에 자동 적응. */
+    function isStoryboardMdPath(p) {
+      return typeof p === 'string' && /\/storyboards\/.+\.md$/i.test(p) && !/\/README\.md$/i.test(p) && !/_가이드_/i.test(p);
+    }
+    function storyboardHtmlCandidates(mdPath) {
+      const parts = mdPath.split('/');
+      const filename = parts[parts.length - 1].replace(/\.md$/i, '.html');
+      const secondLast = parts[parts.length - 2];
+      const candidates = [];
+      // 두 경로 다 시도 — 폴더 구조 변동에 안전
+      if (secondLast && secondLast !== 'storyboards') {
+        // admin_v1 패턴: subfolder 안에 md, parent 에 html
+        candidates.push([...parts.slice(0, -2), filename].join('/'));
+      }
+      // 같은 폴더 (backoffice_v2 패턴 + admin_v1 fallback)
+      candidates.push([...parts.slice(0, -1), filename].join('/'));
+      // origin 기준 절대 경로로 변환
+      return candidates.map((p) => '/' + p);
+    }
+    /* 후보 URL 중 처음으로 HEAD 200 응답하는 URL 반환. 모두 실패 시 null. */
+    async function findStoryboardHtmlUrl(mdPath) {
+      const cands = storyboardHtmlCandidates(mdPath);
+      for (const url of cands) {
+        try {
+          const r = await fetch(url, { method: 'HEAD' });
+          if (r.ok) return url;
+        } catch (_) { /* 네트워크 오류 — 다음 후보 시도 */ }
+      }
+      return null;
+    }
+
+    async function renderDocBody(path) {
+      const article = $('#doc-content');
+      const iframe = $('#doc-iframe');
+      const isStoryboardPreview = isStoryboardMdPath(path) && state.docView === 'preview';
+
+      if (isStoryboardPreview) {
+        // 로딩 표시 (iframe load 동안 흰 공백 대신)
+        article.style.display = '';
+        iframe.style.display = 'none';
+        article.className = '';
+        article.innerHTML = '<p style="color:var(--muted);padding:24px">미리보기 로딩 중...</p>';
+        const htmlUrl = await findStoryboardHtmlUrl(path);
+        if (!htmlUrl) {
+          // HTML 부재 — 마크다운으로 자동 대체 + 안내
+          article.innerHTML = `
+            <div style="padding:32px;background:#fffbeb;border:1px dashed #fcd34d;border-radius:8px;margin-bottom:16px;color:#92400e">
+              <strong>🖼️ HTML 미리보기 없음</strong><br/>
+              <span style="font-size:12px">이 화면의 storyboard HTML 이 아직 만들어지지 않았어요. 마크다운으로 표시합니다.</span>
+            </div>
+            <p style="color:var(--muted)">마크다운 로딩 중...</p>`;
+          // 자동으로 마크다운 모드로 전환 (토글 표시 갱신)
+          state.docView = 'markdown';
+          $('#view-toggle').querySelectorAll('button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === 'markdown'));
+          try {
+            const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            article.innerHTML += marked.parse(data.content);
+            assignDocHeaderIds(article);
+            bindCiteAnchorsInArticle(article);
+          } catch (err) {
+            article.innerHTML += `<p style="color:var(--error)">문서 로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
+          }
+          return;
+        }
+        // HTML 존재 — iframe 로드
+        article.style.display = 'none';
+        iframe.style.display = '';
+        iframe.src = htmlUrl;
+        return;
+      }
+
+      iframe.style.display = 'none';
+      iframe.src = 'about:blank';
+      article.style.display = '';
+      article.className = '';
+      article.innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      try {
+        const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        article.innerHTML = marked.parse(data.content);
+        assignDocHeaderIds(article);
+        bindCiteAnchorsInArticle(article);
+      } catch (err) {
+        article.innerHTML = `<p style="color:var(--error)">문서 로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
+      }
+    }
+
+    /* 정책 본문 안 [§X-Y](#cite-X-Y) 앵커 클릭 → scrollToCitation 으로 article 안 스크롤
+       (article 이 overflow-y:auto 스크롤 컨테이너라 브라우저 기본 anchor 동작이 안 먹힘) */
+    function bindCiteAnchorsInArticle(article) {
+      article.querySelectorAll('a[href^="#cite-"]').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          const href = a.getAttribute('href') || '';
+          const anchor = href.substring('#cite-'.length);
+          scrollToCitation(anchor);
+        });
+      });
+    }
+
+    /* 미리보기/마크다운 토글 */
+    $('#view-toggle').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-view]');
+      if (!btn) return;
+      const view = btn.dataset.view;
+      if (state.docView === view) return;
+      state.docView = view;
+      $('#view-toggle').querySelectorAll('button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+      if (state.currentDoc?.path) renderDocBody(state.currentDoc.path);
+    });
+
+    // 가운데 패널 헤더에 §N 매칭 id 부여 — 챗 답변의 §N 링크가 클릭 시 여기로 점프.
+    // 실제 정책문서는 두 형식 혼용:
+    //   "## §7-1 오디언스 설정"   → id="cite-7-1"
+    //   "### 4-1. 알림 표시 정책"  → id="cite-4-1"
+    //   "## 3. 화면 구성"         → id="cite-3"
+    // 같은 id 가 여러 헤더에 매칭될 경우 첫 헤더가 우선 (scrollToCitation 이 querySelector 사용).
+    function assignDocHeaderIds(article) {
+      article.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((h) => {
+        const txt = h.textContent.trim();
+        const m = txt.match(/^(?:§\s*)?(\d+(?:-\d+)*)\.?\s/);
+        if (!m) return;
+        const id = 'cite-' + m[1];
+        if (!article.querySelector('#' + CSS.escape(id))) h.id = id;
+      });
+    }
+
+    /* ────────── 채팅 ────────── */
+    /* 질문에 첨부할 이미지 (사용자가 paste/drag/파일선택으로 추가) — base64 */
+    const pendingAttachments = []; // [{ mediaType, data, dataUrl }]
+    function renderAttachments() {
+      const cont = $('#attachments');
+      if (!pendingAttachments.length) { cont.innerHTML = ''; cont.style.display = 'none'; return; }
+      cont.style.display = 'flex';
+      cont.innerHTML = pendingAttachments
+        .map((a, i) => `<div class="thumb" title="첨부 ${i+1} (${(a.data.length * 0.75 / 1024).toFixed(0)} KB)"><img src="${a.dataUrl}" alt="첨부${i+1}" /><span class="remove" data-i="${i}" title="제거">×</span></div>`)
+        .join('');
+      cont.querySelectorAll('.remove').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          pendingAttachments.splice(Number(btn.dataset.i), 1);
+          renderAttachments();
+        });
+      });
+    }
+    async function addAttachmentFile(file) {
+      if (!file || !file.type.startsWith('image/')) return;
+      // 4MB 상한 — Anthropic vision API 권장
+      if (file.size > 4 * 1024 * 1024) { toast('이미지가 너무 큽니다 (4MB 이하)', 'error'); return; }
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
+      if (!m) { toast('이미지 변환 실패', 'error'); return; }
+      pendingAttachments.push({ mediaType: m[1], data: m[2], dataUrl });
+      renderAttachments();
+    }
+    /* textarea 위쪽 핸들 드래그 → 입력창 높이 위로 늘림 */
+    (function setupTextareaHandle() {
+      const handle = $('#textarea-handle');
+      const ta = $('#question');
+      if (!handle || !ta) return;
+      handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const startH = ta.offsetHeight;
+        handle.classList.add('dragging');
+        document.body.style.cursor = 'ns-resize';
+        document.body.style.userSelect = 'none';
+        function move(ev) {
+          const delta = startY - ev.clientY; // 위로 드래그하면 양수
+          const newH = Math.max(80, Math.min(500, startH + delta));
+          ta.style.height = newH + 'px';
+        }
+        function up() {
+          handle.classList.remove('dragging');
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          document.removeEventListener('mousemove', move);
+          document.removeEventListener('mouseup', up);
+        }
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
+      });
+    })();
+
+    // 파일 선택 (📎 링크)
+    $('#attach-link').addEventListener('click', () => $('#attach-file-input').click());
+    $('#attach-file-input').addEventListener('change', async (e) => {
+      for (const f of (e.target.files || [])) await addAttachmentFile(f);
+      e.target.value = ''; // 같은 파일 다시 선택 가능하게
+    });
+    // textarea 에 paste / drop
+    $('#question').addEventListener('paste', async (e) => {
+      const items = e.clipboardData?.items || [];
+      let used = false;
+      for (const it of items) {
+        if (it.type && it.type.startsWith('image/')) {
+          e.preventDefault();
+          used = true;
+          await addAttachmentFile(it.getAsFile());
+        }
+      }
+      if (used) toast('이미지 첨부 완료 — 텍스트도 함께 적어 전송', 'success');
+    });
+    $('#question').addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); $('#question').classList.add('drag-over'); }
+    });
+    $('#question').addEventListener('dragleave', () => $('#question').classList.remove('drag-over'));
+    $('#question').addEventListener('drop', async (e) => {
+      $('#question').classList.remove('drag-over');
+      const files = e.dataTransfer?.files;
+      if (!files?.length) return;
+      e.preventDefault();
+      for (const f of files) await addAttachmentFile(f);
+    });
+
+    $('#ask-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (state.sending) return;
+      const q = $('#question').value.trim();
+      if (!q && !pendingAttachments.length) return;
+      await sendQuestion(q || '(첨부 이미지 분석해주세요)');
+    });
+
+    $('#question').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        $('#ask-form').dispatchEvent(new Event('submit'));
+      }
+    });
+
+    async function sendQuestion(question, opts = {}) {
+      state.sending = true;
+      $('#send-btn').disabled = true;
+      $('#send-btn').innerHTML = '<span class="btn-spinner"></span>답변중';
+      // 사용자 메시지 — 첨부 이미지가 있으면 인라인으로 함께 표시
+      const attachmentsForSend = pendingAttachments.slice();
+      addMessage('user', question, { attachments: attachmentsForSend });
+      $('#question').value = '';
+      pendingAttachments.length = 0;
+      renderAttachments();
+
+      // 첫 청크(meta) 도착 전까지 노출할 로딩 placeholder. 도착 시 streaming 카드가 자리를 대신함.
+      const loadingPlaceholder = startLoadingPlaceholder(!!opts.regenerated);
+
+      let placeholder = null;
+      let accumulated = '';
+      let appliedFeedbacks = [];
+      let streamErr = null;
+
+      try {
+        const res = await fetch(`${WORKER_URL}/qa`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            docPath: state.currentDoc?.path,
+            question,
+            history: state.history.slice(0, -1).map(({ role, content }) => ({ role, content })),
+            attachments: attachmentsForSend.length
+              ? attachmentsForSend.map((a) => ({ mediaType: a.mediaType, data: a.data }))
+              : undefined,
+          }),
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        }
+
+        // NDJSON 스트리밍 읽기 — 메타가 즉시 오고 텍스트 청크가 흘러옴
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let nlIdx;
+          while ((nlIdx = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, nlIdx).trim();
+            buffer = buffer.slice(nlIdx + 1);
+            if (!line) continue;
+            let msg;
+            try { msg = JSON.parse(line); } catch (_) { continue; }
+
+            if (msg.type === 'meta') {
+              appliedFeedbacks = msg.appliedFeedbacks || [];
+              stopLoadingPlaceholder(loadingPlaceholder);
+              placeholder = startStreamingMessage(appliedFeedbacks, !!opts.regenerated);
+            } else if (msg.type === 'text') {
+              accumulated += msg.content;
+              if (placeholder) appendStreamingText(placeholder, msg.content);
+            } else if (msg.type === 'error') {
+              streamErr = msg.message;
+            }
+            // done 은 별도 처리 안 함 — 스트림이 끝나면 while 루프가 자연 종료
+          }
+        }
+
+        if (streamErr) throw new Error(streamErr);
+
+        // 마무리: plain text 본문을 마크다운 + 인용 링크화로 정식 렌더, history 저장
+        if (placeholder) {
+          finalizeStreamingMessage(placeholder, accumulated, appliedFeedbacks, !!opts.regenerated);
+        } else if (accumulated) {
+          addMessage('assistant', accumulated, { appliedFeedbacks, regenerated: !!opts.regenerated });
+        }
+
+        $('#forward-btn').disabled = false;
+        saveCurrentSession();
+      } catch (err) {
+        if (placeholder) placeholder.remove();
+        addMessage('error', `답변 실패: ${friendlyError(err)}`);
+      } finally {
+        stopLoadingPlaceholder(loadingPlaceholder);
+        state.sending = false;
+        $('#send-btn').disabled = false;
+        $('#send-btn').textContent = '전송';
+      }
+    }
+
+    // 첫 청크(meta) 도착 전까지 회전 spinner + "답변 준비 중" + 경과 초 표시.
+    // 사용자가 답변 진행 여부를 즉시 시각적으로 인지할 수 있도록 [전송] 직후 노출.
+    function startLoadingPlaceholder(regenerated) {
+      const div = document.createElement('div');
+      const classes = ['msg', 'assistant', 'streaming', 'loading-placeholder'];
+      if (regenerated) classes.push('regenerated');
+      div.className = classes.join(' ');
+      const regenTagHtml = regenerated ? `<span class="regen-tag">🔁 답변 규칙 반영하여 재생성</span>` : '';
+      div.innerHTML = `<div class="role">제이나미봇</div>${regenTagHtml}<div class="body loading-body"><span class="loading-spinner"></span><span class="loading-label">답변 준비 중</span><span class="loading-elapsed">0s</span></div>`;
+      $('#messages').appendChild(div);
+      $('#messages').scrollTop = $('#messages').scrollHeight;
+
+      const startedAt = Date.now();
+      const elapsedEl = div.querySelector('.loading-elapsed');
+      const timer = setInterval(() => {
+        const s = Math.floor((Date.now() - startedAt) / 1000);
+        if (elapsedEl) elapsedEl.textContent = `${s}s`;
+      }, 1000);
+
+      return { div, timer };
+    }
+
+    function stopLoadingPlaceholder(ph) {
+      if (!ph) return;
+      clearInterval(ph.timer);
+      if (ph.div && ph.div.parentNode) ph.div.remove();
+    }
+
+    // 스트리밍 시작 — 빈 assistant 카드 (커서만) DOM 에 붙이고 ref 반환
+    // 피드백 칩("N개 피드백 룰 반영됨")은 노출하지 않음 — 사용자 요청. 룰 적용은 시스템 프롬프트에서 자동 처리.
+    function startStreamingMessage(_appliedFeedbacks, regenerated) {
+      const div = document.createElement('div');
+      const classes = ['msg', 'assistant', 'streaming'];
+      if (regenerated) classes.push('regenerated');
+      div.className = classes.join(' ');
+      const regenTagHtml = regenerated ? `<span class="regen-tag">🔁 답변 규칙 반영하여 재생성</span>` : '';
+      div.innerHTML = `<div class="role">제이나미봇</div>${regenTagHtml}<div class="body"><span class="stream-cursor">▍</span></div>`;
+      $('#messages').appendChild(div);
+      $('#messages').scrollTop = $('#messages').scrollHeight;
+      return div;
+    }
+
+    // 청크 도착 시 본문에 plain text 로 누적 (마지막 정리 때 마크다운 일괄 재렌더)
+    function appendStreamingText(div, text) {
+      const body = div.querySelector('.body');
+      const cursor = body.querySelector('.stream-cursor');
+      body.insertBefore(document.createTextNode(text), cursor);
+      $('#messages').scrollTop = $('#messages').scrollHeight;
+    }
+
+    // 스트리밍 종료 — plain text 를 마크다운으로 재렌더 + 인용 링크 + 액션 버튼 + history 저장
+    function finalizeStreamingMessage(div, fullText, appliedFeedbacks, regenerated) {
+      const body = div.querySelector('.body');
+      let bodyHtml = marked.parse(fullText);
+      bodyHtml = linkifyCitations(bodyHtml);
+      body.innerHTML = bodyHtml;
+
+      div.querySelectorAll('a.cite').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          scrollToCitation(a.dataset.anchor);
+        });
+      });
+
+      // per-message 액션·CTA 제거 — 툴바의 [📤 기획자에게 전달] / [📝 답변 규칙 추가] 가 대체
+      div.classList.remove('streaming');
+
+      // 툴바 forward 활성화 (improve 는 항상 활성)
+      $('#forward-btn').disabled = false;
+
+      const entry = { role: 'assistant', content: fullText };
+      if (appliedFeedbacks.length > 0) entry.appliedFeedbacks = appliedFeedbacks;
+      if (regenerated) entry.regenerated = true;
+      state.history.push(entry);
+
+      $('#messages').scrollTop = $('#messages').scrollHeight;
+    }
+
+    function addMessage(role, content, meta = {}) {
+      const div = document.createElement('div');
+      const classes = ['msg', role];
+      if (meta.regenerated) classes.push('regenerated');
+      div.className = classes.join(' ');
+
+      let bodyHtml = role === 'assistant' ? marked.parse(content) : `<div>${escapeHtml(content)}</div>`;
+
+      // 사용자 메시지에 이미지 첨부가 있으면 텍스트 뒤에 thumbnail 그리드 인라인
+      if (role === 'user' && Array.isArray(meta.attachments) && meta.attachments.length > 0) {
+        const imgs = meta.attachments
+          .map((a) => {
+            const src = a.dataUrl || `data:${a.mediaType};base64,${a.data}`;
+            return `<a href="${src}" target="_blank" rel="noopener" style="display:inline-block"><img src="${src}" alt="첨부" style="max-width:140px;max-height:140px;margin:4px 4px 0 0;border-radius:6px;border:1px solid var(--border);object-fit:cover" /></a>`;
+          })
+          .join('');
+        bodyHtml += `<div class="user-attachments" style="margin-top:6px">${imgs}</div>`;
+      }
+
+      // assistant 답변 — §N 인용을 클릭 가능한 링크로 변환
+      if (role === 'assistant') bodyHtml = linkifyCitations(bodyHtml);
+
+      // "📝 N개 피드백 룰 반영됨" 칩 (assistant 답변에만, 룰 있을 때만)
+      let chipHtml = '';
+      const fb = meta.appliedFeedbacks || [];
+      // 자가학습 칩 제거됨 — 사용자 요청. fb 데이터는 history 에 남아 있어 필요 시 복원 가능.
+
+      let regenTagHtml = '';
+      if (meta.regenerated) regenTagHtml = `<span class="regen-tag">🔁 답변 규칙 반영하여 재생성</span>`;
+
+      // 역할 라벨: 사용자 → '나' / AI → '제이나미봇'
+      const roleLabel = role === 'assistant' ? '제이나미봇' : (role === 'user' ? '나' : role);
+
+      // per-message 액션·CTA 제거 — 툴바의 [📤 기획자에게 전달] / [📝 답변 규칙 추가] 가 대체
+      div.innerHTML = `<div class="role">${roleLabel}</div>${regenTagHtml}<div class="body">${bodyHtml}</div>`;
+
+      // §N 인용 클릭
+      div.querySelectorAll('a.cite').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          scrollToCitation(a.dataset.anchor);
+        });
+      });
+
+      $('#messages').appendChild(div);
+      $('#messages').scrollTop = $('#messages').scrollHeight;
+      if (role !== 'error') {
+        const entry = { role: role === 'user' ? 'user' : 'assistant', content };
+        if (fb.length > 0) entry.appliedFeedbacks = fb;
+        if (meta.regenerated) entry.regenerated = true;
+        state.history.push(entry);
+      }
+      // 툴바 forward 활성화 — assistant 답변이 들어왔을 때 (improve 는 항상 활성)
+      if (role === 'assistant' && state.history.filter((m) => m.role === 'assistant').length > 0) {
+        $('#forward-btn').disabled = false;
+      }
+    }
+
+    // 답변 본문 HTML 에서 "§N", "§N-M" 같은 인용을 클릭 가능한 a 태그로 변환.
+    // marked 가 만든 HTML 의 텍스트 노드만 안전하게 치환 (코드블록·기존 a 안은 건드리지 않음).
+    function linkifyCitations(html) {
+      const wrap = document.createElement('div');
+      wrap.innerHTML = html;
+      const walker = document.createTreeWalker(wrap, NodeFilter.SHOW_TEXT, {
+        acceptNode: (n) => {
+          if (!/§\s*\d/.test(n.nodeValue)) return NodeFilter.FILTER_REJECT;
+          let p = n.parentElement;
+          while (p && p !== wrap) {
+            if (p.tagName === 'A' || p.tagName === 'CODE' || p.tagName === 'PRE') return NodeFilter.FILTER_REJECT;
+            p = p.parentElement;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        },
+      });
+      const targets = [];
+      let cur;
+      while ((cur = walker.nextNode())) targets.push(cur);
+      targets.forEach((node) => {
+        const frag = document.createDocumentFragment();
+        let last = 0;
+        const re = /§\s*(\d+(?:-\d+)*)/g;
+        let m;
+        const text = node.nodeValue;
+        while ((m = re.exec(text))) {
+          if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+          const a = document.createElement('a');
+          a.className = 'cite';
+          a.dataset.anchor = m[1];
+          a.href = '#cite-' + m[1];
+          a.textContent = m[0];
+          frag.appendChild(a);
+          last = m.index + m[0].length;
+        }
+        if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+        node.parentNode.replaceChild(frag, node);
+      });
+      return wrap.innerHTML;
+    }
+
+    function scrollToCitation(anchor) {
+      const target = $('#doc-content').querySelector('#cite-' + CSS.escape(anchor));
+      if (!target) { toast(`§${anchor} 을 정책에서 못 찾았어요`, 'error'); return; }
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.remove('cite-highlight');
+      // reflow 강제 후 다시 적용해야 transition 트리거됨
+      // eslint-disable-next-line no-unused-expressions
+      target.offsetHeight;
+      target.classList.add('cite-highlight');
+      setTimeout(() => target.classList.remove('cite-highlight'), 1800);
+    }
+
+    /* ────────── 답변 개선 요청 ────────── */
+    /* answer = '' / 질문 없음 도 OK → 일반 규칙 (질문·답변 컨텍스트 없이 규칙만 누적) */
+    function openFeedbackDialog(answer, btn) {
+      const lastUserMsg = [...state.history].reverse().find((m) => m.role === 'user');
+      $('#fb-improvement').value = '';
+      $('#fb-title').value = '';
+      const dlg = $('#feedback-dialog');
+      dlg.dataset.question = lastUserMsg ? lastUserMsg.content : '';
+      dlg.dataset.answer = answer || '';
+      // btn 은 툴바 #improve-toolbar-btn 1개로 통일 (per-message 버튼 폐기)
+      dlg.dataset.btnIsToolbar = btn?.id === 'improve-toolbar-btn' ? '1' : '0';
+      dlg.showModal();
+    }
+
+    $('#feedback-dialog').addEventListener('close', async () => {
+      const dlg = $('#feedback-dialog');
+      if (dlg.returnValue !== 'default') return;
+      const improvement = $('#fb-improvement').value.trim();
+      const title = $('#fb-title').value.trim();
+      const reask = $('#fb-reask').checked;
+      if (!improvement) { toast('추가할 답변 규칙을 입력해주세요', 'error'); return; }
+      const question = dlg.dataset.question;
+      const answer = dlg.dataset.answer;
+
+      try {
+        const res = await fetch(`${WORKER_URL}/feedback`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ docPath: state.currentDoc?.path, title, improvement, question, answer, user: state.user.name || '익명' }),
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        }
+        const data = await res.json();
+        toast(`✓ 답변 규칙 추가됨: ${data.feedbackPath}`, 'success');
+        await loadFeedbacks(); // 사이드바 갱신
+
+        if (reask && question) {
+          await sendQuestion(question, { regenerated: true });
+        }
+      } catch (err) {
+        toast(`답변 규칙 추가 실패: ${friendlyError(err)}`, 'error');
+      }
+    });
+
+    $('#clear-btn').addEventListener('click', () => {
+      saveCurrentSession();
+      startNewSession();
+      $('#messages').innerHTML = '<div class="msg assistant"><div class="role">제이나미봇</div><div class="body">대화를 다시 시작했어요. 질문해주세요.</div></div>';
+      $('#forward-btn').disabled = true;
+      // improve-toolbar-btn 은 항상 활성 (답변 없어도 일반 규칙 추가 가능)
+    });
+
+    /* 툴바 [📝 답변 규칙 추가] — 답변 없어도 항상 사용 가능 (일반 규칙 누적 학습)
+       답변이 있으면 그 답변 컨텍스트로, 없으면 일반 규칙으로 저장 */
+    $('#improve-toolbar-btn').addEventListener('click', () => {
+      const lastAssistant = [...state.history].reverse().find((m) => m.role === 'assistant');
+      openFeedbackDialog(lastAssistant ? lastAssistant.content : '', $('#improve-toolbar-btn'));
+    });
+
+    /* 고정 CTA 영역 링크 — 툴바 버튼과 같은 동작 */
+    $('#chat-cta').addEventListener('click', (e) => {
+      const a = e.target.closest('a[data-act]');
+      if (!a) return;
+      e.preventDefault();
+      const act = a.dataset.act;
+      if (act === 'forward') $('#forward-btn').click();
+      else if (act === 'focus') $('#question').focus();
+      else if (act === 'newchat') $('#clear-btn').click();
+    });
+
+    /* ────────── 기획자에게 전달 ────────── */
+    // AI 가 답변에 붙인 "📋 변경 제안" 블록을 파싱해서 다이얼로그를 미리 채움.
+    // 위치 (`📍 §X-Y`) 가 있으면 그걸 제목으로, 변경 후 본문이 있으면 요약으로 자동 입력.
+    function parseChangeProposal(answer) {
+      const m = answer.match(/### 📋 변경 제안\s*\n([\s\S]*?)(?=\n###|\n##|$)/);
+      if (!m) return null;
+      const block = m[1];
+      const get = (label) => {
+        const r = block.match(new RegExp(`-\\s*${label}:?\\s*([^\\n]+)`));
+        return r ? r[1].trim() : '';
+      };
+      return {
+        target: get('📄\\s*대상\\s*파일'),
+        section: get('📍\\s*위치'),
+        before: get('✏️\\s*변경\\s*전'),
+        after: get('✅\\s*변경\\s*후'),
+        reason: get('💡\\s*근거'),
+      };
+    }
+
+    $('#forward-btn').addEventListener('click', () => {
+      if (state.history.length === 0) { toast('아직 대화가 없어요', 'error'); return; }
+      const lastUser = [...state.history].reverse().find((m) => m.role === 'user');
+      const lastAssistant = [...state.history].reverse().find((m) => m.role === 'assistant');
+      const proposal = lastAssistant ? parseChangeProposal(lastAssistant.content) : null;
+
+      if (proposal && proposal.section) {
+        // 변경 제안 블록이 있으면 그 5필드를 그대로 요약으로 사용
+        $('#fwd-topic').value = `${state.currentDoc?.title || ''} ${proposal.section}`.trim();
+        const sumParts = [];
+        if (proposal.target) sumParts.push(`📄 ${proposal.target}`);
+        if (proposal.section) sumParts.push(`📍 ${proposal.section}`);
+        if (proposal.after) sumParts.push(`✅ ${proposal.after}`);
+        if (proposal.reason) sumParts.push(`💡 ${proposal.reason}`);
+        $('#fwd-summary').value = sumParts.join('\n');
+      } else {
+        // 블록이 없으면 질문 + 답변 본문을 그대로 미리 채움 (사용자가 다듬어 보낼 수 있게)
+        // 답변 끝의 안내문 line 제외 — "→ OK 면 댓글" 류 제거.
+        $('#fwd-topic').value = lastUser ? lastUser.content.slice(0, 60) : (state.currentDoc?.title ?? '');
+        const cleanAnswer = (lastAssistant?.content || '').replace(/\n+→\s*OK.*$/m, '').trim();
+        const parts = [];
+        if (lastUser) parts.push(`❓ 질문\n${lastUser.content}`);
+        if (cleanAnswer) parts.push(`💬 답변\n${cleanAnswer}`);
+        $('#fwd-summary').value = parts.join('\n\n');
+      }
+      $('#forward-dialog').showModal();
+    });
+
+    $('#forward-dialog').addEventListener('close', async () => {
+      const dlg = $('#forward-dialog');
+      if (dlg.returnValue !== 'default') return;
+      const topic = $('#fwd-topic').value.trim();
+      const summary = $('#fwd-summary').value.trim();
+      if (!topic || !summary) { toast('제목과 요약을 모두 입력해주세요', 'error'); return; }
+
+      // qa 쌍 추출 — 순서 무관·재생성된 답변 대응. user 메시지를 만나면 lastUser 기억,
+      // assistant 가 오면 직전 user 와 짝지음. 같은 user 에 대한 재생성 답변(2번째 assistant)은
+      // 마지막 답변으로 덮어쓰기 (사용자가 본 최종 답변이 의사결정 근거).
+      const qa = [];
+      let lastUser = null;
+      let lastQaIndex = -1;
+      for (const m of state.history) {
+        if (m?.role === 'user' && m.content) {
+          lastUser = m;
+          lastQaIndex = -1;
+        } else if (m?.role === 'assistant' && m.content && lastUser) {
+          if (lastQaIndex >= 0) {
+            qa[lastQaIndex].answer = m.content;
+          } else {
+            qa.push({ question: lastUser.content, answer: m.content });
+            lastQaIndex = qa.length - 1;
+          }
+        }
+      }
+
+      if (qa.length === 0) {
+        toast('전달할 질문-답변이 없어요. 채팅에서 질문하고 답변을 받은 뒤 다시 시도해주세요', 'error');
+        console.warn('[forward] qa 배열 비어있음. state.history =', state.history);
+        return;
+      }
+
+      try {
+        const res = await fetch(`${WORKER_URL}/forward`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ docPath: state.currentDoc?.path, topic, summary, qa, user: state.user.name || '익명' }),
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        }
+        const data = await res.json();
+        toast(`전달 완료: ${data.decisionPath}`);
+        addMessage('assistant', `✅ **전달 완료** — [\`${data.decisionPath}\`](${data.htmlUrl}) 가 생성되었습니다. 기획자분이 review 후 정책·화면에 반영합니다.`);
+        await loadDecisions();
+      } catch (err) {
+        toast(`전달 실패: ${friendlyError(err)}`, 'error');
+      }
+    });
+
+    // 답변 카드 하단에 다음 스텝 안내 1줄 추가. 자연어 + 클릭 가능 링크 3개.
+    function appendNextStepCTA(div) {
+      // 이미 붙어 있으면 중복 방지 (재렌더 시)
+      if (div.querySelector('.next-step')) return;
+      const cta = document.createElement('div');
+      cta.className = 'next-step';
+      cta.innerHTML = `👉 이대로 진행: <a data-act="forward">📤 기획자에게 전달</a> · 추가로 물어보기: <a data-act="focus">아래 입력창</a> · 끝났으면: <a data-act="newchat">↻ 새 대화</a>`;
+      cta.querySelectorAll('a[data-act]').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          const act = a.dataset.act;
+          if (act === 'forward') $('#forward-btn').click();
+          else if (act === 'focus') $('#question').focus();
+          else if (act === 'newchat') $('#clear-btn').click();
+        });
+      });
+      div.appendChild(cta);
+    }
+
+    /* ────────── 세션 (localStorage) ────────── */
+    function loadSessions() {
+      try {
+        const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
+        state.sessions = raw ? JSON.parse(raw) : [];
+      } catch (_) {
+        state.sessions = [];
+      }
+    }
+
+    function persistSessions() {
+      // 최신 updatedAt 우선, MAX_SESSIONS 개로 trim
+      state.sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      state.sessions = state.sessions.slice(0, MAX_SESSIONS);
+      try {
+        localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(state.sessions));
+      } catch (_) { /* quota 초과 등 무시 */ }
+    }
+
+    function newSessionId() {
+      return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    }
+
+    function startNewSession() {
+      state.history = [];
+      state.currentSessionId = null;
+      renderRecentList();
+    }
+
+    function saveCurrentSession() {
+      if (state.history.length === 0) return; // 빈 대화는 저장 안 함
+      const now = Date.now();
+      if (!state.currentSessionId) state.currentSessionId = newSessionId();
+      const firstUser = state.history.find((m) => m.role === 'user');
+      const title = firstUser ? firstUser.content.slice(0, 40) : '(빈 대화)';
+      const existing = state.sessions.find((s) => s.id === state.currentSessionId);
+      const session = {
+        id: state.currentSessionId,
+        title,
+        project: state.currentProject,
+        docPath: state.currentDoc?.path || null,
+        createdAt: existing?.createdAt || now,
+        updatedAt: now,
+        history: state.history,
+      };
+      if (existing) Object.assign(existing, session);
+      else state.sessions.push(session);
+      persistSessions();
+      renderRecentList();
+    }
+
+    async function restoreSession(id) {
+      const s = state.sessions.find((x) => x.id === id);
+      if (!s) return;
+      // 프로젝트 다르면 먼저 바꾸기
+      if (s.project && s.project !== state.currentProject) {
+        state.currentProject = s.project;
+        localStorage.setItem(PROJECT_STORAGE_KEY, state.currentProject);
+        const sel = $('#project-select');
+        if (sel) sel.value = state.currentProject;
+        await loadDocs();
+      }
+      state.currentSessionId = s.id;
+      state.history = []; // addMessage 가 다시 push 하므로 비워두고 재생
+      $('#messages').innerHTML = '';
+      // 문서 복원
+      if (s.docPath) {
+        const doc = state.docs.find((d) => d.path === s.docPath);
+        if (doc) {
+          state.currentDoc = doc;
+          $$('.docs li button').forEach((b) => b.classList.toggle('active', b.dataset.path === s.docPath));
+          $('#doc-title').textContent = doc.title;
+          await renderDocBody(s.docPath);
+        }
+      }
+      // 메시지 재생
+      for (const m of s.history) {
+        addMessage(m.role, m.content, {
+          appliedFeedbacks: m.appliedFeedbacks || [],
+          regenerated: !!m.regenerated,
+        });
+      }
+      $('#forward-btn').disabled = state.history.length === 0;
+      renderRecentList();
+    }
+
+    function deleteSession(id) {
+      state.sessions = state.sessions.filter((s) => s.id !== id);
+      persistSessions();
+      if (state.currentSessionId === id) startNewSession();
+      renderRecentList();
+    }
+
+    function deleteAllSessions() {
+      const n = state.sessions.length;
+      if (n === 0) { toast('삭제할 대화가 없어요'); return; }
+      if (!confirm(`최근 대화 ${n}건을 모두 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
+      state.sessions = [];
+      persistSessions();
+      startNewSession();
+      $('#messages').innerHTML = '<div class="msg assistant"><div class="role">제이나미봇</div><div class="body">최근 대화를 모두 지웠어요. 새로운 질문을 해주세요.</div></div>';
+      $('#forward-btn').disabled = true;
+      renderRecentList();
+      toast(`최근 대화 ${n}건 삭제 완료`, 'success');
+    }
+
+    // 레포 파일 삭제 — qa/decisions/qa-feedback md 를 unlink + git push 까지.
+    // kind: 'decision' | 'feedback'
+    async function deleteArtifactFile(kind, relPath) {
+      if (!relPath) return;
+      const label = kind === 'decision' ? '기획자 전달 이력' : '답변 개선 요청';
+      if (!confirm(`${label} 파일을 레포에서 영구 삭제할까요?\n\n${relPath}\n\n되돌릴 수 없습니다 (git history 에는 남음).`)) return;
+      const endpoint = kind === 'decision' ? '/delete-decision' : '/delete-feedback';
+      try {
+        const res = await fetch(`${WORKER_URL}${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: relPath }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        toast(`${label} 삭제 완료`, 'success');
+        // 가운데 패널에 그 파일이 떠 있었다면 비우기
+        if ($('#doc-title').textContent === relPath || $('#doc-body').dataset.docPath === relPath) {
+          $('#doc-title').textContent = '';
+          $('#doc-body').innerHTML = '<p style="color:var(--muted)">삭제됨</p>';
+        }
+        if (kind === 'decision') await loadDecisions();
+        else await loadFeedbacks();
+      } catch (err) {
+        toast(`삭제 실패: ${friendlyError(err)}`, 'error');
+      }
+    }
+
+    function renderRecentList() {
+      const ul = $('#recent-list');
+      // 기존 페이저 노드 제거 (재렌더 시 중복 방지)
+      const oldPager = ul.parentElement.querySelector('.pager[data-pager="recent"]');
+      if (oldPager) oldPager.remove();
+
+      $('#recent-count').textContent = state.sessions.length ? `(${state.sessions.length})` : '';
+      if (!state.sessions.length) {
+        ul.innerHTML = '<li><button disabled>(아직 없음)</button></li>';
+        return;
+      }
+      const q = ($('#recent-search')?.value || '').trim().toLowerCase();
+      const filtered = q
+        ? state.sessions.filter((s) => {
+            if (s.title?.toLowerCase().includes(q)) return true;
+            return (s.history || []).some((m) => (m.content || '').toLowerCase().includes(q));
+          })
+        : state.sessions;
+      if (!filtered.length) {
+        ul.innerHTML = `<li><button disabled>(검색 결과 없음 — "${escapeHtml(q)}")</button></li>`;
+        return;
+      }
+
+      // 페이징 — 최대 RECENT_PAGE_SIZE 개씩, recentPage 가 범위 벗어나면 보정
+      const totalPages = Math.max(1, Math.ceil(filtered.length / RECENT_PAGE_SIZE));
+      if (state.recentPage >= totalPages) state.recentPage = totalPages - 1;
+      if (state.recentPage < 0) state.recentPage = 0;
+      const start = state.recentPage * RECENT_PAGE_SIZE;
+      const pageItems = filtered.slice(start, start + RECENT_PAGE_SIZE);
+
+      ul.innerHTML = pageItems
+        .map((s) => {
+          const active = s.id === state.currentSessionId ? ' active' : '';
+          const when = relTime(s.updatedAt);
+          return `<li>
+            <button class="with-meta${active}" data-session-id="${escapeAttr(s.id)}" title="${escapeAttr(s.title)}">
+              <span>${escapeHtml(s.title)}</span>
+              <span class="meta">${when}</span>
+            </button>
+            <button class="del-btn" data-del-session="${escapeAttr(s.id)}" title="삭제">×</button>
+          </li>`;
+        })
+        .join('');
+      ul.querySelectorAll('[data-session-id]').forEach((b) => {
+        b.addEventListener('click', () => restoreSession(b.dataset.sessionId));
+      });
+      ul.querySelectorAll('[data-del-session]').forEach((b) => {
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (confirm('이 대화를 삭제할까요?')) deleteSession(b.dataset.delSession);
+        });
+      });
+
+      // 페이저 — 결과가 한 페이지보다 많을 때만 표시. ul 바로 뒤에 삽입.
+      if (totalPages > 1) {
+        const pager = document.createElement('div');
+        pager.className = 'pager';
+        pager.dataset.pager = 'recent';
+        // 접힘 동기화 — h2.collapsed 면 같이 숨김
+        const h2 = $('h2[data-section="recent"]');
+        if (h2 && h2.classList.contains('collapsed')) pager.classList.add('hidden');
+        pager.innerHTML = `
+          <button data-page="prev" ${state.recentPage === 0 ? 'disabled' : ''}>‹ 이전</button>
+          <span class="info">${state.recentPage + 1}/${totalPages} (${filtered.length}건)</span>
+          <button data-page="next" ${state.recentPage >= totalPages - 1 ? 'disabled' : ''}>다음 ›</button>
+        `;
+        ul.insertAdjacentElement('afterend', pager);
+        pager.querySelector('[data-page="prev"]').addEventListener('click', () => {
+          state.recentPage--;
+          renderRecentList();
+        });
+        pager.querySelector('[data-page="next"]').addEventListener('click', () => {
+          state.recentPage++;
+          renderRecentList();
+        });
+      }
+    }
+
+    /* ────────── 사이드바 — 합의문 / 개선 요청 리스트 ────────── */
+    // 필터 로직 — state.decisionsFilter 의 status/period/customDate 조합으로 결정
+    function applyDecisionsFilter(decisions, filter) {
+      // 0. 글로벌 보기 범위 — 'mine' 이면 본인 것만
+      let base = decisions.slice();
+      if (state.viewMode === 'mine' && state.user.name) {
+        base = base.filter((d) => (d.user || '').toLowerCase() === state.user.name.toLowerCase());
+      }
+      // 1. status 필터
+      let items = filter.status === 'all' ? base : base.filter((d) => d.status === filter.status);
+
+      // 2. period 필터
+      if (filter.period === 'default') {
+        // 미처리 전체 + 최근 7일 내 처리된 최대 3건
+        const cutoff = isoDaysAgo(DECISIONS_DEFAULT_DAYS);
+        const pending = items.filter((d) => d.status === 'pending');
+        const processedRecent = items
+          .filter((d) => d.status !== 'pending' && d.date >= cutoff)
+          .slice(0, DECISIONS_DEFAULT_PROCESSED_LIMIT);
+        // state.decisions 가 이미 date desc 정렬 — slice 가 최신 3건
+        return [...pending, ...processedRecent];
+      }
+      if (filter.period === '7d') {
+        const cutoff = isoDaysAgo(7);
+        return items.filter((d) => d.date >= cutoff);
+      }
+      if (filter.period === '30d') {
+        const cutoff = isoDaysAgo(30);
+        return items.filter((d) => d.date >= cutoff);
+      }
+      if (filter.period === 'custom') {
+        // 시작일·종료일 둘 다 옵션. 둘 다 비어 있으면 전체 (필터 없음).
+        if (filter.fromDate) items = items.filter((d) => d.date >= filter.fromDate);
+        if (filter.toDate) items = items.filter((d) => d.date <= filter.toDate);
+        return items;
+      }
+      return items; // 'all'
+    }
+
+    async function loadDecisions() {
+      const ul = $('#decisions-list');
+      try {
+        const res = await fetch(`${WORKER_URL}/list-decisions?limit=100`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        state.decisions = (data.items || []).filter((d) => !isGuidePath(d.path));
+      } catch (err) {
+        ul.innerHTML = `<li><button disabled style="color:var(--error)">로드 실패: ${escapeHtml(friendlyError(err))}</button></li>`;
+        $('#decisions-count').textContent = '';
+        return;
+      }
+      renderDecisionsList();
+      // 알림 — 내 요청 중 마지막으로 본 시점과 비교해 상태가 바뀐 것 찾기
+      checkAndShowStatusNotification();
+    }
+    // 페이저 — 리스트 UL 뒤에 이전/다음 버튼을 동적으로 삽입. 0건 또는 1페이지면 미표시.
+    function attachPager(ul, pagerKey, totalPages, currentPage, sectionH2Selector, onChange) {
+      // 기존 페이저 노드 제거 (재렌더 시 중복 방지)
+      const oldPager = ul.parentElement.querySelector(`.pager[data-pager="${pagerKey}"]`);
+      if (oldPager) oldPager.remove();
+      if (totalPages <= 1) return;
+      const pager = document.createElement('div');
+      pager.className = 'pager';
+      pager.dataset.pager = pagerKey;
+      const h2 = $(sectionH2Selector);
+      if (h2 && h2.classList.contains('collapsed')) pager.classList.add('hidden');
+      pager.innerHTML = `
+        <button data-page="prev" ${currentPage === 0 ? 'disabled' : ''}>‹ 이전</button>
+        <span class="info">${currentPage + 1}/${totalPages}</span>
+        <button data-page="next" ${currentPage >= totalPages - 1 ? 'disabled' : ''}>다음 ›</button>
+      `;
+      ul.insertAdjacentElement('afterend', pager);
+      pager.querySelector('[data-page="prev"]').addEventListener('click', () => onChange(currentPage - 1));
+      pager.querySelector('[data-page="next"]').addEventListener('click', () => onChange(currentPage + 1));
+    }
+
+    function renderDecisionsList() {
+      const ul = $('#decisions-list');
+      if (!state.decisions.length) {
+        $('#decisions-count').textContent = '';
+        ul.innerHTML = '<li><button disabled>(아직 없음)</button></li>';
+        attachPager(ul, 'decisions', 0, 0, 'h2[data-section="decisions"]', () => {});
+        return;
+      }
+      const total = state.decisions.length;
+      const filtered = applyDecisionsFilter(state.decisions, state.decisionsFilter);
+      const isDefault = state.decisionsFilter.status === 'all' && state.decisionsFilter.period === 'default';
+      $('#decisions-count').textContent = isDefault ? `(${filtered.length})` : `(${filtered.length}/${total})`;
+
+      // 페이징 보정
+      const totalPages = Math.max(1, Math.ceil(filtered.length / DECISIONS_PAGE_SIZE));
+      if (state.decisionsPage >= totalPages) state.decisionsPage = totalPages - 1;
+      if (state.decisionsPage < 0) state.decisionsPage = 0;
+      const start = state.decisionsPage * DECISIONS_PAGE_SIZE;
+      const pageItems = filtered.slice(start, start + DECISIONS_PAGE_SIZE);
+      if (!filtered.length) {
+        ul.innerHTML = '<li><button disabled>(필터 결과 없음)</button></li>';
+        return;
+      }
+      if (!pageItems.length) {
+        ul.innerHTML = '<li><button disabled>(필터 결과 없음)</button></li>';
+        attachPager(ul, 'decisions', 0, 0, 'h2[data-section="decisions"]', () => {});
+        return;
+      }
+      const iconMap = { pending: '📋', applied: '✅', rejected: '🚫' };
+      const showUser = state.viewMode === 'all';
+      ul.innerHTML = pageItems
+        .map((d) => {
+          const st = d.status || 'pending';
+          const icon = iconMap[st] || '📋';
+          const tooltipStatus = d.statusText || st;
+          const userTag = showUser && d.user ? `<span class="user-tag" title="질문자">👤${escapeHtml(d.user)}</span>` : '';
+          const userInTooltip = d.user ? ` · 👤${d.user}` : '';
+          return `<li>
+            <button class="with-meta" data-doc-path="${escapeAttr(d.path)}" title="${escapeAttr(d.title + userInTooltip + ' — ' + tooltipStatus)}">
+              <span><span class="status-icon ${st}" title="${escapeAttr(tooltipStatus)}">${icon}</span>${escapeHtml(d.title)}${userTag}</span>
+              <span class="meta">${escapeHtml(d.date)}</span>
+            </button>
+            <button class="del-btn" data-del-decision-path="${escapeAttr(d.path)}" title="레포에서 삭제">×</button>
+          </li>`;
+        })
+        .join('');
+      ul.querySelectorAll('[data-doc-path]').forEach((b) => {
+        b.addEventListener('click', () => showSidebarDoc(b.dataset.docPath, b.title));
+      });
+      ul.querySelectorAll('[data-del-decision-path]').forEach((b) => {
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteArtifactFile('decision', b.dataset.delDecisionPath);
+        });
+      });
+      attachPager(ul, 'decisions', totalPages, state.decisionsPage, 'h2[data-section="decisions"]', (p) => {
+        state.decisionsPage = p;
+        renderDecisionsList();
+      });
+    }
+
+    async function loadFeedbacks() {
+      const ul = $('#feedbacks-list');
+      try {
+        const res = await fetch(`${WORKER_URL}/list-feedbacks?limit=20`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        state.feedbacks = (data.items || []).filter((f) => !isGuidePath(f.path));
+      } catch (err) {
+        ul.innerHTML = `<li><button disabled style="color:var(--error)">로드 실패: ${escapeHtml(friendlyError(err))}</button></li>`;
+        $('#feedbacks-count').textContent = '';
+        return;
+      }
+      renderFeedbacksList();
+    }
+    function renderFeedbacksList() {
+      const ul = $('#feedbacks-list');
+      const total = state.feedbacks.length;
+      if (!total) {
+        $('#feedbacks-count').textContent = '';
+        ul.innerHTML = '<li><button disabled>(아직 없음)</button></li>';
+        attachPager(ul, 'feedbacks', 0, 0, 'h2[data-section="feedbacks"]', () => {});
+        return;
+      }
+      // 보기 범위 — mine 이면 본인 것만
+      const filtered = state.viewMode === 'mine' && state.user.name
+        ? state.feedbacks.filter((f) => (f.user || '').toLowerCase() === state.user.name.toLowerCase())
+        : state.feedbacks;
+      $('#feedbacks-count').textContent = state.viewMode === 'mine' && total !== filtered.length ? `(${filtered.length}/${total})` : `(${total})`;
+      if (!filtered.length) {
+        ul.innerHTML = '<li><button disabled>(본인 작성 건 없음)</button></li>';
+        attachPager(ul, 'feedbacks', 0, 0, 'h2[data-section="feedbacks"]', () => {});
+        return;
+      }
+      const totalPages = Math.max(1, Math.ceil(filtered.length / FEEDBACKS_PAGE_SIZE));
+      if (state.feedbacksPage >= totalPages) state.feedbacksPage = totalPages - 1;
+      if (state.feedbacksPage < 0) state.feedbacksPage = 0;
+      const start = state.feedbacksPage * FEEDBACKS_PAGE_SIZE;
+      const pageItems = filtered.slice(start, start + FEEDBACKS_PAGE_SIZE);
+
+      const showUser = state.viewMode === 'all';
+      ul.innerHTML = pageItems
+        .map((f) => {
+          const userTag = showUser && f.user ? `<span class="user-tag" title="질문자">👤${escapeHtml(f.user)}</span>` : '';
+          const userInTooltip = f.user ? ` · 👤${f.user}` : '';
+          return `<li>
+            <button class="with-meta" data-doc-path="${escapeAttr(f.path)}" title="${escapeAttr((f.improvement || f.title) + userInTooltip)}">
+              <span>${escapeHtml(f.title)}${userTag}</span>
+              <span class="meta">${escapeHtml(f.date)}</span>
+            </button>
+            <button class="del-btn" data-del-feedback-path="${escapeAttr(f.path)}" title="레포에서 삭제">×</button>
+          </li>`;
+        })
+        .join('');
+      ul.querySelectorAll('[data-doc-path]').forEach((b) => {
+        b.addEventListener('click', () => showSidebarDoc(b.dataset.docPath, b.title));
+      });
+      ul.querySelectorAll('[data-del-feedback-path]').forEach((b) => {
+        b.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteArtifactFile('feedback', b.dataset.delFeedbackPath);
+        });
+      });
+      attachPager(ul, 'feedbacks', totalPages, state.feedbacksPage, 'h2[data-section="feedbacks"]', (p) => {
+        state.feedbacksPage = p;
+        renderFeedbacksList();
+      });
+    }
+
+    // 합의문·개선요청 클릭 시 가운데 패널에 표시. state.currentDoc 은 건드리지 않음
+    // (정책/스토리보드만 챗 컨텍스트에 들어가야 함)
+    async function showSidebarDoc(path, title) {
+      $$('.docs li button.active').forEach((b) => b.classList.remove('active'));
+      $$('.docs li button').forEach((b) => {
+        if (b.dataset.docPath === path) b.classList.add('active');
+      });
+      $('#doc-title').textContent = title || path;
+      // qa/feedback 의 개선건은 협업자 입장에선 일자 + 적용 룰만 보면 충분 (질문·답변 전문 생략)
+      if (path.startsWith('qa/feedback/') && !/\/readme\.md$/i.test(path)) {
+        await renderFeedbackSimplified(path, title);
+      } else {
+        await renderDocBody(path);
+      }
+    }
+
+    // 개선건 간소화 뷰 — 일자 + 질문자 + 적용 룰 (개선 요청 사항) 만 노출
+    async function renderFeedbackSimplified(path, title) {
+      $('#doc-content').className = '';
+      $('#doc-content').innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      try {
+        const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const md = data.content;
+        const date = (md.match(/^\|\s*일자\s*\|\s*([^|]+?)\s*\|\s*$/m) || [])[1]?.trim() || '';
+        const user = (md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m) || [])[1]?.trim() || '익명';
+        const improvementMatch = md.match(/##\s*개선\s*요청\s*사항\s*\n+([\s\S]*?)(?=\n##|$)/);
+        const improvement = improvementMatch ? improvementMatch[1].trim() : '(내용 없음)';
+        const docPathMatch = md.match(/^\|\s*관련\s*문서\s*\|\s*`([^`]+)`\s*\|\s*$/m);
+        const relatedDoc = docPathMatch ? docPathMatch[1] : '';
+
+        $('#doc-content').innerHTML = `
+          <h1>${escapeHtml(title || '개선 요청')}</h1>
+          <table>
+            <tr><th>📅 일자</th><td>${escapeHtml(date)}</td></tr>
+            <tr><th>👤 질문자</th><td>${escapeHtml(user)}</td></tr>
+            ${relatedDoc ? `<tr><th>📄 관련 문서</th><td><code>${escapeHtml(relatedDoc)}</code></td></tr>` : ''}
+          </table>
+          <h2>📌 적용 룰 (AI 가 다음 답변부터 반영)</h2>
+          <blockquote style="border-left:3px solid var(--primary); background: var(--user-bg); padding:10px 14px; margin:12px 0; border-radius:4px;">${marked.parse(improvement)}</blockquote>
+          <p style="color:var(--muted);font-size:12px;margin-top:24px">상세 (원본 질문·답변) 가 필요하면 <a href="https://github.com/${CONFIG?.deployment?.github_repo || 'lunasoft-org/heythere_planer'}/blob/main/${escapeAttr(path)}" target="_blank">GitHub 에서 원본 md 보기</a>.</p>
+        `;
+      } catch (err) {
+        $('#doc-content').innerHTML = `<p style="color:var(--error)">로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
+      }
+    }
+
+    /* ────────── 접기/펼치기 섹션 ────────── */
+    function loadCollapsed() {
+      try {
+        state.collapsed = JSON.parse(localStorage.getItem(COLLAPSED_STORAGE_KEY) || '{}');
+      } catch (_) {
+        state.collapsed = {};
+      }
+    }
+    function saveCollapsed() {
+      try {
+        localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(state.collapsed));
+      } catch (_) {}
+    }
+    function setupCollapsibles() {
+      $$('h2.collapsible').forEach((h) => {
+        const key = h.dataset.section;
+        // 이 h2 와 다음 h2 사이의 모든 형제 요소를 매번 다시 계산 — renderRecentList 같은
+        // 동적 렌더 함수가 페이저를 나중에 ul 뒤에 삽입하기 때문에 캐시하면 못 잡음.
+        const getFollowers = () => {
+          const out = [];
+          let n = h.nextElementSibling;
+          while (n && n.tagName !== 'H2') {
+            out.push(n);
+            n = n.nextElementSibling;
+          }
+          return out;
+        };
+        if (state.collapsed[key]) {
+          h.classList.add('collapsed');
+          getFollowers().forEach((el) => el.classList.add('hidden'));
+        }
+        h.addEventListener('click', () => {
+          const willCollapse = !h.classList.contains('collapsed');
+          h.classList.toggle('collapsed', willCollapse);
+          getFollowers().forEach((el) => el.classList.toggle('hidden', willCollapse));
+          state.collapsed[key] = willCollapse;
+          saveCollapsed();
+        });
+      });
+    }
+
+    /* ────────── 유틸 ────────── */
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
+
+    function relTime(ts) {
+      if (!ts) return '';
+      const diff = Date.now() - ts;
+      const min = 60 * 1000, hr = 60 * min, day = 24 * hr;
+      if (diff < min) return '방금';
+      if (diff < hr) return `${Math.floor(diff / min)}분`;
+      if (diff < day) return `${Math.floor(diff / hr)}시간`;
+      if (diff < 7 * day) return `${Math.floor(diff / day)}일`;
+      const d = new Date(ts);
+      return `${d.getMonth() + 1}/${d.getDate()}`;
+    }
+
+    /* ────────── 사용자 식별 ────────── */
+    function loadUser() {
+      try {
+        state.user = JSON.parse(localStorage.getItem(USER_STORAGE_KEY) || '{"name":""}');
+      } catch (_) { state.user = { name: '' }; }
+    }
+    function saveUser() {
+      try { localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(state.user)); } catch (_) {}
+    }
+    function renderUserDisplay() {
+      const span = $('#user-display');
+      if (!span) return;
+      span.textContent = state.user.name ? `👤 ${state.user.name}` : '👤 (이름 미설정)';
+    }
+    function openUserDialog(firstVisit = false) {
+      $('#user-name-input').value = state.user.name || '';
+      $('#user-cancel').textContent = firstVisit ? '나중에' : '취소';
+      $('#user-dialog').showModal();
+      $('#user-name-input').focus();
+    }
+    function setupUserUi() {
+      renderUserDisplay();
+      $('#change-user-link').addEventListener('click', (e) => { e.preventDefault(); openUserDialog(false); });
+      $('#user-dialog').addEventListener('close', () => {
+        const dlg = $('#user-dialog');
+        if (dlg.returnValue !== 'default') return;
+        const name = $('#user-name-input').value.trim();
+        if (!name) { toast('이름을 입력해주세요', 'error'); return; }
+        state.user.name = name;
+        saveUser();
+        renderUserDisplay();
+        // 본인 식별 가능해졌으니 전달이력 다시 그려서 mineOnly 가 의미 있게 동작
+        renderDecisionsList();
+        toast(`사용자 설정 저장됨: ${name}`);
+      });
+      // 글로벌 보기 범위 토글 — 전달이력·개선건 공통
+      const radios = $$('input[name="view-mode"]');
+      const saved = localStorage.getItem(VIEW_MODE_KEY);
+      if (saved === 'mine' || saved === 'all') state.viewMode = saved;
+      radios.forEach((r) => {
+        r.checked = r.value === state.viewMode;
+        r.addEventListener('change', () => {
+          if (!r.checked) return;
+          state.viewMode = r.value;
+          try { localStorage.setItem(VIEW_MODE_KEY, r.value); } catch (_) {}
+          state.decisionsPage = 0;
+          state.feedbacksPage = 0;
+          renderDecisionsList();
+          renderFeedbacksList();
+        });
+      });
+    }
+
+    /* ────────── 알림 — 기획자가 내 요청 처리 시 ────────── */
+    function loadSeenDecisions() {
+      try { state.seenDecisions = JSON.parse(localStorage.getItem(SEEN_DECISIONS_KEY) || '{}'); }
+      catch (_) { state.seenDecisions = {}; }
+    }
+    function saveSeenDecisions() {
+      try { localStorage.setItem(SEEN_DECISIONS_KEY, JSON.stringify(state.seenDecisions)); } catch (_) {}
+    }
+    // 내 요청 중 마지막으로 본 시점과 status 가 달라진 항목 리스트
+    function findStatusChanges() {
+      if (!state.user.name) return [];
+      const mine = state.decisions.filter((d) => (d.user || '').toLowerCase() === state.user.name.toLowerCase());
+      const changes = [];
+      for (const d of mine) {
+        const lastSeen = state.seenDecisions[d.path]; // undefined 면 처음 보는 항목
+        if (lastSeen !== undefined && lastSeen !== d.status && d.status !== 'pending') {
+          changes.push({ path: d.path, title: d.title, status: d.status, statusText: d.statusText, lastSeen });
+        }
+      }
+      return changes;
+    }
+    function checkAndShowStatusNotification() {
+      const banner = $('#status-banner');
+      // 처음 진입 (seen 비어 있음) — 현재 상태를 baseline 으로 기록, 알림은 안 띄움.
+      if (Object.keys(state.seenDecisions).length === 0 && state.decisions.length) {
+        state.decisions.forEach((d) => { state.seenDecisions[d.path] = d.status; });
+        saveSeenDecisions();
+        banner.style.display = 'none';
+        return;
+      }
+      const changes = findStatusChanges();
+      if (!changes.length) { banner.style.display = 'none'; return; }
+      const counts = { applied: 0, rejected: 0 };
+      changes.forEach((c) => { counts[c.status] = (counts[c.status] || 0) + 1; });
+      const parts = [];
+      if (counts.applied) parts.push(`✅ ${counts.applied}건 적용`);
+      if (counts.rejected) parts.push(`🚫 ${counts.rejected}건 보류`);
+      $('#status-banner-msg').textContent = `🔔 내 변경 요청 ${changes.length}건이 처리됐어요 (${parts.join(', ')})`;
+      banner.style.display = 'flex';
+      $('#status-banner-detail').onclick = (e) => {
+        e.preventDefault();
+        // 첫 변경된 항목을 가운데 패널에 표시
+        const first = changes[0];
+        showSidebarDoc(first.path, first.title);
+      };
+      $('#status-banner-close').onclick = () => {
+        // 모두 본 것으로 표시
+        state.decisions.forEach((d) => { state.seenDecisions[d.path] = d.status; });
+        saveSeenDecisions();
+        banner.style.display = 'none';
+      };
+    }
+    // 페이지 떠날 때 (또는 사용자가 닫기 누르지 않아도) 다음 진입 비교 위해
+    // 초기 진입 시점 상태를 'seen' 으로 기록할지 결정 — 사용자가 "확인" 누르기 전까진 안 함.
+    // 단, 마지막 본 항목이 아예 없으면(첫 진입) 첫 로드 시점을 baseline 으로 저장.
+    function bootstrapSeenIfFirstVisit() {
+      if (Object.keys(state.seenDecisions).length === 0 && state.decisions.length) {
+        state.decisions.forEach((d) => { state.seenDecisions[d.path] = d.status; });
+        saveSeenDecisions();
+      }
+    }
+
+    // 사용자에게 friendly 한 에러 메시지로 매핑 (Phase 2 ⑫ 항목 일부 선반영)
+    function friendlyError(err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // 타임아웃 (Worker abort) — claude CLI 가 느려서 끊긴 경우. 서버는 살아 있음.
+      if (/aborted|timeout|context canceled|signal is aborted/i.test(msg)) {
+        return '답변 생성이 너무 오래 걸려 끊겼어요. claude CLI 로그를 확인하거나 더 짧게 질문해보세요.';
+      }
+      if (/HTTP 530|Local server unreachable/i.test(msg)) {
+        return 'PC 서버가 꺼져 있어요. 호스트에게 start.bat 실행 요청하세요.';
+      }
+      if (/Failed to fetch|NetworkError/i.test(msg)) {
+        return '서버 연결이 안 돼요. 인터넷 또는 Worker URL 을 확인하세요.';
+      }
+      return msg.slice(0, 200);
+    }
+
+    (async () => {
+      try {
+        await bootstrap();
+      } catch (err) {
+        document.body.innerHTML = `<div style="font-family:-apple-system,sans-serif;padding:60px 40px;text-align:center;background:#f6f7f9;color:#1f2328"><div style="max-width:500px;margin:0 auto"><div style="font-size:48px;margin-bottom:16px">⚙️</div><h2 style="margin:0 0 8px;font-size:20px">설정이 필요합니다</h2><p style="color:#6b7280;font-size:14px;margin:0 0 24px">${err.message}</p><p style="color:#9ca3af;font-size:12px">자세한 안내는 <code>docs/01-INSTALL.md</code> 참고</p></div></div>`;
+        return;
+      }
+      init();
+    })();
+  </script>
+</body>
+</html>

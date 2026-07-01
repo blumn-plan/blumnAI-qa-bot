@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>heythere_planer · 기획자 모드</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E🎯%3C/text%3E%3C/svg%3E" />
+  <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --border: #e3e5e8;
+      --text: #1f2328;
+      --muted: #6b7280;
+      --primary: #6366f1;
+      --primary-fg: #ffffff;
+      --success: #16a34a;
+      --warning: #d97706;
+      --error: #dc2626;
+      --pending-bg: #fef3c7;
+      --pending-fg: #b45309;
+      --applied-bg: #dcfce7;
+      --applied-fg: #166534;
+      --rejected-bg: #fee2e2;
+      --rejected-fg: #b91c1c;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.55; }
+
+    .app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; overflow: hidden; }
+
+    /* 좌측 */
+    aside.list { background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+    aside.list .header { padding: 12px 16px; font-weight: 600; font-size: 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    aside.list .header .back { margin-left: auto; font-size: 11px; color: var(--muted); text-decoration: none; }
+    aside.list .header .back:hover { color: var(--primary); }
+    aside.list .guide-link { padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; background: #fefce8; }
+    aside.list .guide-link button { width: 100%; text-align: left; padding: 6px 10px; border: 1px solid #fde68a; border-radius: 6px; background: #fffbeb; cursor: pointer; font-size: 12px; color: #854d0e; }
+    aside.list .guide-link button:hover { background: #fef3c7; }
+    aside.list .guide-link button.active { background: #fde68a; border-color: #f59e0b; }
+    aside.list .filter { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 4px; flex-wrap: wrap; flex-shrink: 0; }
+    aside.list .filter button { padding: 3px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); cursor: pointer; font-size: 11px; color: var(--text); }
+    aside.list .filter button.active { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+    aside.list .search { padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+    aside.list .search input { width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+    aside.list .search input:focus { outline: none; border-color: var(--primary); }
+    aside.list ul { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex: 1; min-height: 0; }
+    aside.list li { border-bottom: 1px solid var(--border); }
+    aside.list li button.item { width: 100%; text-align: left; padding: 10px 14px; border: 0; background: transparent; cursor: pointer; }
+    aside.list li button.item:hover { background: #f8fafc; }
+    aside.list li button.item.active { background: #eef2ff; border-left: 3px solid var(--primary); padding-left: 11px; }
+    aside.list li .row1 { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+    aside.list li .row1 .title { font-weight: 500; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    aside.list li .row1 .date { font-size: 10px; color: var(--muted); flex-shrink: 0; }
+    aside.list li .row2 .preview { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    aside.list li .status-pill { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 600; }
+    aside.list li .status-pill.pending { background: var(--pending-bg); color: var(--pending-fg); }
+    aside.list li .status-pill.applied { background: var(--applied-bg); color: var(--applied-fg); }
+    aside.list li .status-pill.rejected { background: var(--rejected-bg); color: var(--rejected-fg); }
+    aside.list .empty { padding: 40px 20px; color: var(--muted); text-align: center; font-size: 13px; }
+
+    /* 우측 */
+    main.detail { display: flex; flex-direction: column; background: var(--panel); min-width: 0; min-height: 0; }
+    main.detail .header { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    main.detail .header .title { font-weight: 600; font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    main.detail .actions { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; background: #fafbfc; flex-shrink: 0; }
+    main.detail .actions button { padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); cursor: pointer; font-size: 12px; }
+    main.detail .actions button:hover { background: #f1f5f9; }
+    main.detail .actions button.primary { background: var(--success); color: white; border-color: var(--success); }
+    main.detail .actions button.primary:hover { background: #15803d; }
+    main.detail .actions button.warning { background: var(--warning); color: white; border-color: var(--warning); }
+    main.detail .actions button.warning:hover { background: #b45309; }
+    main.detail .actions button.copy { background: var(--primary); color: white; border-color: var(--primary); }
+    main.detail .actions button.copy:hover { background: #4f46e5; }
+    main.detail .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+    main.detail article { padding: 20px 28px; overflow-y: auto; flex: 1; }
+    main.detail article h1, main.detail article h2, main.detail article h3 { margin-top: 20px; margin-bottom: 8px; }
+    main.detail article h1 { font-size: 20px; }
+    main.detail article h2 { font-size: 16px; }
+    main.detail article h3 { font-size: 14px; }
+    main.detail article table { border-collapse: collapse; margin: 10px 0; }
+    main.detail article th, main.detail article td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    main.detail article th { background: #f8fafc; }
+    main.detail article blockquote { border-left: 3px solid #fbbf24; background: #fffbeb; padding: 10px 14px; margin: 12px 0; border-radius: 4px; }
+    main.detail article code { background: #f1f3f5; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+    main.detail article pre { background: #f1f3f5; padding: 10px; border-radius: 6px; overflow-x: auto; }
+    main.detail .empty { padding: 60px 28px; color: var(--muted); text-align: center; }
+
+    .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--text); color: white; padding: 8px 16px; border-radius: 6px; font-size: 13px; z-index: 100; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .toast.show { opacity: 1; }
+    .toast.error { background: var(--error); }
+    .toast.success { background: var(--success); }
+
+    /* 알림 토글 버튼 */
+    aside.list .header .notif-btn { padding: 2px 9px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); cursor: pointer; font-size: 11px; line-height: 1.5; }
+    aside.list .header .notif-btn:hover { background: #f1f5f9; }
+    aside.list .header .notif-btn.granted { background: #dcfce7; border-color: #86efac; color: #166534; }
+    aside.list .header .notif-btn.denied { background: #fee2e2; border-color: #fecaca; color: #b91c1c; opacity: 0.7; cursor: not-allowed; }
+
+    /* 적용 메모 다이얼로그 */
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: none; align-items: center; justify-content: center; z-index: 200; }
+    .modal-backdrop.show { display: flex; }
+    .modal { background: var(--panel); border-radius: 10px; width: min(520px, 92vw); padding: 18px 20px; box-shadow: 0 12px 40px rgba(15, 23, 42, 0.25); }
+    .modal h3 { margin: 0 0 8px; font-size: 15px; }
+    .modal .desc { color: var(--muted); font-size: 12px; margin: 0 0 12px; line-height: 1.6; }
+    .modal textarea { width: 100%; min-height: 130px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; font-family: inherit; resize: vertical; }
+    .modal textarea:focus { outline: none; border-color: var(--primary); }
+    .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+    .modal button { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); cursor: pointer; font-size: 12px; }
+    .modal button:hover { background: #f1f5f9; }
+    .modal button.primary { background: var(--success); color: white; border-color: var(--success); }
+    .modal button.primary:hover { background: #15803d; }
+    .modal button.cancel { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="list">
+      <div class="header">🎯 기획자 모드 — 변경 요청 관리 <button id="notif-toggle" class="notif-btn" title="새 변경 요청이 들어올 때 브라우저 알림 받기 (이 탭이 열려 있어야 작동)">🔔 알림</button><a class="back" href="qa.html">← 협업자 모드로</a></div>
+      <div class="guide-link"><button id="show-guide" type="button">📘 변경 요청 처리 절차 안내 (가이드)</button></div>
+      <div class="filter" id="filter-bar">
+        <button data-filter="all" class="active">전체</button>
+        <button data-filter="pending">📋 대기</button>
+        <button data-filter="applied">✅ 적용</button>
+        <button data-filter="rejected">🚫 보류</button>
+      </div>
+      <div class="search"><input id="search" type="search" placeholder="제목·미리보기 검색" autocomplete="off" /></div>
+      <ul id="decision-list"><li><button class="item" disabled>로딩 중...</button></li></ul>
+    </aside>
+
+    <main class="detail">
+      <div class="header"><span class="title" id="detail-title">왼쪽에서 변경 요청을 선택하세요</span></div>
+      <div class="actions" id="action-bar" style="display:none">
+        <button id="btn-copy-prompt" class="copy" title="CLAUDE.md §B-2 흐름으로 Claude Code (Antigravity) 에 붙여넣어 즉시 정책 본문에 반영할 수 있는 프롬프트 복사">🤖 Antigravity 프롬프트 복사</button>
+        <button id="btn-copy-after" class="copy" title="변경 제안의 '✅ 변경 후' 텍스트만 클립보드로 (수동 붙여넣기용)">📋 본문만 복사</button>
+        <button id="btn-open-policy" title="관련 정책문서를 qa.html 새 탭으로">📄 관련 정책 열기</button>
+        <span style="flex:1"></span>
+        <button id="btn-apply" class="primary">✅ 적용함으로 표시</button>
+        <button id="btn-reject" class="warning">🚫 보류로 표시</button>
+        <button id="btn-pending">↺ 대기로 되돌리기</button>
+      </div>
+      <article id="detail-body" class="empty">
+        좌측 리스트에서 항목을 클릭하면 여기에 상세가 표시됩니다.<br>
+        새 변경 요청은 협업자가 <a href="qa.html">qa.html</a> 에서 "📤 기획자에게 전달" 을 누를 때마다 추가됩니다.
+      </article>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- 적용 메모 다이얼로그 — [✅ 적용] 클릭 시 표시 -->
+  <div id="apply-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="apply-modal-title">
+    <div class="modal">
+      <h3 id="apply-modal-title">✅ 적용 처리</h3>
+      <p class="desc">
+        협업자가 요청한 내용과 <b>실제로 적용·배포한 내용이 다르면</b> 아래에 차이를 적어주세요.<br>
+        입력한 내용은 합의문 본문에 메모로 남아 협업자가 확인합니다. 비워두면 그대로 적용 처리됩니다.
+      </p>
+      <textarea id="apply-note" placeholder="예) 요청한 14일 대신 카친캠 실측에 맞춰 1~27일로 적용, 장기 미접속은 300~365일로 조정"></textarea>
+      <div class="row">
+        <button class="cancel" id="apply-cancel">취소</button>
+        <button class="primary" id="apply-as-is">그대로 적용</button>
+        <button class="primary" id="apply-with-note">메모 저장하고 적용</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /* ────────── 🔒 비밀번호 게이트 — 기획자 모드 진입 제한 ──────────
+       클라이언트 측 friction barrier (소스 노출됨 — 진짜 보안 아님, "아무나 우연히 진입" 방지용).
+       세션 단위 저장: 탭 닫으면 다시 입력해야 함. */
+    (function gate() {
+      const PASSWORD = 'wjdtkdalswpdl';
+      const KEY = 'qa-planner-auth-v1';
+      if (sessionStorage.getItem(KEY) === 'ok') return;
+      const input = prompt('🔒 기획자 모드\n비밀번호를 입력하세요:');
+      if (input === null) {
+        // 취소 — 협업자 모드로 리다이렉트
+        location.href = 'qa.html';
+        throw new Error('Auth cancelled');
+      }
+      if (input !== PASSWORD) {
+        document.documentElement.innerHTML = '<body style="font-family:-apple-system,sans-serif;padding:60px 40px;text-align:center;background:#f6f7f9;color:#1f2328"><div style="max-width:400px;margin:0 auto"><div style="font-size:48px;margin-bottom:16px">🔒</div><h2 style="margin:0 0 8px;font-size:20px">접근 권한 없음</h2><p style="color:#6b7280;font-size:14px;margin:0 0 24px">비밀번호가 올바르지 않습니다.</p><a href="qa.html" style="display:inline-block;padding:8px 16px;background:#6366f1;color:white;text-decoration:none;border-radius:6px;font-size:13px">← 협업자 모드로 돌아가기</a></div></body>';
+        throw new Error('Auth failed');
+      }
+      sessionStorage.setItem(KEY, 'ok');
+    })();
+
+    /* ────────── 컨피그 로드 ──────────
+       blumnAI-qa-bot.config.yml 의 deployment.worker_url 에서 자동 로드.
+       사용자 레포 루트에 yml 이 있어야 동작. */
+    let WORKER_URL = null;
+    let CONFIG = null;
+    async function getConfig() {
+      if (CONFIG) return CONFIG;
+      const tryPaths = ['../../blumnAI-qa-bot.config.yml', './blumnAI-qa-bot.config.yml', '/blumnAI-qa-bot.config.yml'];
+      for (const p of tryPaths) {
+        try {
+          const res = await fetch(p);
+          if (res.ok) {
+            CONFIG = jsyaml.load(await res.text());
+            return CONFIG;
+          }
+        } catch (e) {}
+      }
+      throw new Error('blumnAI-qa-bot.config.yml 을 찾을 수 없습니다 — 사용자 레포 루트에 있는지 확인하세요');
+    }
+    async function bootstrap() {
+      const cfg = await getConfig();
+      WORKER_URL = cfg?.deployment?.worker_url;
+      if (!WORKER_URL || WORKER_URL.startsWith('__')) {
+        throw new Error('blumnAI-qa-bot.config.yml 의 deployment.worker_url 를 채워주세요');
+      }
+    }
+
+    const state = {
+      decisions: [],
+      currentPath: null,
+      currentContent: '',
+      currentIsGuide: false,
+      filter: 'all',
+      search: '',
+    };
+    const GUIDE_PATH = 'qa/decisions/README.md';
+    const POLL_INTERVAL_MS = 30000; // 30초마다 새 변경 요청 polling
+    const SEEN_KEY = 'qa-planner-seen-decisions-v1';
+    const NOTIF_OPT_KEY = 'qa-planner-notif-opt-v1';
+    let isInitialLoad = true;
+    const seenPaths = (() => {
+      try { return new Set(JSON.parse(localStorage.getItem(SEEN_KEY) || '[]')); }
+      catch (e) { return new Set(); }
+    })();
+    function persistSeen() {
+      try { localStorage.setItem(SEEN_KEY, JSON.stringify([...seenPaths])); } catch (e) {}
+    }
+
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => document.querySelectorAll(sel);
+
+    function toast(msg, type = '') {
+      const el = $('#toast');
+      el.textContent = msg;
+      el.className = 'toast show' + (type ? ' ' + type : '');
+      setTimeout(() => { el.className = 'toast'; }, 3000);
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function escapeAttr(s) { return escapeHtml(s); }
+
+    // README 등 가이드 파일은 리스트에서 제외 — 별도 노란 버튼으로 접근.
+    // server.js 가 이미 filter 하지만 캐시·옛 코드 대비 client 안전망.
+    function isGuidePath(p) {
+      return typeof p === 'string' && /\/readme\.md$/i.test(p);
+    }
+
+    async function loadDecisions() {
+      try {
+        const res = await fetch(`${WORKER_URL}/list-decisions?limit=100`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const items = (data.items || []).filter((d) => !isGuidePath(d.path));
+
+        // 신규 pending 감지 (initial load 는 알림 안 함 — 기존 것을 새것으로 오인 방지)
+        if (!isInitialLoad) {
+          const newPending = items.filter((d) => d.status === 'pending' && !seenPaths.has(d.path));
+          newPending.forEach((d) => fireNewDecisionNotification(d));
+        }
+        // seen 갱신 (모든 path)
+        items.forEach((d) => seenPaths.add(d.path));
+        persistSeen();
+
+        state.decisions = items;
+        renderList();
+        isInitialLoad = false;
+      } catch (err) {
+        if (isInitialLoad) {
+          $('#decision-list').innerHTML = `<li><button class="item" disabled style="color:var(--error)">로드 실패: ${escapeHtml(friendlyError(err))}</button></li>`;
+          isInitialLoad = false;
+        }
+        // polling 중 일시 실패는 silent
+      }
+    }
+
+    /* ────────── 알림 (브라우저 Notification API) ────────── */
+    function notifSupported() { return 'Notification' in window; }
+    function updateNotifButton() {
+      const btn = $('#notif-toggle');
+      if (!btn) return;
+      if (!notifSupported()) { btn.style.display = 'none'; return; }
+      btn.classList.remove('granted', 'denied');
+      if (Notification.permission === 'granted') {
+        btn.classList.add('granted');
+        btn.textContent = '🔔 알림 ON';
+        btn.title = '브라우저 알림이 켜져 있습니다. 새 변경 요청이 들어오면 OS 알림이 뜹니다.';
+      } else if (Notification.permission === 'denied') {
+        btn.classList.add('denied');
+        btn.textContent = '🔕 알림 차단';
+        btn.title = '브라우저 설정에서 알림이 차단됨. 주소창 좌측 자물쇠 → 사이트 설정에서 허용으로 변경.';
+      } else {
+        btn.textContent = '🔔 알림 받기';
+        btn.title = '클릭하여 브라우저 알림 권한을 허용하세요. 새 변경 요청 도착 시 OS 알림으로 알려드립니다.';
+      }
+    }
+    async function toggleNotif() {
+      if (!notifSupported()) {
+        toast('이 브라우저는 알림을 지원하지 않습니다', 'error');
+        return;
+      }
+      if (Notification.permission === 'granted') {
+        toast('이미 알림이 켜져 있습니다', 'success');
+        return;
+      }
+      if (Notification.permission === 'denied') {
+        toast('브라우저 설정에서 차단됨 → 주소창 좌측 자물쇠 → 사이트 설정 → 알림 허용', 'error');
+        return;
+      }
+      try {
+        const result = await Notification.requestPermission();
+        updateNotifButton();
+        if (result === 'granted') {
+          toast('알림이 켜졌습니다. 새 변경 요청이 들어오면 알려드릴게요.', 'success');
+          // 데모 알림 1번
+          new Notification('🎯 기획자 모드 — 알림 활성화', {
+            body: '새 변경 요청 도착 시 여기로 알려드립니다.',
+            tag: 'qa-planner-init',
+          });
+        } else {
+          toast('알림 권한이 부여되지 않았습니다', 'error');
+        }
+      } catch (e) {
+        toast('알림 권한 요청 실패: ' + e.message, 'error');
+      }
+    }
+    function fireNewDecisionNotification(d) {
+      if (!notifSupported() || Notification.permission !== 'granted') return;
+      try {
+        const n = new Notification(`📋 새 변경 요청 — ${d.title || '제목 없음'}`, {
+          body: (d.preview || d.statusText || '협업자가 전달한 변경 요청입니다.').slice(0, 140),
+          tag: d.path, // 같은 항목 중복 알림 방지
+          requireInteraction: false,
+        });
+        n.onclick = () => {
+          window.focus();
+          selectDecision(d.path);
+          n.close();
+        };
+      } catch (e) {
+        // Notification 생성 실패는 silent
+      }
+    }
+
+    function renderList() {
+      const ul = $('#decision-list');
+      // 필터 + 검색 적용
+      const q = state.search.trim().toLowerCase();
+      const filtered = state.decisions.filter((d) => {
+        if (state.filter !== 'all' && d.status !== state.filter) return false;
+        if (q) {
+          const hay = (d.title + ' ' + (d.preview || '') + ' ' + (d.statusText || '')).toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+      if (!filtered.length) {
+        ul.innerHTML = '<li><div class="empty">표시할 항목이 없습니다</div></li>';
+        return;
+      }
+      ul.innerHTML = filtered.map((d) => {
+        const active = d.path === state.currentPath ? ' active' : '';
+        const pillClass = d.status || 'pending';
+        const pillText = d.status === 'applied' ? '✅' : d.status === 'rejected' ? '🚫' : '📋';
+        return `<li>
+          <button class="item${active}" data-path="${escapeAttr(d.path)}">
+            <div class="row1">
+              <span class="status-pill ${pillClass}">${pillText}</span>
+              <span class="title">${escapeHtml(d.title)}</span>
+              <span class="date">${escapeHtml(d.date)}</span>
+            </div>
+            <div class="row2"><span class="preview">${escapeHtml(d.preview || d.statusText || '—')}</span></div>
+          </button>
+        </li>`;
+      }).join('');
+      ul.querySelectorAll('button.item[data-path]').forEach((b) => {
+        b.addEventListener('click', () => selectDecision(b.dataset.path));
+      });
+    }
+
+    async function selectDecision(p) {
+      state.currentPath = p;
+      state.currentIsGuide = false;
+      // 가이드 버튼 active 해제
+      $('#show-guide').classList.remove('active');
+      renderList();
+      const d = state.decisions.find((x) => x.path === p);
+      $('#detail-title').textContent = d?.title || p;
+      $('#detail-body').className = '';
+      $('#detail-body').innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      $('#action-bar').style.display = 'flex';
+
+      try {
+        const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(p)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        state.currentContent = data.content;
+        $('#detail-body').innerHTML = marked.parse(data.content);
+        const policy = extractPolicyPath(data.content);
+        $('#btn-open-policy').disabled = !policy;
+        $('#btn-open-policy').dataset.policy = policy || '';
+        const afterText = extractChangeAfter(data.content);
+        $('#btn-copy-after').disabled = !afterText;
+        $('#btn-copy-after').dataset.after = afterText || '';
+      } catch (err) {
+        $('#detail-body').innerHTML = `<p style="color:var(--error)">로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
+      }
+    }
+
+    // 규칙 안내 (README) 표시 — 상태 변경 액션은 숨김
+    async function showGuide() {
+      state.currentPath = GUIDE_PATH;
+      state.currentIsGuide = true;
+      $('#show-guide').classList.add('active');
+      // 변경 요청 리스트 active 해제
+      $$('#decision-list button.item.active').forEach((b) => b.classList.remove('active'));
+      $('#detail-title').textContent = '📘 변경 요청 처리 절차 안내';
+      $('#detail-body').className = '';
+      $('#detail-body').innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      $('#action-bar').style.display = 'none'; // 가이드엔 상태 변경 액션 없음
+
+      try {
+        const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(GUIDE_PATH)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        $('#detail-body').innerHTML = marked.parse(data.content);
+      } catch (err) {
+        $('#detail-body').innerHTML = `<p style="color:var(--error)">규칙 안내 로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
+      }
+    }
+    $('#show-guide').addEventListener('click', showGuide);
+
+    // decision md 본문에서 "📄 대상 파일: `projects/.../X.md`" 또는 상단 표의 "관련 문서" 추출
+    function extractPolicyPath(md) {
+      let m = md.match(/📄\s*대상\s*파일:\s*`([^`]+)`/);
+      if (m) return m[1];
+      m = md.match(/\|\s*관련\s*문서\s*\|\s*`([^`]+)`\s*\|/);
+      if (m) return m[1];
+      return '';
+    }
+
+    // "✅ 변경 후: ..." 행 추출 (한눈 요약 blockquote 또는 답변 본문 안)
+    function extractChangeAfter(md) {
+      const m = md.match(/✅\s*변경\s*후:?\s*([^\n]+(?:\n>?\s*[^\n>][^\n]*)*)/);
+      if (!m) return '';
+      // blockquote prefix "> " 제거
+      return m[1].split('\n').map((l) => l.replace(/^>\s?/, '').trim()).filter(Boolean).join('\n').trim();
+    }
+
+    /* 필터 / 검색 */
+    $('#filter-bar').addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-filter]');
+      if (!btn) return;
+      state.filter = btn.dataset.filter;
+      $$('#filter-bar button').forEach((b) => b.classList.toggle('active', b === btn));
+      renderList();
+    });
+    $('#search').addEventListener('input', (e) => {
+      state.search = e.target.value;
+      renderList();
+    });
+
+    /* 액션 버튼 */
+    $('#btn-copy-after').addEventListener('click', async () => {
+      const txt = $('#btn-copy-after').dataset.after;
+      if (!txt) { toast('변경 후 본문을 찾을 수 없어요', 'error'); return; }
+      try {
+        await navigator.clipboard.writeText(txt);
+        toast('변경 후 본문을 복사했어요. 정책 md 에 붙여넣으세요', 'success');
+      } catch (_) {
+        toast('클립보드 접근 실패 — 본문을 수동 선택해주세요', 'error');
+      }
+    });
+
+    /* 🤖 Antigravity 프롬프트 복사 — CLAUDE.md §B-2 흐름 */
+    function buildAntigravityPrompt(decision, content) {
+      const policy = extractPolicyPath(content) || '(합의문 본문 참고)';
+      const title = decision.title || '제목 없음';
+      const date = decision.date || '';
+      return `[CLAUDE.md §B-2] 다음 합의를 정책에 반영해줘.
+
+📋 합의문: ${decision.path}
+📍 대상 정책: ${policy}
+📌 제목: ${title}${date ? '  (' + date + ')' : ''}
+
+위 합의문(qa/decisions/) 의 "✅ 변경 후" 본문을 §B-2 수행 순서대로 적용:
+1. A-0 형식으로 결론 + 변경 위치 + 신규 본문 요약 한 번 확인 (필요 시 OK 떨어질 때까지 의논)
+2. 2단계 박제: cp policies/X_v0.1.A.md policies/_old/X_v0.1.A.md → git mv policies/X_v0.1.A.md policies/X_v0.1.B.md (cp+cp 금지)
+3. 본문 수정: h1 타이틀 버전 표기 변경 + 버전 이력 표 상단 행 추가 + 📍 변경 위치 빠른 색인 표 신설 + 본문 패치
+4. cross-link 일괄 갱신: rg "X_v0\\.1\\.A" --type md 결과를 신버전 파일명으로 모두 치환 (docs/CHANGELOG.md 의 과거 항목은 예외)
+5. 연관 코드 수정: 본문 변경이 코드 SSoT 영향 (CAMPAIGN_TYPES, *Step.tsx 등) 이면 admin 레포에서 함께 수정
+6. 검증: ls policies/ 에 구버전 없는지 + rg 로 cross-link 0건 확인
+7. commit + push: 정책 commit 1건 + 코드 commit 1건 분리. 메시지에 변경 §X-Y 와 사유 포함
+
+이 채널은 qa/decisions/ 에 합의문 생성 안 함 (기록은 git history + 정책 버전 이력 표).`;
+    }
+    $('#btn-copy-prompt').addEventListener('click', async () => {
+      if (!state.currentPath) { toast('항목 선택 안 됨', 'error'); return; }
+      const d = state.decisions.find((x) => x.path === state.currentPath);
+      if (!d) { toast('합의문 데이터 없음', 'error'); return; }
+      const prompt = buildAntigravityPrompt(d, state.currentContent);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        toast('§B-2 프롬프트 복사 완료. Claude Code (Antigravity) 에 붙여넣어 적용하세요.', 'success');
+      } catch (_) {
+        // Fallback — 보이는 textarea 로 execCommand
+        const ta = document.createElement('textarea');
+        ta.value = prompt;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); toast('§B-2 프롬프트 복사 완료 (폴백)', 'success'); }
+        catch (e) { toast('복사 실패 — 콘솔에 출력합니다', 'error'); console.log(prompt); }
+        document.body.removeChild(ta);
+      }
+    });
+
+    $('#btn-open-policy').addEventListener('click', () => {
+      const policy = $('#btn-open-policy').dataset.policy;
+      if (!policy) { toast('관련 정책 경로를 찾을 수 없어요', 'error'); return; }
+      // qa.html 이 ?doc=<path> 쿼리 받아 자동 선택. 새 탭으로 열기.
+      window.open(`qa.html?doc=${encodeURIComponent(policy)}`, '_blank');
+    });
+
+    $('#btn-apply').addEventListener('click', openApplyModal);
+    $('#btn-reject').addEventListener('click', () => {
+      const reason = prompt('보류 사유를 한 줄로 적어주세요 (협업자에게 표시됩니다)');
+      if (reason === null) return; // 취소
+      updateStatus('rejected', { reason: reason.trim() || '사유 미입력' });
+    });
+    $('#btn-pending').addEventListener('click', () => {
+      if (!confirm('"대기" 로 되돌리시겠습니까? (재검토 표시)')) return;
+      updateStatus('pending');
+    });
+
+    /* 적용 메모 다이얼로그 — 협업자 요청과 실제 적용 내용 차이를 합의문에 기록 */
+    function openApplyModal() {
+      if (!state.currentPath) { toast('항목 선택 안 됨', 'error'); return; }
+      const ta = $('#apply-note');
+      ta.value = extractExistingPlannerNote(state.currentContent);
+      $('#apply-modal').classList.add('show');
+      setTimeout(() => ta.focus(), 0);
+    }
+    function closeApplyModal() { $('#apply-modal').classList.remove('show'); }
+    // 기존 메모 블록이 있으면 textarea 에 prefill — "메모 수정" 시나리오 대응
+    function extractExistingPlannerNote(md) {
+      if (!md) return '';
+      const m = md.match(/<!--\s*planner-note:start\s*-->[\s\S]*?\n([\s\S]*?)\n<!--\s*planner-note:end\s*-->/);
+      if (!m) return '';
+      // 헤더(### 📝 ...) + blockquote 인용(> ...) 제거 후 본문만 추출
+      return m[1].split('\n')
+        .filter((l) => !/^###\s+📝/.test(l) && !/^>\s/.test(l))
+        .join('\n').trim();
+    }
+    $('#apply-cancel').addEventListener('click', closeApplyModal);
+    $('#apply-modal').addEventListener('click', (e) => { if (e.target === $('#apply-modal')) closeApplyModal(); });
+    $('#apply-as-is').addEventListener('click', () => {
+      closeApplyModal();
+      updateStatus('applied', { note: '' });
+    });
+    $('#apply-with-note').addEventListener('click', () => {
+      const note = $('#apply-note').value.trim();
+      if (!note) { toast('메모를 입력하거나 "그대로 적용" 을 눌러주세요', 'error'); return; }
+      closeApplyModal();
+      updateStatus('applied', { note });
+    });
+
+    async function updateStatus(status, extra = {}) {
+      if (!state.currentPath) { toast('항목 선택 안 됨', 'error'); return; }
+      const body = { path: state.currentPath, status, ...extra };
+      try {
+        const res = await fetch(`${WORKER_URL}/update-decision-status`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        }
+        const data = await res.json();
+        toast(`상태 변경 완료: ${data.statusText}`, 'success');
+        // 로컬 state 갱신 후 리스트 + 상세 재로드
+        const d = state.decisions.find((x) => x.path === state.currentPath);
+        if (d) { d.status = data.status; d.statusText = data.statusText; }
+        renderList();
+        await selectDecision(state.currentPath); // 우측 본문도 새로 (git push 된 새 내용 반영)
+      } catch (err) {
+        toast(`상태 변경 실패: ${friendlyError(err)}`, 'error');
+      }
+    }
+
+    function friendlyError(err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/aborted|timeout|context canceled/i.test(msg)) return '응답이 너무 늦어요 (서버 또는 git push 지연)';
+      if (/HTTP 530|Local server unreachable/i.test(msg)) return 'PC 서버가 꺼져 있어요. 호스트에게 start.bat 실행 요청하세요.';
+      if (/HTTP 502/i.test(msg) || /<!DOCTYPE\s+html/i.test(msg)) return 'PC 서버와의 터널 연결이 일시 끊겼어요. 30초~1분 후 다시 시도해 주세요. (해결 안 되면 호스트에게 제이나미봇 재기동 요청)';
+      if (/HTTP 522/i.test(msg)) return 'PC 서버가 응답 못 하고 있어요 (멈춤 또는 git 작업 hang). 호스트에게 제이나미봇 재기동 요청 — Origin connection timeout';
+      if (/HTTP 503|HTTP 504/i.test(msg)) return '서버가 잠시 응답 못 해요. 잠시 후 다시 시도해 주세요.';
+      if (/Failed to fetch|NetworkError/i.test(msg)) return '서버 연결이 안 돼요';
+      return msg.slice(0, 200);
+    }
+
+    /* 초기 로드 + polling + 알림 버튼 상태 */
+    (async () => {
+      try {
+        await bootstrap();
+      } catch (err) {
+        document.body.innerHTML = `<div style="font-family:-apple-system,sans-serif;padding:60px 40px;text-align:center;background:#f6f7f9;color:#1f2328"><div style="max-width:500px;margin:0 auto"><div style="font-size:48px;margin-bottom:16px">⚙️</div><h2 style="margin:0 0 8px;font-size:20px">설정이 필요합니다</h2><p style="color:#6b7280;font-size:14px;margin:0 0 24px">${err.message}</p><p style="color:#9ca3af;font-size:12px">자세한 안내는 <code>docs/01-INSTALL.md</code> 참고</p></div></div>`;
+        return;
+      }
+      $('#notif-toggle').addEventListener('click', toggleNotif);
+      updateNotifButton();
+      loadDecisions();
+      setInterval(loadDecisions, POLL_INTERVAL_MS);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "@lunasoft/blumnai-qa-bot",
+  "version": "0.0.0",
+  "description": "정책문서 기반 QA 챗봇 — 사내 팀별 설치 모듈",
+  "private": true,
+  "bin": {
+    "create-blumnAI-qa-bot": "create/index.js"
+  },
+  "files": [
+    "apps",
+    "bot",
+    "create",
+    "docs",
+    "examples",
+    "CHANGELOG.md",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "echo 'TODO: 6단계에서 스캐폴더 동작 테스트 추가'"
+  },
+  "author": "Lunasoft",
+  "license": "UNLICENSED"
+}

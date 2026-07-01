@@ -1,0 +1,35 @@
+# 샘플팀 컨피그 — 동작 테스트용
+# 실제로 다른 팀이 이 파일을 채우면 봇이 동작합니다.
+
+ui:
+  brand_name: "샘플팀 QA Bot"
+  team_name: "샘플팀"
+
+deployment:
+  github_repo: "lunasoft-org/sample-policy-repo"
+  worker_url: "https://sample-qa-bot.example.workers.dev"   # 실제 배포 후 받은 URL 로 교체
+  pages_url: "https://lunasoft-org.github.io/sample-policy-repo"
+
+projects:
+  - id: sample
+    label: "샘플 프로젝트"
+    policies_dir: "projects/sample/docs/policies"
+    storyboards_dir: ""
+    storyboard_layout: "flat"
+    code_repo: ""
+
+storage:
+  decisions_dir: "qa/decisions"
+  feedback_dir: "qa/feedback"
+
+bot:
+  mode: "auto"
+  claude_model: "claude-sonnet-4-6"
+  answer_rules: ".blumnAI-qa-bot/answer-rules.md"
+  system_prompt:
+    locale: "ko"
+    product_description: "샘플팀의 가상 운영 어드민"
+
+security:
+  allowed_origins:
+    - "https://lunasoft-org.github.io"
