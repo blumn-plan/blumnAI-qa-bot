@@ -30,8 +30,18 @@ export interface Env {
   TUNNEL_URL?: string;
 }
 
-const POLICIES_DIR = 'projects/admin_v1/docs/policies';
-const STORYBOARDS_DIR = 'projects/admin_v1/docs/storyboards';
+/**
+ * 프로젝트별 정책·스토리보드 경로.
+ * 각 서비스 팀이 자기 프로젝트 ID (예: `admin_v1`, `ad_v1`, `backoffice_v2`) 를
+ * `/list-docs?project=<id>` 로 넘기면 그에 맞는 경로로 fetch.
+ */
+function policiesDir(project: string): string {
+  return `projects/${project}/docs/policies`;
+}
+function storyboardsDir(project: string): string {
+  return `projects/${project}/docs/storyboards`;
+}
+const DEFAULT_PROJECT_FALLBACK = 'admin_v1';
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -65,7 +75,7 @@ export default {
           result = { status: 'ok', service: 'planner-qa-bot', mode: env.TUNNEL_URL ? 'proxy' : 'direct' };
           break;
         case '/list-docs':
-          result = await listDocs(env);
+          result = await listDocs(env, url.searchParams.get('project') || DEFAULT_PROJECT_FALLBACK);
           break;
         case '/doc':
           result = await getDoc(env, url.searchParams.get('path') ?? '');
@@ -184,8 +194,11 @@ interface DocEntry {
   screen?: string; // storyboard 의 경우 화면명
 }
 
-async function listDocs(env: Env): Promise<{ docs: DocEntry[] }> {
-  const policyEntries = await fetchDirListing(env, POLICIES_DIR);
+async function listDocs(env: Env, project: string): Promise<{ project: string; docs: DocEntry[] }> {
+  const polDir = policiesDir(project);
+  const storyDir = storyboardsDir(project);
+
+  const policyEntries = await fetchDirListing(env, polDir).catch(() => [] as ContentEntry[]);
   const policies: DocEntry[] = policyEntries
     .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_'))
     .map((e) => ({
@@ -194,24 +207,37 @@ async function listDocs(env: Env): Promise<{ docs: DocEntry[] }> {
       kind: 'policy' as const,
     }));
 
-  // storyboards 는 화면별 폴더 안에 `{화면명}_storyboard_v0.1.0.md`
-  const storyboardDirs = await fetchDirListing(env, STORYBOARDS_DIR);
+  // storyboards — 두 레이아웃 모두 지원:
+  //   nested: storyboards/<screen>/<screen>_storyboard_v0.1.0.md  (admin_v1 스타일)
+  //   flat:   storyboards/<screen>_storyboard_v0.1.0.md           (backoffice_v2 스타일)
+  const storyboardEntries = await fetchDirListing(env, storyDir).catch(() => [] as ContentEntry[]);
   const storyboards: DocEntry[] = [];
-  for (const dir of storyboardDirs) {
-    if (dir.type !== 'dir') continue;
-    const inner = await fetchDirListing(env, dir.path).catch(() => []);
-    const mdFile = inner.find((f) => f.type === 'file' && f.name.endsWith('.md'));
-    if (mdFile) {
+  for (const e of storyboardEntries) {
+    if (e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && e.name.toLowerCase() !== 'readme.md') {
+      // flat 케이스
+      const screen = e.name.replace(/_storyboard_v\d+\.\d+\.\d+\.md$/, '').replace(/\.md$/, '');
       storyboards.push({
-        path: mdFile.path,
-        title: dir.name.replace(/_/g, ' '),
+        path: e.path,
+        title: screen.replace(/_/g, ' '),
         kind: 'storyboard' as const,
-        screen: dir.name,
+        screen,
       });
+    } else if (e.type === 'dir') {
+      // nested 케이스
+      const inner = await fetchDirListing(env, e.path).catch(() => [] as ContentEntry[]);
+      const md = inner.find((f) => f.type === 'file' && f.name.endsWith('.md'));
+      if (md) {
+        storyboards.push({
+          path: md.path,
+          title: e.name.replace(/_/g, ' '),
+          kind: 'storyboard' as const,
+          screen: e.name,
+        });
+      }
     }
   }
 
-  return { docs: [...policies, ...storyboards].sort((a, b) => a.title.localeCompare(b.title)) };
+  return { project, docs: [...policies, ...storyboards].sort((a, b) => a.title.localeCompare(b.title)) };
 }
 
 /* ────────── 2. /doc?path= ────────── */
