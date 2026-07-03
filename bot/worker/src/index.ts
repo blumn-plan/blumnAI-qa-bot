@@ -72,11 +72,46 @@ export default {
           break;
         case '/qa':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          result = await askClaude(env, await req.json());
-          break;
+          return await askClaude(env, await req.json(), corsHeaders);
         case '/forward':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
           result = await forwardToDecisions(env, await req.json());
+          break;
+        case '/list-projects':
+          result = await listProjects(env);
+          break;
+        case '/list-decisions':
+          result = await listDecisions(env, parseLimit(url.searchParams.get('limit')));
+          break;
+        case '/list-feedbacks':
+          result = await listFeedbacks(env, parseLimit(url.searchParams.get('limit')));
+          break;
+        case '/update-decision-status':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await updateDecisionStatus(env, await req.json());
+          break;
+        case '/delete-decision':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await deleteDecision(env, await req.json());
+          break;
+        case '/feedback':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await saveFeedback(env, await req.json());
+          break;
+        case '/delete-feedback':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await deleteFeedback(env, await req.json());
+          break;
+        case '/save-storyboard-image':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await saveStoryboardImage(env, await req.json());
+          break;
+        case '/list-storyboard-images':
+          result = await listStoryboardImages(env, url.searchParams.get('dir') ?? '', url.searchParams.get('prefix') ?? '');
+          break;
+        case '/delete-storyboard-image':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await deleteStoryboardImage(env, await req.json());
           break;
         default:
           return jsonResponse({ error: 'not found' }, 404, corsHeaders);
@@ -183,9 +218,15 @@ async function listDocs(env: Env): Promise<{ docs: DocEntry[] }> {
 
 async function getDoc(env: Env, path: string): Promise<{ path: string; content: string }> {
   if (!path) throw new Error('path query required');
-  // 안전: 우리 정한 디렉토리 안에서만 허용
-  if (!path.startsWith(POLICIES_DIR) && !path.startsWith(STORYBOARDS_DIR)) {
-    throw new Error('path must be under policies or storyboards');
+  // 안전: path traversal 차단 + 허용 prefix 검증
+  if (path.includes('..')) throw new Error('invalid path');
+  const allowed =
+    path.startsWith('projects/') ||
+    path.startsWith('qa/decisions/') ||
+    path.startsWith('qa/feedback/') ||
+    path === 'CLAUDE.md';
+  if (!allowed) {
+    throw new Error('path must be under projects/, qa/decisions/, qa/feedback/, or CLAUDE.md');
   }
   const content = await fetchTextFile(env, path);
   return { path, content };
@@ -222,13 +263,24 @@ function transformImageUrls(docPath: string, content: string): string {
   });
 }
 
-async function askClaude(env: Env, body: QARequest): Promise<QAResponse> {
-  if (!body.question?.trim()) throw new Error('question required');
+async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): Promise<Response> {
+  const ndjsonHeaders: HeadersInit = {
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    ...corsHeaders,
+  };
+
+  if (!body.question?.trim()) {
+    return errorNdjson('question required', ndjsonHeaders);
+  }
 
   const model = env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 
-  // 컨텍스트: CLAUDE.md + 선택된 doc (이미지 URL 절대 경로 변환) + 최근 qa/feedback
-  const claudeRules = await fetchTextFile(env, 'CLAUDE.md');
+  // 컨텍스트: CLAUDE.md + 선택된 doc + 최근 qa/feedback
+  const claudeRules = await fetchTextFile(env, 'CLAUDE.md').catch((err) => {
+    console.warn('[qa-bot] CLAUDE.md fetch failed:', err instanceof Error ? err.message : String(err));
+    return '';
+  });
   const rawFocusedDoc = body.docPath ? await fetchTextFile(env, body.docPath).catch(() => '') : '';
   const focusedDoc = body.docPath ? transformImageUrls(body.docPath, rawFocusedDoc) : rawFocusedDoc;
   const recentFeedback = await fetchRecentFeedback(env);
@@ -241,7 +293,6 @@ async function askClaude(env: Env, body: QARequest): Promise<QAResponse> {
     hasAttachments: !!body.attachments?.length,
   });
 
-  // 사용자 메시지 — 첨부 이미지 있으면 vision content blocks, 없으면 plain string
   type ContentBlock =
     | { type: 'text'; text: string }
     | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
@@ -260,7 +311,7 @@ async function askClaude(env: Env, body: QARequest): Promise<QAResponse> {
     { role: 'user', content: userContent },
   ];
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const upstream = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -272,22 +323,60 @@ async function askClaude(env: Env, body: QARequest): Promise<QAResponse> {
       max_tokens: 2048,
       system: systemPrompt,
       messages,
+      stream: true,
     }),
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Claude API ${res.status}: ${text.slice(0, 500)}`);
+  if (!upstream.ok || !upstream.body) {
+    const errText = await upstream.text();
+    return errorNdjson(`Claude API ${upstream.status}: ${errText.slice(0, 500)}`, ndjsonHeaders);
   }
 
-  const data = (await res.json()) as { content: { type: string; text: string }[] };
-  const answer = data.content
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n')
-    .trim();
+  // Anthropic SSE → NDJSON 변환 스트림
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  let buffer = '';
 
-  return { answer: answer || '(답변이 비어 있어요. 다시 질문해 주세요.)', modelUsed: model };
+  const transformStream = new TransformStream<Uint8Array, Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(JSON.stringify({ type: 'meta', appliedFeedbacks: [], via: 'anthropic-api' }) + '\n'));
+    },
+    transform(chunk, controller) {
+      buffer += decoder.decode(chunk, { stream: true });
+      let nlIdx;
+      while ((nlIdx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nlIdx);
+        buffer = buffer.slice(nlIdx + 1);
+        if (!line.startsWith('data: ')) continue;
+        const jsonStr = line.slice(6).trim();
+        if (jsonStr === '[DONE]' || !jsonStr) continue;
+        try {
+          const evt = JSON.parse(jsonStr) as {
+            type: string;
+            delta?: { type: string; text?: string };
+            error?: { message?: string };
+          };
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+            controller.enqueue(encoder.encode(JSON.stringify({ type: 'text', content: evt.delta.text }) + '\n'));
+          } else if (evt.type === 'error') {
+            controller.enqueue(encoder.encode(JSON.stringify({ type: 'error', message: evt.error?.message || 'Anthropic API error' }) + '\n'));
+          }
+        } catch (_) { /* skip parse error */ }
+      }
+    },
+  });
+
+  return new Response(upstream.body.pipeThrough(transformStream), {
+    status: 200,
+    headers: ndjsonHeaders,
+  });
+}
+
+function errorNdjson(message: string, headers: HeadersInit): Response {
+  const body =
+    JSON.stringify({ type: 'meta', appliedFeedbacks: [], via: 'anthropic-api' }) + '\n' +
+    JSON.stringify({ type: 'error', message }) + '\n';
+  return new Response(body, { status: 200, headers });
 }
 
 interface SystemPromptParts {
@@ -456,11 +545,15 @@ async function fetchDirListing(env: Env, path: string): Promise<ContentEntry[]> 
 }
 
 async function fetchTextFile(env: Env, path: string): Promise<string> {
-  const res = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(path)}`, {
-    headers: { Accept: 'application/vnd.github.raw' },
-  });
+  // 표준 JSON 응답 + base64 decode 사용. `Accept: application/vnd.github.raw` 는
+  // private repo 일부 파일에서 403 을 반환하는 케이스가 있어 회피.
+  const res = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(path)}`);
   if (!res.ok) throw new Error(`fetch file ${path}: ${res.status}`);
-  return await res.text();
+  const data = (await res.json()) as { content?: string; encoding?: string };
+  if (data.encoding === 'base64' && typeof data.content === 'string') {
+    return base64ToUtf8(data.content);
+  }
+  return (data.content ?? '') as string;
 }
 
 function encodeContentPath(p: string): string {
@@ -477,4 +570,439 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   }
   return await fetch(url, { ...init, headers });
+}
+
+/* ────────── /list-projects ────────── */
+
+const PROJECT_LABELS: Record<string, string> = {
+  admin_v1: '어드민 v1 (admin_v1)',
+  backoffice_v2: '백오피스 v2 (backoffice_v2)',
+};
+const DEFAULT_PROJECT = 'admin_v1';
+
+async function listProjects(env: Env): Promise<{ projects: Array<{ id: string; label: string }>; default: string }> {
+  const entries = await fetchDirListing(env, 'projects').catch(() => [] as ContentEntry[]);
+  const projects: Array<{ id: string; label: string }> = [];
+  for (const e of entries) {
+    if (e.type !== 'dir') continue;
+    const hasDocs = await fetchDirListing(env, `${e.path}/docs`).then(() => true).catch(() => false);
+    if (!hasDocs) continue;
+    projects.push({ id: e.name, label: PROJECT_LABELS[e.name] || e.name });
+  }
+  return { projects, default: DEFAULT_PROJECT };
+}
+
+/* ────────── /list-decisions, /list-feedbacks ────────── */
+
+interface QaFileEntry {
+  path: string;
+  title: string;
+  date: string;
+  status?: string;
+  statusText?: string;
+  preview?: string;
+  user?: string;
+  improvement?: string;
+}
+
+function parseLimit(raw: string | null): number {
+  const n = parseInt(raw || '20', 10);
+  if (!Number.isFinite(n) || n <= 0) return 20;
+  return Math.min(n, 100);
+}
+
+// YYYY-MM-DD-<slug>(-NN).md → {path, title, date}
+function parseQaFileName(name: string, dir: string): QaFileEntry {
+  const m = name.match(/^(\d{4}-\d{2}-\d{2})-(.+?)(?:-\d{2})?\.md$/);
+  return {
+    path: `${dir}/${name}`,
+    title: m ? m[2].replace(/-/g, ' ') : name.replace(/\.md$/, ''),
+    date: m ? m[1] : '',
+  };
+}
+
+async function listMdDir(env: Env, subdir: string, limit: number): Promise<QaFileEntry[]> {
+  const entries = await fetchDirListing(env, subdir).catch(() => [] as ContentEntry[]);
+  return entries
+    .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && e.name.toLowerCase() !== 'readme.md')
+    .map((e) => e.name)
+    .sort((a, b) => b.localeCompare(a))
+    .slice(0, limit)
+    .map((n) => parseQaFileName(n, subdir));
+}
+
+function parseDecisionStatus(md: string): { status: string; statusText: string } {
+  const m = md.match(/^\|\s*기획자[^|]*\|\s*([^|]+?)\s*\|\s*$/m);
+  if (!m) return { status: 'pending', statusText: '📋 대기' };
+  const text = m[1].trim();
+  if (/✅/.test(text)) return { status: 'applied', statusText: text };
+  if (/🚫/.test(text)) return { status: 'rejected', statusText: text };
+  return { status: 'pending', statusText: text };
+}
+
+async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEntry[] }> {
+  const items = await listMdDir(env, 'qa/decisions', limit);
+  await Promise.all(
+    items.map(async (it) => {
+      try {
+        const md = await fetchTextFile(env, it.path);
+        const { status, statusText } = parseDecisionStatus(md);
+        it.status = status;
+        it.statusText = statusText;
+        const proposal = md.match(/📍\s*위치:\s*([^\n]+)/);
+        it.preview = proposal ? proposal[1].trim() : '';
+        const userMatch = md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m);
+        it.user = userMatch ? userMatch[1].trim() : '';
+      } catch (_) {
+        it.status = 'pending';
+        it.statusText = '';
+        it.preview = '';
+        it.user = '';
+      }
+    }),
+  );
+  return { items };
+}
+
+async function listFeedbacks(env: Env, limit: number): Promise<{ items: QaFileEntry[] }> {
+  const items = await listMdDir(env, 'qa/feedback', limit);
+  await Promise.all(
+    items.map(async (it) => {
+      try {
+        const md = await fetchTextFile(env, it.path);
+        const m = md.match(/##\s*개선 요청 사항\s*\n+([^\n]+)/);
+        it.improvement = m ? m[1].slice(0, 80) : '';
+        const userMatch = md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m);
+        it.user = userMatch ? userMatch[1].trim() : '';
+      } catch (_) {
+        it.improvement = '';
+        it.user = '';
+      }
+    }),
+  );
+  return { items };
+}
+
+/* ────────── /update-decision-status ────────── */
+
+const PLANNER_NOTE_START = '<!-- planner-note:start -->';
+const PLANNER_NOTE_END = '<!-- planner-note:end -->';
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function upsertPlannerNote(md: string, note: string): string {
+  const reBlock = new RegExp(
+    `\\n*${escapeRegex(PLANNER_NOTE_START)}[\\s\\S]*?${escapeRegex(PLANNER_NOTE_END)}\\n*$`,
+  );
+  const withoutBlock = md.replace(reBlock, '').replace(/\s+$/, '');
+  if (!note) return withoutBlock + '\n';
+  const date = new Date().toISOString().slice(0, 10);
+  const block =
+    `\n\n${PLANNER_NOTE_START}\n` +
+    `### 📝 기획자 적용 메모\n\n` +
+    `> ${date} · 협업자가 요청한 내용과 실제 적용된 내용에 차이가 있습니다.\n\n` +
+    `${note}\n` +
+    `${PLANNER_NOTE_END}\n`;
+  return withoutBlock + block;
+}
+
+function base64ToUtf8(b64: string): string {
+  const bin = atob(b64.replace(/\s/g, ''));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+interface UpdateDecisionStatusBody {
+  path: string;
+  status: 'pending' | 'applied' | 'rejected';
+  note?: string;
+  reason?: string;
+  date?: string;
+}
+
+async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): Promise<{ path: string; status: string; statusText: string; committed: boolean }> {
+  if (!body.path || !/^qa\/decisions\/[^/]+\.md$/.test(body.path)) {
+    throw new Error('valid qa/decisions/ path required');
+  }
+  const allowed = ['pending', 'applied', 'rejected'];
+  if (!allowed.includes(body.status)) throw new Error(`status must be one of ${allowed.join(', ')}`);
+
+  const note = typeof body.note === 'string' ? body.note.trim() : '';
+
+  let newText: string;
+  if (body.status === 'applied') {
+    const date = body.date || new Date().toISOString().slice(0, 10);
+    newText = note ? `✅ ${date} 적용 (메모 있음)` : `✅ ${date} 적용`;
+  } else if (body.status === 'rejected') {
+    const reason = (body.reason || '').trim() || '사유 미입력';
+    newText = `🚫 보류 (${reason})`;
+  } else {
+    newText = '📋 대기';
+  }
+
+  const contentRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.path)}`);
+  if (!contentRes.ok) throw new Error(`fetch decision file ${body.path}: ${contentRes.status}`);
+  const contentData = (await contentRes.json()) as { sha: string; content: string; encoding: string };
+  const md = contentData.encoding === 'base64' ? base64ToUtf8(contentData.content) : contentData.content;
+
+  const re = /^(\|\s*기획자[^|]*\|\s*)([^|]+?)(\s*\|\s*)$/m;
+  if (!md.match(re)) throw new Error('"기획자 ..." 표 행을 찾지 못했습니다 (decision md 첫 표 양식 확인)');
+
+  let replaced = md.replace(re, `$1${newText}$3`);
+  if (body.status === 'applied') {
+    replaced = upsertPlannerNote(replaced, note);
+  }
+
+  if (replaced === md) {
+    return { path: body.path, status: body.status, statusText: newText, committed: false };
+  }
+
+  const putRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.path)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `qa-decision status=${body.status}: ${body.path.split('/').pop()}`,
+      content: utf8ToBase64(replaced),
+      sha: contentData.sha,
+    }),
+  });
+  if (!putRes.ok) {
+    const text = await putRes.text();
+    throw new Error(`GitHub update ${putRes.status}: ${text.slice(0, 500)}`);
+  }
+  return { path: body.path, status: body.status, statusText: newText, committed: true };
+}
+
+/* ────────── /delete-decision ────────── */
+
+async function deleteDecision(env: Env, body: { path: string }): Promise<{ path: string; deleted: boolean; committed: boolean }> {
+  if (!body.path || !/^qa\/decisions\/[^/]+\.md$/.test(body.path)) {
+    throw new Error('valid qa/decisions/ path required');
+  }
+  const contentRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.path)}`);
+  if (contentRes.status === 404) {
+    return { path: body.path, deleted: false, committed: false };
+  }
+  if (!contentRes.ok) throw new Error(`fetch decision file ${body.path}: ${contentRes.status}`);
+  const contentData = (await contentRes.json()) as { sha: string };
+
+  const delRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.path)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({
+      message: `qa-decision delete: ${body.path.split('/').pop()}`,
+      sha: contentData.sha,
+    }),
+  });
+  if (!delRes.ok) {
+    const text = await delRes.text();
+    throw new Error(`GitHub delete ${delRes.status}: ${text.slice(0, 500)}`);
+  }
+  return { path: body.path, deleted: true, committed: true };
+}
+
+/* ────────── /feedback ────────── */
+
+interface FeedbackBody {
+  improvement: string;
+  question: string;
+  answer: string;
+  title?: string;
+  docPath?: string;
+  user?: string;
+}
+
+async function saveFeedback(env: Env, body: FeedbackBody): Promise<{ feedbackPath: string; commitSha: string; htmlUrl: string }> {
+  if (!body.improvement?.trim()) throw new Error('improvement required');
+  if (!body.question?.trim()) throw new Error('question required');
+  if (!body.answer?.trim()) throw new Error('answer required');
+
+  const today = new Date().toISOString().slice(0, 10);
+  const slug = slugify(body.title || body.improvement.slice(0, 30) || body.question.slice(0, 30));
+
+  // 같은 날 slug 충돌 시 suffix
+  let relPath = `qa/feedback/${today}-${slug}.md`;
+  let suffix = 1;
+  while ((await fileExists(env, relPath)) && suffix < 100) {
+    relPath = `qa/feedback/${today}-${slug}-${String(suffix).padStart(2, '0')}.md`;
+    suffix++;
+  }
+  if (suffix >= 100) throw new Error('too many feedback files today with same slug');
+
+  const md = renderFeedbackMarkdown({
+    today,
+    docPath: body.docPath,
+    title: body.title || slug,
+    question: body.question,
+    answer: body.answer,
+    improvement: body.improvement,
+    user: body.user,
+  });
+
+  const putRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(relPath)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `feedback(qa): ${slug.slice(0, 40)}\n\n협업자 챗에서 답변 개선 요청. 다음 응답부터 qa/feedback/ 로드되어 자동 반영.`,
+      content: utf8ToBase64(md),
+    }),
+  });
+  if (!putRes.ok) {
+    const text = await putRes.text();
+    throw new Error(`GitHub create ${putRes.status}: ${text.slice(0, 500)}`);
+  }
+  const data = (await putRes.json()) as { content: { sha: string; html_url: string }; commit: { sha: string; html_url: string } };
+  return {
+    feedbackPath: relPath,
+    commitSha: data.commit.sha,
+    htmlUrl: data.commit.html_url,
+  };
+}
+
+async function fileExists(env: Env, path: string): Promise<boolean> {
+  const res = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(path)}`);
+  return res.status < 400;
+}
+
+function renderFeedbackMarkdown(p: {
+  today: string;
+  docPath?: string;
+  title: string;
+  question: string;
+  answer: string;
+  improvement: string;
+  user?: string;
+}): string {
+  return `# ${p.title}
+
+| 항목 | 내용 |
+|---|---|
+| 일자 | ${p.today} |
+| 질문자 | ${p.user || '익명'} |
+| 관련 문서 | ${p.docPath ? '\`' + p.docPath + '\`' : '(미지정)'} |
+| 유형 | 답변 개선 요청 (chat) |
+
+## 개선 요청 사항
+
+${p.improvement}
+
+## 원본 컨텍스트
+
+### 질문
+
+${p.question}
+
+### 답변 (개선 대상)
+
+${p.answer}
+
+## 적용 룰
+
+향후 동일·유사 컨텍스트의 답변 작성 시 위 "개선 요청 사항" 을 반영하세요.
+같은 카테고리 (길이·톤·시각적 묘사·예시 등) 의 피드백이 누적되면 강조해서 적용.
+`;
+}
+
+/* ────────── /delete-feedback ────────── */
+
+async function deleteFeedback(env: Env, body: { path: string }): Promise<{ path: string; deleted: boolean; committed: boolean }> {
+  if (!body.path || !/^qa\/feedback\/[^/]+\.md$/.test(body.path)) {
+    throw new Error('valid qa/feedback/ path required');
+  }
+  const contentRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.path)}`);
+  if (contentRes.status === 404) {
+    return { path: body.path, deleted: false, committed: false };
+  }
+  if (!contentRes.ok) throw new Error(`fetch feedback file ${body.path}: ${contentRes.status}`);
+  const contentData = (await contentRes.json()) as { sha: string };
+
+  const delRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.path)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({
+      message: `qa-feedback delete: ${body.path.split('/').pop()}`,
+      sha: contentData.sha,
+    }),
+  });
+  if (!delRes.ok) {
+    const text = await delRes.text();
+    throw new Error(`GitHub delete ${delRes.status}: ${text.slice(0, 500)}`);
+  }
+  return { path: body.path, deleted: true, committed: true };
+}
+
+/* ────────── /save-storyboard-image ────────── */
+
+async function saveStoryboardImage(env: Env, body: { targetPath: string; dataUrl: string }): Promise<{ saved: boolean; path: string; bytes: number }> {
+  if (!body.targetPath) throw new Error('targetPath required');
+  if (!body.dataUrl) throw new Error('dataUrl required');
+  const pathOk = /^projects\/[^/]+\/docs\/storyboards\/[^/]+\/images\/[^/]+\.(png|jpe?g|gif|webp)$/i.test(body.targetPath);
+  if (!pathOk) {
+    throw new Error('targetPath 는 projects/<project>/docs/storyboards/<storyboard>/images/<filename>.(png|jpg|jpeg|gif|webp) 형식이어야 합니다');
+  }
+  const match = String(body.dataUrl).match(/^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/i);
+  if (!match) throw new Error('dataUrl 은 data:image/<png|jpg|jpeg|gif|webp>;base64,... 형식이어야 합니다');
+  const base64Content = match[2].replace(/\s/g, '');
+
+  const existRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.targetPath)}`);
+  const existSha = existRes.ok ? ((await existRes.json()) as { sha: string }).sha : null;
+
+  const putRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.targetPath)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `storyboard-image: ${body.targetPath.split('/').pop()}`,
+      content: base64Content,
+      ...(existSha ? { sha: existSha } : {}),
+    }),
+  });
+  if (!putRes.ok) {
+    const text = await putRes.text();
+    throw new Error(`GitHub image upload ${putRes.status}: ${text.slice(0, 500)}`);
+  }
+  const bytes = Math.floor((base64Content.length * 3) / 4);
+  return { saved: true, path: body.targetPath, bytes };
+}
+
+/* ────────── /list-storyboard-images ────────── */
+
+async function listStoryboardImages(env: Env, dir: string, prefix: string): Promise<{ images: Array<{ filename: string; path: string }> }> {
+  if (!dir) throw new Error('dir required');
+  if (!prefix) throw new Error('prefix required');
+  if (!/^projects\/[^/]+\/docs\/storyboards\/[^/]+\/images$/.test(dir)) {
+    throw new Error('dir 은 projects/<project>/docs/storyboards/<storyboard>/images 형식이어야 합니다');
+  }
+  if (/[\/\\]|\.\./.test(prefix)) throw new Error('invalid prefix');
+
+  const entries = await fetchDirListing(env, dir).catch(() => [] as ContentEntry[]);
+  const re = new RegExp(`^${escapeRegex(prefix)}.*\\.(png|jpe?g|gif|webp)$`, 'i');
+  const images = entries
+    .filter((e) => e.type === 'file' && re.test(e.name))
+    .map((e) => ({ filename: e.name, path: `${dir}/${e.name}` }))
+    .sort((a, b) => a.filename.localeCompare(b.filename, undefined, { numeric: true }));
+  return { images };
+}
+
+/* ────────── /delete-storyboard-image ────────── */
+
+async function deleteStoryboardImage(env: Env, body: { targetPath: string }): Promise<{ deleted: boolean; path: string }> {
+  if (!body.targetPath) throw new Error('targetPath required');
+  const pathOk = /^projects\/[^/]+\/docs\/storyboards\/[^/]+\/images\/[^/]+\.(png|jpe?g|gif|webp)$/i.test(body.targetPath);
+  if (!pathOk) throw new Error('invalid targetPath');
+
+  const contentRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.targetPath)}`);
+  if (contentRes.status === 404) return { deleted: true, path: body.targetPath };
+  if (!contentRes.ok) throw new Error(`fetch image ${body.targetPath}: ${contentRes.status}`);
+  const { sha } = (await contentRes.json()) as { sha: string };
+
+  const delRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(body.targetPath)}`, {
+    method: 'DELETE',
+    body: JSON.stringify({
+      message: `storyboard-image delete: ${body.targetPath.split('/').pop()}`,
+      sha,
+    }),
+  });
+  if (!delRes.ok) {
+    const text = await delRes.text();
+    throw new Error(`GitHub delete image ${delRes.status}: ${text.slice(0, 500)}`);
+  }
+  return { deleted: true, path: body.targetPath };
 }
