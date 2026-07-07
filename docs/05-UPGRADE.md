@@ -2,6 +2,14 @@
 
 코어 봇 레포에 새 버전 (`v0.2.0` 등) 이 나왔을 때, 본인 서비스 정책 레포 안의 코어 사본을 최신으로 갱신하는 절차.
 
+> 🤝 **AI 에게 위임 가능한 작업이 대부분**입니다. Claude Code 창에 아래 프롬프트 하나로 끝나는 경우가 많아요:
+> ```
+> blumnAI-qa-bot 코어 v0.2.0 이 나왔어. 우리 레포의 .blumnAI-qa-bot/ 아래를
+> 최신으로 갱신하고, Worker 재배포까지 해줘. answer-rules.md 는 우리가 수정한
+> 상태니 유지.
+> ```
+> 다만 **breaking change 가 있으면 사용자 승인 필요** (아래 §Breaking Change 확인).
+
 ---
 
 ## 핵심 원칙 — 무엇이 덮어쓰이고 무엇이 보존되나
@@ -22,7 +30,7 @@
 
 ## 절차 — 3가지 방법
 
-### 방법 A. `npx upgrade-blumnAI-qa-bot` (장차 추가 예정)
+### 방법 A. `npx upgrade-blumnAI-qa-bot` — 🤖 향후 CLI (준비 중)
 
 미구현. 향후:
 ```bash
@@ -31,7 +39,24 @@ npx upgrade-blumnAI-qa-bot
 ```
 → 자동으로 코어 사본 갱신 + breaking change 알림 + Worker 재배포 안내.
 
-### 방법 B. 수동 갱신 (현재 권장)
+### 방법 B. 🤖 AI 에게 위임 (현재 권장)
+
+Claude Code 창에:
+```
+blumnAI-qa-bot 코어를 최신 버전으로 우리 정책 레포의 .blumnAI-qa-bot/ 아래에
+갱신해줘. apps/, bot/worker/, bot/local-server/ 3개. answer-rules.md,
+blumnAI-qa-bot.config.yml, projects/, qa/decisions/, qa/feedback/ 는 절대
+덮어쓰지 마.
+
+그 다음 .blumnAI-qa-bot/worker/ 에서 wrangler deploy 재실행.
+(C 모드면 저에게 start.bat 재기동하라고 알려줘.)
+
+version 파일 갱신하고, commit + push 는 저한테 확인받고 진행.
+```
+
+AI 가 안전하게 처리. 그 다음 👤 브라우저에서 Ctrl+Shift+R 로 확인.
+
+### 방법 B-수동. 개발자용 명령어
 
 VS Code 터미널에서:
 

@@ -4,6 +4,8 @@
 
 [01-INSTALL.md](01-INSTALL.md) §5 에서 참조하는 세부 가이드.
 
+> 🔒 **이 문서에서 다루는 값들 (API key, PAT) 은 시크릿입니다.** AI 채팅창에 절대 붙여넣지 마세요. 오직 wrangler 프롬프트 (터미널 "Enter a secret value:") 또는 본인 메모장에만 저장. 이 문서의 스텝 대부분은 👤 **본인이 직접** 브라우저에서 진행합니다.
+
 ---
 
 ## 어떤 자격증명이 필요한가 — 모드별
@@ -17,7 +19,7 @@ C 모드 추천 ([00-OVERVIEW](00-OVERVIEW.md#두-가지-운영-모드--c-모드
 
 ---
 
-## 1. GitHub Personal Access Token 발급 (2분)
+## 1. GitHub Personal Access Token 발급 (2분) — 👤 본인이 직접
 
 봇이 본인 정책 레포에서 md 읽고, qa/decisions/qa/feedback 에 쓸 권한.
 
@@ -36,7 +38,7 @@ C 모드 추천 ([00-OVERVIEW](00-OVERVIEW.md#두-가지-운영-모드--c-모드
 
 ---
 
-## 2. (A 모드만) Anthropic API key 발급 (2분)
+## 2. (A 모드만) Anthropic API key 발급 (2분) — 👤 본인이 직접
 
 > C 모드면 이 단계 스킵.
 
@@ -55,22 +57,20 @@ C 모드 추천 ([00-OVERVIEW](00-OVERVIEW.md#두-가지-운영-모드--c-모드
 
 > A 모드면 이 단계 스킵.
 
-### 3-1. Claude Code 데스크탑 앱 설치
+### 3-1. Claude Code 데스크탑 앱 설치 — 👤 본인이 직접
 
 https://claude.ai/code 에서 본인 OS 용 데스크탑 앱 다운로드 → 설치.
 
-### 3-2. claude CLI 동작 확인
+### 3-2. claude CLI 동작 확인 — 🤖 AI 에게 위임
 
-VS Code 터미널에서:
-
-```bash
-claude --version
+Claude Code 창에:
+```
+claude --version 실행해서 결과 알려줘. 안 되면 PATH 문제인지 확인해줘.
 ```
 
-→ 버전 번호 출력되면 OK. 안 되면:
-- Windows: PATH 설정 확인. 또는 `where claude` 로 경로 찾아서 `.blumnAI-qa-bot/local-server/server.js` 의 `CLAUDE_BIN` 환경변수로 직접 지정
+Windows PATH 문제 발생 시 AI 가 `where claude` 로 경로 찾아서 안내.
 
-### 3-3. Max 로그인 확인
+### 3-3. Max 로그인 확인 — 🤖 AI 에게 위임
 
 ```bash
 echo "say hello" | claude --print --no-color
@@ -82,7 +82,7 @@ echo "say hello" | claude --print --no-color
 
 ---
 
-## 4. (C 모드만) cloudflared 설치 (1분)
+## 4. (C 모드만) cloudflared 설치 (1분) — 🤖 AI 에게 위임 가능
 
 > A 모드면 이 단계 스킵. `start.bat` 가 `cloudflared` 를 호출해서 PC tunnel 띄움.
 
@@ -103,7 +103,9 @@ winget list cloudflared
 
 ---
 
-## 5. wrangler 에 시크릿 등록 (1분)
+## 5. wrangler 에 시크릿 등록 (1분) — 👤 본인이 직접 (시크릿 값 붙여넣기)
+
+> 🔒 **AI 에게 시크릿 값을 절대 알려주지 마세요.** wrangler 프롬프트에만 직접 입력. AI 는 명령어 실행만 위임 가능 — 예: `.blumnAI-qa-bot/worker/ 에서 npx wrangler secret put GITHUB_TOKEN 실행해줘. 프롬프트가 뜨면 나한테 알려줘.`
 
 VS Code 터미널에서 본인 레포의 `.blumnAI-qa-bot/worker/` 폴더로:
 
@@ -134,7 +136,7 @@ npx wrangler secret list
 
 ---
 
-## 6. (C 모드만) PC 부팅 시 자동 실행 (선택, 2분)
+## 6. (C 모드만) PC 부팅 시 자동 실행 (선택, 2분) — 👤 본인이 직접
 
 매번 PC 켤 때마다 `start.bat` 더블 클릭하기 귀찮으면:
 
