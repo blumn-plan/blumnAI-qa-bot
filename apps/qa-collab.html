@@ -277,9 +277,9 @@
     aside.docs h2.collapsible::before { content: '▾'; font-size: 9px; transition: transform 0.15s; display: inline-block; width: 10px; }
     aside.docs h2.collapsible.collapsed::before { transform: rotate(-90deg); }
     aside.docs h2 .count { color: var(--muted); font-weight: 400; font-size: 10px; margin-left: auto; }
-    aside.docs .recent-search-wrap { padding: 0 16px 6px; }
-    aside.docs .recent-search-wrap input { width: 100%; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
-    aside.docs .recent-search-wrap input:focus { outline: none; border-color: var(--primary); }
+    aside.docs .recent-search-wrap, aside.docs .doc-search-wrap { padding: 0 16px 6px; }
+    aside.docs .recent-search-wrap input, aside.docs .doc-search-wrap input { width: 100%; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+    aside.docs .recent-search-wrap input:focus, aside.docs .doc-search-wrap input:focus { outline: none; border-color: var(--primary); }
     aside.docs .decisions-filter { padding: 0 16px 6px; display: flex; gap: 4px; }
     aside.docs .decisions-filter select, aside.docs .decisions-filter input[type="date"] { flex: 1; min-width: 0; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; font-size: 11px; background: var(--panel); }
     aside.docs .decisions-filter select:focus, aside.docs .decisions-filter input[type="date"]:focus { outline: none; border-color: var(--primary); }
@@ -411,6 +411,7 @@
       </div>
       <div class="doc-list-wrap">
         <h2 class="collapsible" data-section="policies">정책문서 <span class="count" id="policies-count"></span></h2>
+        <div class="doc-search-wrap"><input id="doc-search" type="search" placeholder="정책·화면설계서 이름 검색" autocomplete="off" /></div>
         <ul id="policy-list"><li class="loading"><button disabled>로딩 중...</button></li></ul>
         <h2 class="collapsible" data-section="storyboards">화면설계서 <span class="count" id="storyboards-count"></span></h2>
         <ul id="storyboard-list"></ul>
@@ -489,6 +490,7 @@
 
       <div class="toolbar">
         <button id="clear-btn" type="button" title="현재 대화를 지우고 새 질문 시작">↻ 새 대화</button>
+        <button id="export-btn" type="button" title="현재 대화를 markdown 파일로 다운로드">💾 내보내기</button>
         <button id="forward-btn" class="primary" type="button" disabled title="이 답변을 기획자에게 변경 요청으로 전달 — qa/decisions/ 에 자동 저장됨">📤 기획자에게 전달</button>
         <button id="improve-toolbar-btn" class="improve" type="button" title="답변 규칙 추가 — 언제든 가능">📝 답변 규칙 추가</button>
         <span class="info-wrap">
@@ -926,18 +928,29 @@
     }
 
     function renderDocList() {
-      const policies = state.docs.filter((d) => d.kind === 'policy');
-      const storyboards = state.docs.filter((d) => d.kind === 'storyboard');
+      const q = ($('#doc-search')?.value || '').trim().toLowerCase();
+      const match = (d) => !q || d.title.toLowerCase().includes(q) || d.path.toLowerCase().includes(q);
+      const policies = state.docs.filter((d) => d.kind === 'policy' && match(d));
+      const storyboards = state.docs.filter((d) => d.kind === 'storyboard' && match(d));
 
-      $('#policy-list').innerHTML = policies.map(docButton).join('') || '<li><button disabled>(없음)</button></li>';
-      $('#storyboard-list').innerHTML = storyboards.map(docButton).join('') || '<li><button disabled>(없음)</button></li>';
-      $('#policies-count').textContent = policies.length ? `(${policies.length})` : '';
-      $('#storyboards-count').textContent = storyboards.length ? `(${storyboards.length})` : '';
+      const emptyMsg = (allCount) => allCount === 0
+        ? '(없음)'
+        : `(검색 결과 없음 — "${escapeHtml(q)}")`;
+      const totalPolicies = state.docs.filter((d) => d.kind === 'policy').length;
+      const totalStoryboards = state.docs.filter((d) => d.kind === 'storyboard').length;
+
+      $('#policy-list').innerHTML = policies.map(docButton).join('') || `<li><button disabled>${emptyMsg(totalPolicies)}</button></li>`;
+      $('#storyboard-list').innerHTML = storyboards.map(docButton).join('') || `<li><button disabled>${emptyMsg(totalStoryboards)}</button></li>`;
+      $('#policies-count').textContent = totalPolicies ? (q ? `(${policies.length}/${totalPolicies})` : `(${totalPolicies})`) : '';
+      $('#storyboards-count').textContent = totalStoryboards ? (q ? `(${storyboards.length}/${totalStoryboards})` : `(${totalStoryboards})`) : '';
 
       $$('.docs li button[data-path]').forEach((btn) => {
         btn.addEventListener('click', () => selectDoc(btn.dataset.path));
       });
     }
+
+    // 문서 검색 입력 — 실시간 필터
+    $('#doc-search').addEventListener('input', () => renderDocList());
 
     function docButton(d) {
       const pill = d.kind === 'storyboard' ? '<span class="pill storyboard">화면</span>' : '<span class="pill">정책</span>';
@@ -1567,6 +1580,61 @@
       $('#messages').innerHTML = '<div class="msg assistant"><div class="role">제이나미봇</div><div class="body">대화를 다시 시작했어요. 질문해주세요.</div></div>';
       $('#forward-btn').disabled = true;
       // improve-toolbar-btn 은 항상 활성 (답변 없어도 일반 규칙 추가 가능)
+    });
+
+    /* 💾 세션 내보내기 — 현재 대화를 markdown 파일로 다운로드 */
+    $('#export-btn').addEventListener('click', () => {
+      if (state.history.length === 0) { toast('내보낼 대화가 없어요', 'error'); return; }
+      const now = new Date();
+      const stamp = now.toISOString().slice(0, 19).replace(/[:T]/g, '-'); // 2026-07-10-18-40-00
+      const docTitle = state.currentDoc?.title || '(선택 문서 없음)';
+      const docPath = state.currentDoc?.path || '';
+      const userName = (typeof getUserName === 'function' ? getUserName() : '') || '(익명)';
+      const lines = [
+        `# ${docTitle} — QA 대화`,
+        '',
+        `| 항목 | 값 |`,
+        `|---|---|`,
+        `| 내보낸 일시 | ${now.toISOString()} |`,
+        `| 사용자 | ${userName} |`,
+        `| 프로젝트 | ${state.currentProject || '(미지정)'} |`,
+        `| 관련 문서 | ${docPath ? '`' + docPath + '`' : '(없음)'} |`,
+        `| 질문·답변 라운드 | ${state.history.filter((m) => m.role === 'user').length} |`,
+        '',
+        '---',
+        '',
+      ];
+      let qNum = 0;
+      for (const m of state.history) {
+        if (m.role === 'user') {
+          qNum++;
+          lines.push(`## Q${qNum}. ${m.content.split('\n')[0].slice(0, 80)}${m.content.length > 80 ? '…' : ''}`);
+          lines.push('');
+          lines.push(m.content);
+          lines.push('');
+        } else if (m.role === 'assistant') {
+          lines.push(`### A${qNum}.`);
+          lines.push('');
+          lines.push(m.content);
+          lines.push('');
+          if (m.appliedFeedbacks?.length) {
+            lines.push(`> 🔁 적용된 개선 룰: ${m.appliedFeedbacks.map((f) => '`' + f + '`').join(', ')}`);
+            lines.push('');
+          }
+        }
+      }
+      const md = lines.join('\n');
+      const filenameSafe = docTitle.replace(/[/\\:*?"<>|]/g, '_').slice(0, 40) || 'qa-session';
+      const filename = `qa-${stamp}-${filenameSafe}.md`;
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 100);
+      toast(`💾 ${filename} 저장됨`, 'success');
     });
 
     /* 툴바 [📝 답변 규칙 추가] — 답변 없어도 항상 사용 가능 (일반 규칙 누적 학습)
