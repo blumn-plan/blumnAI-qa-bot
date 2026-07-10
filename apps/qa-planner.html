@@ -445,7 +445,18 @@
         return true;
       });
       if (!filtered.length) {
-        ul.innerHTML = '<li><div class="empty">표시할 항목이 없습니다</div></li>';
+        // 상황별 friendly empty state
+        if (state.decisions.length === 0) {
+          ul.innerHTML = `<li><div class="empty" style="padding:16px;line-height:1.6">
+            <div style="font-size:24px;margin-bottom:6px">📭</div>
+            <strong>대기 중인 변경 요청 없음</strong><br>
+            <span style="font-size:11px;color:var(--muted)">협업자가 챗에서 [📤 기획자에게 전달] 을 누르면 여기에 뜹니다.</span>
+          </div></li>`;
+        } else if (q) {
+          ul.innerHTML = `<li><div class="empty">검색어 "${escapeHtml(state.search)}" 에 맞는 항목 없음</div></li>`;
+        } else {
+          ul.innerHTML = '<li><div class="empty">필터 조건에 맞는 항목 없음</div></li>';
+        }
         return;
       }
       ul.innerHTML = filtered.map((d) => {

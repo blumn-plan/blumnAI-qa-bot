@@ -657,6 +657,7 @@
       currentDoc: null, // {path, title, kind}
       history: [], // [{role, content, appliedFeedbacks?}]
       sending: false,
+      streamAbort: null, // 진행 중인 /qa fetch AbortController — [취소] 로 abort
       sessions: [], // [{id, title, docPath, project, createdAt, updatedAt, history[]}] — localStorage 영속
       currentSessionId: null,
       decisions: [], // /list-decisions 결과
@@ -1200,8 +1201,12 @@
 
     async function sendQuestion(question, opts = {}) {
       state.sending = true;
-      $('#send-btn').disabled = true;
-      $('#send-btn').innerHTML = '<span class="btn-spinner"></span>답변중';
+      // 이전 진행 중이던 stream 이 남아 있으면 abort (사용자 입장에선 늦은 응답 무의미)
+      if (state.streamAbort) { try { state.streamAbort.abort(); } catch (_) {} }
+      state.streamAbort = new AbortController();
+      $('#send-btn').disabled = false; // 전송 중에도 [취소] 눌러야 하니 활성 유지
+      $('#send-btn').innerHTML = '<span class="btn-spinner"></span>취소';
+      $('#send-btn').setAttribute('data-mode', 'cancel');
       // 사용자 메시지 — 첨부 이미지가 있으면 인라인으로 함께 표시
       const attachmentsForSend = pendingAttachments.slice();
       addMessage('user', question, { attachments: attachmentsForSend });
@@ -1232,6 +1237,7 @@
         const res = await fetch(`${WORKER_URL}/qa`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: state.streamAbort.signal,
           body: JSON.stringify({
             docPath: state.currentDoc?.path,
             project: state.currentProject,
@@ -1295,14 +1301,30 @@
         saveCurrentSession();
       } catch (err) {
         if (placeholder) placeholder.remove();
-        addMessage('error', `답변 실패: ${friendlyError(err)}`);
+        // 사용자가 [취소] 눌러 abort 된 것은 에러가 아니라 정상 취소
+        if (err?.name === 'AbortError' || /aborted|signal is aborted/i.test(String(err?.message))) {
+          addMessage('error', '답변 취소됨');
+        } else {
+          addMessage('error', `답변 실패: ${friendlyError(err)}`);
+        }
       } finally {
         stopLoadingPlaceholder(loadingPlaceholder);
         state.sending = false;
+        state.streamAbort = null;
         $('#send-btn').disabled = false;
         $('#send-btn').textContent = '전송';
+        $('#send-btn').removeAttribute('data-mode');
       }
     }
+
+    // send 버튼이 "취소" 모드일 때 클릭 → 진행 중 stream abort
+    document.addEventListener('click', (e) => {
+      if (e.target && e.target.id === 'send-btn' && e.target.getAttribute('data-mode') === 'cancel') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (state.streamAbort) { try { state.streamAbort.abort(); } catch (_) {} }
+      }
+    }, true);
 
     // 첫 청크(meta) 도착 전까지 회전 spinner + "답변 준비 중" + 경과 초 표시.
     // 사용자가 답변 진행 여부를 즉시 시각적으로 인지할 수 있도록 [전송] 직후 노출.

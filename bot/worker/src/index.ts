@@ -19,6 +19,15 @@
  *  POST /forward                qa/decisions/ 에 합의 md 생성 — body: { docPath, summary, qa }
  */
 
+import {
+  extractProjectFromPath,
+  extractSearchKeywords,
+  extPathToQualifier,
+  escapeRegex,
+  escapeHtml,
+  renderNoteBodyHtml,
+} from './helpers';
+
 export interface Env {
   ANTHROPIC_API_KEY: string;
   GITHUB_TOKEN: string;
@@ -233,7 +242,7 @@ export default {
           break;
         case '/qa':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          return await askClaude(env, await req.json(), corsHeaders);
+          return await askClaude(env, await req.json(), corsHeaders, req.signal);
         case '/forward':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
           result = await forwardToDecisions(env, await req.json());
@@ -462,7 +471,7 @@ function transformImageUrls(docPath: string, content: string): string {
   });
 }
 
-async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): Promise<Response> {
+async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, clientSignal?: AbortSignal): Promise<Response> {
   const ndjsonHeaders: HeadersInit = {
     'Content-Type': 'application/x-ndjson; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -547,6 +556,8 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): P
     { role: 'user', content: userContent },
   ];
 
+  // 클라이언트가 탭 닫거나 취소하면 clientSignal 이 발동 → Anthropic API 호출도 abort.
+  // 이렇게 하면 사용자가 안 볼 답변을 계속 토큰 태우지 않음.
   const upstream = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -561,6 +572,7 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): P
       messages,
       stream: true,
     }),
+    signal: clientSignal,
   });
 
   if (!upstream.ok || !upstream.body) {
@@ -734,12 +746,7 @@ function buildVolatileBlock(p: SystemPromptParts): string {
 
 /* ────────── 3-a. 문서 카탈로그 · 전체 문서 fetch ────────── */
 
-/** docPath 에서 project id 추출. 예: `projects/admin_v1/docs/policies/foo.md` → `admin_v1` */
-function extractProjectFromPath(p?: string): string {
-  if (!p) return '';
-  const m = p.match(/^projects\/([^/]+)\//);
-  return m ? m[1] : '';
-}
+// extractProjectFromPath 는 helpers.ts 에서 import
 
 /** 프로젝트 문서 카탈로그 — 제목 + 경로 목록 (컨텐츠 X). 시스템 프롬프트 안정 블록에 삽입.
  *  listDocs 를 재사용하므로 별도 GitHub API 호출 없음 (5분 캐시). */
@@ -847,34 +854,7 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<strin
   return combined;
 }
 
-/** 질문에서 검색용 키워드 2-4개 추출 — 매우 단순한 heuristic.
- *  한글/영문 명사 2자 이상만 남기고 흔한 불용어 제외.
- *  정교한 추출은 Claude 를 한번 더 호출해야 하는데 latency/토큰 비용 대비 이득 작음. */
-function extractSearchKeywords(question: string, hint: string): string {
-  const stopWords = new Set([
-    '어떻게', '무엇', '뭐야', '뭔가', '왜', '누구', '언제', '어디', '얼마', '어떤',
-    '있어', '없어', '되나요', '되나', '하나요', '하나', '요', '나요', '이야', '이에요',
-    'what', 'when', 'where', 'which', 'why', 'how', 'the', 'and', 'for', 'with',
-  ]);
-  const tokens = question
-    .replace(/[?!.,()[\]{}"'`~<>]/g, ' ')
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 2 && !stopWords.has(t.toLowerCase()));
-  const uniq = Array.from(new Set(tokens)).slice(0, 4);
-  const joined = uniq.join(' ');
-  return hint ? `${joined} ${hint}`.trim() : joined;
-}
-
-/** "src/**\/*.tsx" 같은 glob 을 GitHub Search 의 path: / extension: qualifier 로 변환. */
-function extPathToQualifier(glob: string): string {
-  const ext = glob.match(/\*\.([\w]+)$/)?.[1];
-  const dir = glob.match(/^([^*]+)\//)?.[1];
-  const parts: string[] = [];
-  if (dir) parts.push(`path:${dir}`);
-  if (ext) parts.push(`extension:${ext}`);
-  return parts.join(' ');
-}
+// extractSearchKeywords, extPathToQualifier 는 helpers.ts 에서 import
 
 async function fetchRecentFeedback(env: Env): Promise<string> {
   const entries = await fetchDirListingCached(env, 'qa/feedback').catch(() => []);
@@ -1157,46 +1137,12 @@ async function listFeedbacks(env: Env, limit: number): Promise<{ items: QaFileEn
 const PLANNER_NOTE_START = '<!-- planner-note:start -->';
 const PLANNER_NOTE_END = '<!-- planner-note:end -->';
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+// escapeRegex, escapeHtml, renderNoteBodyHtml 은 helpers.ts 에서 import
 
 interface PlannerNoteOpts {
   kind: 'applied' | 'rejected' | null;
   content: string;
   plannerName: string;
-}
-
-function escapeHtml(s: string): string {
-  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
-}
-
-/** 기획자 메모 본문 렌더 —
- *  - `![alt](url)` 마크다운 이미지 → `<img class="planner-memo-img" src="url" alt="alt">`
- *  - 나머지 텍스트는 escapeHtml + 개행 → <br>
- *  - url 은 http(s)/data:/절대경로 (`/qa/decisions/images/...`) 만 허용 (스크립트 인젝션 차단) */
-function renderNoteBodyHtml(content: string): string {
-  const imgRe = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
-  let out = '';
-  let lastIdx = 0;
-  let m: RegExpExecArray | null;
-  while ((m = imgRe.exec(content)) !== null) {
-    // 이미지 이전 텍스트 (escape + 개행 → <br>)
-    const before = content.slice(lastIdx, m.index);
-    out += escapeHtml(before).replace(/\r?\n/g, '<br>');
-    const alt = m[1] || 'image';
-    const url = m[2].trim();
-    // 안전 URL 만 통과
-    if (/^(https?:\/\/|\/qa\/decisions\/images\/|data:image\/)/i.test(url)) {
-      out += `<img class="planner-memo-img" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`;
-    } else {
-      // 안전하지 않으면 원본 문자열 그대로 노출 (링크로 렌더 X)
-      out += escapeHtml(m[0]);
-    }
-    lastIdx = m.index + m[0].length;
-  }
-  out += escapeHtml(content.slice(lastIdx)).replace(/\r?\n/g, '<br>');
-  return out;
 }
 
 // 합의문 상단(제목 바로 아래) 에 "📝 기획자 적용 메모" 또는 "🚫 기획자 보류 사유"

@@ -135,7 +135,7 @@ projects/<프로젝트 id>/docs/policies/<화면이름>_v<SemVer>.md
 2. 원본 파일명 `_v0.1.5.md` → `_v0.2.0.md`
 3. cross-link 갱신 — 다른 정책·workflow 에서 `_v0.1.5` 참조하는 곳 모두 새 버전으로
 
-이 절차는 [admin_v1 정책_버전관리_규칙](https://github.com/lunasoft-org/heythere_planer/blob/main/projects/admin_v1/docs/정책_버전관리_규칙.md) 의 §4 를 따른 것. 팀 자체 규칙으로 바꿔 운영해도 OK.
+이 절차는 헤이데어 기획팀의 정책 버전관리 규칙 §4 를 기준으로 정리한 것. 팀 자체 규칙이 있으면 그것으로 바꿔 운영해도 OK — 봇은 파일명·헤더 형식만 지키면 되므로 세부 절차는 자유.
 
 ## 화면설계서(storyboard) — 정책과 다른 폴더
 

@@ -41,6 +41,11 @@
 - 📭 **정책 md 0개 empty-state CTA** — 프로젝트 select 는 성공했는데 `/list-docs` 가 0개 반환하면 좌측 사이드바에 friendly 안내: 가능 원인 (폴더 비었음 / `policies_dir` 경로 오류 / 파일명 규약 위반) + 🩺 서버 진단 링크
 - 🎯 **`friendlyError()` 확장** — Anthropic 401 · rate limit · GitHub 401/404 · CORS · 5xx 등 흔한 실패 패턴을 인식해 사용자 친화 메시지로 변환 (예: "Anthropic API key 만료. IT기획팀 재발급 요청" · "GitHub PAT 만료. Classic PAT 재발급")
 - 📄 **03-CONNECT-BOT 에 §🩺 원격 진단** 절 신설 — `/health?detailed=1` 사용법 + curl 예시 + 확장 트러블슈팅 표
+- ✋ **스트리밍 답변 취소** — 사용자가 [취소] 누르면 진행 중이던 /qa fetch abort → worker 가 Anthropic API 호출도 함께 abort (토큰 낭비 방지). Worker `askClaude` 에 `clientSignal` 파라미터 추가, 프론트에 [전송] ↔ [취소] 토글 버튼
+- 🧪 **Worker 유닛 테스트 도입 (vitest)** — `bot/worker/src/helpers.ts` 에 순수 함수 6개 (`extractProjectFromPath`, `extractSearchKeywords`, `extPathToQualifier`, `escapeHtml`, `escapeRegex`, `renderNoteBodyHtml`) 추출 · `helpers.test.ts` 에 20개 케이스 (XSS 방어 · 이미지 렌더 안전 · 검색 키워드 로직 등). `npm run test` / `npm run check` (tsc + vitest)
+- 📭 **qa-planner empty-state** — 전달이력 리스트가 비었을 때 상황별 friendly 안내 (0건 · 검색 결과 없음 · 필터 결과 없음 분리)
+- 📄 **02-WIRE-POLICIES 팀-중립화** — `lunasoft-org/heythere_planer` 하드코딩 링크 제거, 팀 자유 규칙 강조
+- 📄 **04-OPERATE FAQ** — "왜 대화를 서버-side 에 저장 안 하나" 설계 근거 추가 (프라이버시 · 비용 · 명확한 산출물 원칙)
 
 ## v0.0.0 — 2026-06-30
 
