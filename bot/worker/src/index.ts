@@ -33,15 +33,59 @@ export interface Env {
 /**
  * 프로젝트별 정책·스토리보드 경로.
  * 각 서비스 팀이 자기 프로젝트 ID (예: `admin_v1`, `ad_v1`, `backoffice_v2`) 를
- * `/list-docs?project=<id>` 로 넘기면 그에 맞는 경로로 fetch.
+ * `/list-docs?project=<id>` 로 넘기면:
+ *  1) 팀 레포 루트의 `blumnAI-qa-bot.config.yml` 을 읽어 해당 프로젝트의
+ *     `policies_dir` / `storyboards_dir` 이 명시되어 있으면 그 경로 우선
+ *  2) 없으면 기본 패턴 `projects/<id>/docs/policies`(`storyboards`) fallback
  */
-function policiesDir(project: string): string {
-  return `projects/${project}/docs/policies`;
+async function policiesDir(env: Env, project: string): Promise<string> {
+  const cfg = await getProjectConfig(env, project);
+  return cfg?.policies_dir?.trim() || `projects/${project}/docs/policies`;
 }
-function storyboardsDir(project: string): string {
-  return `projects/${project}/docs/storyboards`;
+async function storyboardsDir(env: Env, project: string): Promise<string> {
+  const cfg = await getProjectConfig(env, project);
+  return cfg?.storyboards_dir?.trim() || `projects/${project}/docs/storyboards`;
 }
 const DEFAULT_PROJECT_FALLBACK = 'admin_v1';
+
+/* ────────── 팀 config.yml 캐싱 fetch ────────── */
+
+interface ProjectConfigEntry {
+  id: string;
+  label?: string;
+  policies_dir?: string;
+  storyboards_dir?: string;
+}
+
+interface TeamConfig {
+  projects?: ProjectConfigEntry[];
+}
+
+const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedConfig: { at: number; data: TeamConfig | null } | null = null;
+
+async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
+  if (cachedConfig && Date.now() - cachedConfig.at < CONFIG_CACHE_TTL_MS) {
+    return cachedConfig.data;
+  }
+  try {
+    const raw = await fetchTextFile(env, 'blumnAI-qa-bot.config.yml');
+    // 동적 import — TS build 는 esbuild bundler 가 처리.
+    const YAML = await import('yaml');
+    const parsed = YAML.parse(raw) as TeamConfig | null;
+    cachedConfig = { at: Date.now(), data: parsed ?? null };
+    return parsed ?? null;
+  } catch (err) {
+    console.warn('[qa-bot] load config.yml failed:', err instanceof Error ? err.message : String(err));
+    cachedConfig = { at: Date.now(), data: null };
+    return null;
+  }
+}
+
+async function getProjectConfig(env: Env, projectId: string): Promise<ProjectConfigEntry | null> {
+  const cfg = await loadTeamConfig(env);
+  return cfg?.projects?.find((p) => p.id === projectId) ?? null;
+}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -195,8 +239,8 @@ interface DocEntry {
 }
 
 async function listDocs(env: Env, project: string): Promise<{ project: string; docs: DocEntry[] }> {
-  const polDir = policiesDir(project);
-  const storyDir = storyboardsDir(project);
+  const polDir = await policiesDir(env, project);
+  const storyDir = await storyboardsDir(env, project);
 
   const policyEntries = await fetchDirListing(env, polDir).catch(() => [] as ContentEntry[]);
   const policies: DocEntry[] = policyEntries
@@ -246,13 +290,22 @@ async function getDoc(env: Env, path: string): Promise<{ path: string; content: 
   if (!path) throw new Error('path query required');
   // 안전: path traversal 차단 + 허용 prefix 검증
   if (path.includes('..')) throw new Error('invalid path');
-  const allowed =
+  let allowed =
     path.startsWith('projects/') ||
     path.startsWith('qa/decisions/') ||
     path.startsWith('qa/feedback/') ||
     path === 'CLAUDE.md';
   if (!allowed) {
-    throw new Error('path must be under projects/, qa/decisions/, qa/feedback/, or CLAUDE.md');
+    // 팀이 config.yml 에서 자유 경로로 policies_dir / storyboards_dir 를 지정한
+    // 경우에도 허용 — 선언된 경로 하위의 파일만.
+    const cfg = await loadTeamConfig(env);
+    const dirs = (cfg?.projects ?? []).flatMap((p) =>
+      [p.policies_dir, p.storyboards_dir].filter((d): d is string => !!d && d.length > 0),
+    );
+    allowed = dirs.some((d) => path === d || path.startsWith(d.endsWith('/') ? d : d + '/'));
+  }
+  if (!allowed) {
+    throw new Error('path must be under projects/, qa/decisions/, qa/feedback/, CLAUDE.md, or a directory declared in blumnAI-qa-bot.config.yml');
   }
   const content = await fetchTextFile(env, path);
   return { path, content };
@@ -266,6 +319,13 @@ interface QARequest {
   history?: { role: 'user' | 'assistant'; content: string }[];
   // 사용자가 질문에 첨부한 이미지 (base64). 정책 vs 화면 drift 비교 같은 시각 비교용.
   attachments?: { mediaType: string; data: string }[];
+  // (옵션) 코드 검증 — projects[].code_repo 로 설정된 서비스 코드 레포에서
+  //  질문 관련 스니펫을 함께 인젝션. 프론트가 config.yml 을 읽어서 넘김.
+  codeRepo?: string;              // "org/repo" 형식
+  codePaths?: string[];           // glob 후보 (경로 힌트로만 사용)
+  codeSearchHint?: string;        // 항상 함께 붙일 키워드
+  codeMaxSnippets?: number;       // 상한, 미지정 시 3
+  codeSnippetLines?: number;      // 스니펫당 라인 상한, 미지정 시 120
 }
 
 interface QAResponse {
@@ -311,11 +371,28 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): P
   const focusedDoc = body.docPath ? transformImageUrls(body.docPath, rawFocusedDoc) : rawFocusedDoc;
   const recentFeedback = await fetchRecentFeedback(env);
 
+  // 코드 스니펫 (옵션) — codeRepo 있으면 GitHub Search 로 관련 파일 top-N 인젝션
+  const codeSnippets = body.codeRepo
+    ? await fetchCodeSnippets(env, {
+        repo: body.codeRepo,
+        question: body.question,
+        pathHints: body.codePaths ?? [],
+        searchHint: body.codeSearchHint ?? '',
+        maxSnippets: body.codeMaxSnippets ?? 3,
+        snippetLines: body.codeSnippetLines ?? 120,
+      }).catch((err) => {
+        console.warn('[qa-bot] code snippet fetch failed:', err instanceof Error ? err.message : String(err));
+        return '';
+      })
+    : '';
+
   const systemPrompt = buildSystemPrompt({
     claudeRules,
     focusedDoc,
     focusedDocPath: body.docPath ?? '',
     recentFeedback,
+    codeSnippets,
+    codeRepo: body.codeRepo ?? '',
     hasAttachments: !!body.attachments?.length,
   });
 
@@ -410,6 +487,8 @@ interface SystemPromptParts {
   focusedDoc: string;
   focusedDocPath: string;
   recentFeedback: string;
+  codeSnippets: string;
+  codeRepo: string;
   hasAttachments: boolean;
 }
 
@@ -426,18 +505,115 @@ function buildSystemPrompt(p: SystemPromptParts): string {
     ...(p.hasAttachments
       ? ['- **사용자가 이미지를 첨부했습니다** — 첨부 이미지 내용을 직접 시각 분석해서 답변에 반영. 정책 본문과 첨부 화면이 다르면 §A-2 의 drift 경고 형식으로 명시 (`정책상 X 이지만 첨부 화면은 Y. 정책 또는 화면 보완 필요.`).']
       : []),
+    ...(p.codeSnippets
+      ? [
+          '- **관련 코드 스니펫이 함께 제공됩니다** — 정책 vs 코드 drift 판정에 활용. 답변 규칙 §A-2 (drift) 와 §A-3 (코드 인용) 을 따르세요. 파일 경로·라인 번호는 반드시 함께 표기.',
+        ]
+      : []),
     '',
     '[현재 협업자가 보고 있는 문서]',
     p.focusedDocPath ? `경로: ${p.focusedDocPath}` : '(선택된 문서 없음)',
     '',
     p.focusedDoc || '(문서 내용 없음 — 일반 질문)',
     '',
+    ...(p.codeSnippets
+      ? [
+          `[관련 코드 스니펫 — ${p.codeRepo}]`,
+          p.codeSnippets,
+          '',
+        ]
+      : []),
     '[Rules — CLAUDE.md]',
     p.claudeRules,
     '',
     '[Recent QA Feedback]',
     p.recentFeedback || '(없음)',
   ].join('\n');
+}
+
+/* ────────── 3-b. 코드 스니펫 fetch (옵션) ──────────
+ *
+ *  GitHub Search Code API 로 질문 관련 파일 top-N 을 찾고 각 파일 앞부분 truncate.
+ *  실패 시 빈 문자열 반환 — /qa 응답 자체는 계속 정상 진행.
+ *  주의: Search Code API 는 rate limit 이 짧아 (30 req/min) 캐시 어렵지만
+ *        Cloudflare Workers 무료 tier 규모의 QA 트래픽에선 충분.
+ */
+
+interface CodeSnippetOpts {
+  repo: string;
+  question: string;
+  pathHints: string[];
+  searchHint: string;
+  maxSnippets: number;
+  snippetLines: number;
+}
+
+async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<string> {
+  if (!opts.repo || !/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) return '';
+
+  const keywords = extractSearchKeywords(opts.question, opts.searchHint);
+  if (!keywords) return '';
+
+  const pathQualifier = opts.pathHints
+    .map((p) => extPathToQualifier(p))
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(' ');
+  const query = `${keywords} repo:${opts.repo}${pathQualifier ? ' ' + pathQualifier : ''}`;
+
+  const searchRes = await ghFetch(env, `/search/code?q=${encodeURIComponent(query)}&per_page=${opts.maxSnippets}`, {
+    headers: { Accept: 'application/vnd.github+json' },
+  });
+  if (!searchRes.ok) {
+    console.warn(`[qa-bot] code search HTTP ${searchRes.status}`);
+    return '';
+  }
+  const search = (await searchRes.json()) as { items?: Array<{ path: string; repository?: { full_name?: string } }> };
+  const items = (search.items ?? []).slice(0, opts.maxSnippets);
+  if (items.length === 0) return '';
+
+  const snippets: string[] = [];
+  for (const it of items) {
+    const fullName = it.repository?.full_name ?? opts.repo;
+    try {
+      const raw = await fetchTextFile({ ...env, GITHUB_REPO: fullName }, it.path);
+      const truncated = raw.split('\n').slice(0, opts.snippetLines).join('\n');
+      const ext = it.path.split('.').pop() ?? '';
+      snippets.push(`--- ${fullName}/${it.path} (첫 ${opts.snippetLines}줄) ---\n\`\`\`${ext}\n${truncated}\n\`\`\``);
+    } catch (err) {
+      console.warn(`[qa-bot] fetch code file failed: ${it.path}`, err);
+    }
+  }
+  return snippets.join('\n\n');
+}
+
+/** 질문에서 검색용 키워드 2-4개 추출 — 매우 단순한 heuristic.
+ *  한글/영문 명사 2자 이상만 남기고 흔한 불용어 제외.
+ *  정교한 추출은 Claude 를 한번 더 호출해야 하는데 latency/토큰 비용 대비 이득 작음. */
+function extractSearchKeywords(question: string, hint: string): string {
+  const stopWords = new Set([
+    '어떻게', '무엇', '뭐야', '뭔가', '왜', '누구', '언제', '어디', '얼마', '어떤',
+    '있어', '없어', '되나요', '되나', '하나요', '하나', '요', '나요', '이야', '이에요',
+    'what', 'when', 'where', 'which', 'why', 'how', 'the', 'and', 'for', 'with',
+  ]);
+  const tokens = question
+    .replace(/[?!.,()[\]{}"'`~<>]/g, ' ')
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !stopWords.has(t.toLowerCase()));
+  const uniq = Array.from(new Set(tokens)).slice(0, 4);
+  const joined = uniq.join(' ');
+  return hint ? `${joined} ${hint}`.trim() : joined;
+}
+
+/** "src/**\/*.tsx" 같은 glob 을 GitHub Search 의 path: / extension: qualifier 로 변환. */
+function extPathToQualifier(glob: string): string {
+  const ext = glob.match(/\*\.([\w]+)$/)?.[1];
+  const dir = glob.match(/^([^*]+)\//)?.[1];
+  const parts: string[] = [];
+  if (dir) parts.push(`path:${dir}`);
+  if (ext) parts.push(`extension:${ext}`);
+  return parts.join(' ');
 }
 
 async function fetchRecentFeedback(env: Env): Promise<string> {
@@ -606,7 +782,22 @@ const PROJECT_LABELS: Record<string, string> = {
 };
 const DEFAULT_PROJECT = 'admin_v1';
 
-async function listProjects(env: Env): Promise<{ projects: Array<{ id: string; label: string }>; default: string }> {
+/** 우선순위: config.yml 의 projects[] → 없으면 `projects/` 폴더 스캔 fallback.
+ *  config.yml 이 있으면 팀이 policies_dir 을 자유 경로로 지정한 경우에도 dropdown 에 노출됨. */
+async function listProjects(env: Env): Promise<{ projects: Array<{ id: string; label: string; label_from?: string }>; default: string }> {
+  const cfg = await loadTeamConfig(env);
+  const fromConfig = cfg?.projects ?? [];
+  if (fromConfig.length > 0) {
+    const projects = fromConfig
+      .filter((p) => p.id)
+      .map((p) => ({
+        id: p.id,
+        label: (p as { label?: string }).label || PROJECT_LABELS[p.id] || p.id,
+      }));
+    return { projects, default: projects[0]?.id ?? DEFAULT_PROJECT };
+  }
+
+  // fallback — config.yml 없는 팀 (v0.0.0 스타일)
   const entries = await fetchDirListing(env, 'projects').catch(() => [] as ContentEntry[]);
   const projects: Array<{ id: string; label: string }> = [];
   for (const e of entries) {
@@ -718,20 +909,59 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function upsertPlannerNote(md: string, note: string): string {
+interface PlannerNoteOpts {
+  kind: 'applied' | 'rejected' | null;
+  content: string;
+  plannerName: string;
+}
+
+function escapeHtml(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+}
+
+// 합의문 상단(제목 바로 아래) 에 "📝 기획자 적용 메모" 또는 "🚫 기획자 보류 사유"
+// 박스형 블록을 멱등하게 신설/갱신/제거. content 가 비어있거나 kind 가 null 이면 블록 제거.
+// 기존 블록이 파일 하단에 있던 옛 포맷도 함께 제거해 상단으로 이동시킴.
+function upsertPlannerNote(md: string, opts: PlannerNoteOpts): string {
+  const kind = opts.kind;
+  const content = (opts.content || '').trim();
+  const plannerName = (opts.plannerName || '').trim();
+
   const reBlock = new RegExp(
-    `\\n*${escapeRegex(PLANNER_NOTE_START)}[\\s\\S]*?${escapeRegex(PLANNER_NOTE_END)}\\n*$`,
+    `${escapeRegex(PLANNER_NOTE_START)}[\\s\\S]*?${escapeRegex(PLANNER_NOTE_END)}\\r?\\n?`,
+    'g',
   );
-  const withoutBlock = md.replace(reBlock, '').replace(/\s+$/, '');
-  if (!note) return withoutBlock + '\n';
+  let cleaned = md.replace(reBlock, '');
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') + '\n';
+
+  if (!kind || !content) return cleaned;
+
   const date = new Date().toISOString().slice(0, 10);
+  const name = plannerName || '기획자';
+  const applied = kind === 'applied';
+  const title = applied ? '기획자 적용 메모' : '기획자 보류 사유';
+  const icon = applied ? '📝' : '🚫';
+  const cls = applied ? 'applied' : 'rejected';
+  const desc = applied
+    ? '협업자가 요청한 내용과 실제 적용된 내용에 차이가 있어 아래처럼 반영했습니다.'
+    : '아래 사유로 이번 변경 요청을 보류합니다.';
+  const bodyHtml = escapeHtml(content).replace(/\r?\n/g, '<br>');
+
   const block =
-    `\n\n${PLANNER_NOTE_START}\n` +
-    `### 📝 기획자 적용 메모\n\n` +
-    `> ${date} · 협업자가 요청한 내용과 실제 적용된 내용에 차이가 있습니다.\n\n` +
-    `${note}\n` +
-    `${PLANNER_NOTE_END}\n`;
-  return withoutBlock + block;
+    `${PLANNER_NOTE_START}\n` +
+    `<div class="planner-memo planner-memo-${cls}">\n` +
+    `  <div class="planner-memo-head">${icon} <b>${title}</b> · ${date} · 👤 ${escapeHtml(name)}</div>\n` +
+    `  <div class="planner-memo-desc">${desc}</div>\n` +
+    `  <div class="planner-memo-body">${bodyHtml}</div>\n` +
+    `</div>\n` +
+    `${PLANNER_NOTE_END}\n\n`;
+
+  const titleMatch = cleaned.match(/^# [^\n]*\n+/);
+  if (titleMatch) {
+    const idx = titleMatch[0].length;
+    return cleaned.slice(0, idx) + block + cleaned.slice(idx);
+  }
+  return block + cleaned;
 }
 
 function base64ToUtf8(b64: string): string {
@@ -747,6 +977,7 @@ interface UpdateDecisionStatusBody {
   note?: string;
   reason?: string;
   date?: string;
+  plannerName?: string;
 }
 
 async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): Promise<{ path: string; status: string; statusText: string; committed: boolean }> {
@@ -757,13 +988,15 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): P
   if (!allowed.includes(body.status)) throw new Error(`status must be one of ${allowed.join(', ')}`);
 
   const note = typeof body.note === 'string' ? body.note.trim() : '';
+  const reasonRaw = typeof body.reason === 'string' ? body.reason.trim() : '';
+  const plannerName = typeof body.plannerName === 'string' ? body.plannerName.trim() : '';
 
   let newText: string;
   if (body.status === 'applied') {
     const date = body.date || new Date().toISOString().slice(0, 10);
     newText = note ? `✅ ${date} 적용 (메모 있음)` : `✅ ${date} 적용`;
   } else if (body.status === 'rejected') {
-    const reason = (body.reason || '').trim() || '사유 미입력';
+    const reason = reasonRaw || '사유 미입력';
     newText = `🚫 보류 (${reason})`;
   } else {
     newText = '📋 대기';
@@ -779,7 +1012,11 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): P
 
   let replaced = md.replace(re, `$1${newText}$3`);
   if (body.status === 'applied') {
-    replaced = upsertPlannerNote(replaced, note);
+    replaced = upsertPlannerNote(replaced, { kind: 'applied', content: note, plannerName });
+  } else if (body.status === 'rejected') {
+    replaced = upsertPlannerNote(replaced, { kind: 'rejected', content: reasonRaw, plannerName });
+  } else {
+    replaced = upsertPlannerNote(replaced, { kind: null, content: '', plannerName });
   }
 
   if (replaced === md) {

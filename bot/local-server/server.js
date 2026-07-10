@@ -689,26 +689,57 @@ ${qaBlock}
 const PLANNER_NOTE_START = '<!-- planner-note:start -->';
 const PLANNER_NOTE_END = '<!-- planner-note:end -->';
 
-// 합의문 본문 끝에 "📝 기획자 적용 메모" 블록을 멱등하게 신설/갱신/제거.
-// note 가 비어 있으면 기존 블록 제거 (그대로 적용으로 정정한 경우 대비).
-function upsertPlannerNote(md, note) {
+// 합의문 상단(제목 바로 아래) 에 "📝 기획자 적용 메모" 또는 "🚫 기획자 보류 사유"
+// 박스형 블록을 멱등하게 신설/갱신/제거. content 가 비어있거나 kind 가 null 이면 블록 제거.
+// 기존 블록이 파일 하단에 있던 옛 포맷도 함께 제거해 상단으로 이동시킴.
+function upsertPlannerNote(md, opts) {
+  const kind = opts && opts.kind ? opts.kind : null; // 'applied' | 'rejected' | null
+  const content = opts && typeof opts.content === 'string' ? opts.content.trim() : '';
+  const plannerName = opts && typeof opts.plannerName === 'string' ? opts.plannerName.trim() : '';
+
   const reBlock = new RegExp(
-    `\\n*${escapeRegex(PLANNER_NOTE_START)}[\\s\\S]*?${escapeRegex(PLANNER_NOTE_END)}\\n*$`,
+    `${escapeRegex(PLANNER_NOTE_START)}[\\s\\S]*?${escapeRegex(PLANNER_NOTE_END)}\\r?\\n?`,
+    'g',
   );
-  const withoutBlock = md.replace(reBlock, '').replace(/\s+$/, '');
-  if (!note) return withoutBlock + '\n';
+  let cleaned = md.replace(reBlock, '');
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '') + '\n';
+
+  if (!kind || !content) return cleaned;
+
   const date = new Date().toISOString().slice(0, 10);
+  const name = plannerName || '기획자';
+  const applied = kind === 'applied';
+  const title = applied ? '기획자 적용 메모' : '기획자 보류 사유';
+  const icon = applied ? '📝' : '🚫';
+  const cls = applied ? 'applied' : 'rejected';
+  const desc = applied
+    ? '협업자가 요청한 내용과 실제 적용된 내용에 차이가 있어 아래처럼 반영했습니다.'
+    : '아래 사유로 이번 변경 요청을 보류합니다.';
+  const bodyHtml = escapeHtml(content).replace(/\r?\n/g, '<br>');
+
   const block =
-    `\n\n${PLANNER_NOTE_START}\n` +
-    `### 📝 기획자 적용 메모\n\n` +
-    `> ${date} · 협업자가 요청한 내용과 실제 적용된 내용에 차이가 있습니다.\n\n` +
-    `${note}\n` +
-    `${PLANNER_NOTE_END}\n`;
-  return withoutBlock + block;
+    `${PLANNER_NOTE_START}\n` +
+    `<div class="planner-memo planner-memo-${cls}">\n` +
+    `  <div class="planner-memo-head">${icon} <b>${title}</b> · ${date} · 👤 ${escapeHtml(name)}</div>\n` +
+    `  <div class="planner-memo-desc">${desc}</div>\n` +
+    `  <div class="planner-memo-body">${bodyHtml}</div>\n` +
+    `</div>\n` +
+    `${PLANNER_NOTE_END}\n\n`;
+
+  const titleMatch = cleaned.match(/^# [^\n]*\n+/);
+  if (titleMatch) {
+    const idx = titleMatch[0].length;
+    return cleaned.slice(0, idx) + block + cleaned.slice(idx);
+  }
+  return block + cleaned;
 }
 
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 async function updateDecisionStatus(body) {
@@ -719,13 +750,15 @@ async function updateDecisionStatus(body) {
   if (!allowed.includes(body.status)) throw new Error(`status must be one of ${allowed.join(', ')}`);
 
   const note = typeof body.note === 'string' ? body.note.trim() : '';
+  const reasonRaw = typeof body.reason === 'string' ? body.reason.trim() : '';
+  const plannerName = typeof body.plannerName === 'string' ? body.plannerName.trim() : '';
 
   let newText;
   if (body.status === 'applied') {
     const date = body.date || new Date().toISOString().slice(0, 10);
     newText = note ? `✅ ${date} 적용 (메모 있음)` : `✅ ${date} 적용`;
   } else if (body.status === 'rejected') {
-    const reason = (body.reason || '').trim() || '사유 미입력';
+    const reason = reasonRaw || '사유 미입력';
     newText = `🚫 보류 (${reason})`;
   } else {
     newText = '📋 대기';
@@ -740,9 +773,13 @@ async function updateDecisionStatus(body) {
   if (!existing) throw new Error('"기획자 ..." 표 행을 찾지 못했습니다 (decision md 첫 표 양식 확인)');
 
   let replaced = md.replace(re, `$1${newText}$3`);
-  // applied 상태에서만 본문 메모 블록을 갱신/제거. 다른 status 는 메모 영역 손대지 않음 (보류·대기로 되돌릴 때 메모가 의도치 않게 사라지지 않게).
+  // 상단 메모 박스 갱신 — applied+note / rejected+reason 일 때만 삽입, pending 이면 제거.
   if (body.status === 'applied') {
-    replaced = upsertPlannerNote(replaced, note);
+    replaced = upsertPlannerNote(replaced, { kind: 'applied', content: note, plannerName });
+  } else if (body.status === 'rejected') {
+    replaced = upsertPlannerNote(replaced, { kind: 'rejected', content: reasonRaw, plannerName });
+  } else {
+    replaced = upsertPlannerNote(replaced, { kind: null, content: '', plannerName });
   }
   const fileChanged = replaced !== md;
   if (fileChanged) await fs.writeFile(absPath, replaced, 'utf-8');

@@ -83,6 +83,15 @@
     main.doc article pre { background: #f1f3f5; padding: 12px; border-radius: 6px; overflow-x: auto; }
     main.doc article pre code { background: none; padding: 0; }
     main.doc article blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--muted); margin: 12px 0; }
+    /* 기획자 적용/보류 메모 박스 — 합의문 상단에 표시 */
+    main.doc article .planner-memo { margin: 4px 0 18px; padding: 12px 14px; border-radius: 8px; border: 1px solid; }
+    main.doc article .planner-memo-applied { background: #f0fdf4; border-color: #86efac; }
+    main.doc article .planner-memo-rejected { background: #fef2f2; border-color: #fecaca; }
+    main.doc article .planner-memo-head { font-size: 13px; margin-bottom: 4px; font-weight: 500; }
+    main.doc article .planner-memo-applied .planner-memo-head { color: #166534; }
+    main.doc article .planner-memo-rejected .planner-memo-head { color: #b91c1c; }
+    main.doc article .planner-memo-desc { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+    main.doc article .planner-memo-body { font-size: 13px; line-height: 1.65; color: var(--text); }
     main.doc .empty { padding: 60px 32px; color: var(--muted); text-align: center; }
 
     aside.chat { display: flex; flex-direction: column; background: var(--bg); min-width: 0; min-height: 0; }
@@ -1170,6 +1179,17 @@
       let streamErr = null;
 
       try {
+        // 현재 선택된 프로젝트의 code_repo 컨피그를 payload 에 함께 전달 —
+        // 있으면 worker 가 GitHub Search 로 관련 코드 스니펫을 인젝션.
+        const currentProjectCfg = (CONFIG?.projects ?? []).find((p) => p.id === state.currentProject);
+        const codeRepo = currentProjectCfg?.code_repo || undefined;
+        const codePaths = Array.isArray(currentProjectCfg?.code_paths) && currentProjectCfg.code_paths.length
+          ? currentProjectCfg.code_paths
+          : undefined;
+        const codeSearchHint = currentProjectCfg?.code_search_hint || undefined;
+        const codeMaxSnippets = currentProjectCfg?.code_max_snippets;
+        const codeSnippetLines = currentProjectCfg?.code_snippet_lines;
+
         const res = await fetch(`${WORKER_URL}/qa`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1180,6 +1200,11 @@
             attachments: attachmentsForSend.length
               ? attachmentsForSend.map((a) => ({ mediaType: a.mediaType, data: a.data }))
               : undefined,
+            codeRepo,
+            codePaths,
+            codeSearchHint,
+            codeMaxSnippets,
+            codeSnippetLines,
           }),
         });
         if (!res.ok) {
@@ -2274,6 +2299,52 @@
       return msg.slice(0, 200);
     }
 
+    /* ────────── 🔔 코어 업데이트 알림 배너 ──────────
+       팀 레포의 .blumnAI-qa-bot/version (로컬 사본 버전) 과
+       코어 레포 CHANGELOG (최신 릴리즈) 를 비교해서 다르면 상단 배너 표시. */
+    async function checkCoreUpdate(coreRepo) {
+      if (!coreRepo) return;
+      try {
+        // 로컬 version — apps/ 폴더 기준 한 단계 위 (.blumnAI-qa-bot/version)
+        const localRes = await fetch('../version').catch(() => null);
+        if (!localRes || !localRes.ok) return; // version 파일 없으면 조용히 skip
+        const localVersion = (await localRes.text()).trim().replace(/^v/, '');
+
+        // 코어 CHANGELOG 최신 버전 — main 브랜치 raw
+        const remoteRes = await fetch(`https://raw.githubusercontent.com/${coreRepo}/main/CHANGELOG.md`, { cache: 'no-cache' });
+        if (!remoteRes.ok) return;
+        const changelog = await remoteRes.text();
+        const match = changelog.match(/^##\s*v?(\d+\.\d+\.\d+)/m);
+        if (!match) return;
+        const remoteVersion = match[1];
+
+        if (localVersion === remoteVersion) return; // 최신
+        const dismissKey = `core-update-dismissed-${remoteVersion}`;
+        if (localStorage.getItem(dismissKey)) return;
+
+        showUpdateBanner(localVersion, remoteVersion, coreRepo, dismissKey);
+      } catch (err) {
+        console.warn('[core-update-check]', err);
+      }
+    }
+
+    function showUpdateBanner(localVersion, remoteVersion, coreRepo, dismissKey) {
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#fef3c7;border-bottom:1px solid #f59e0b;padding:10px 16px;font-size:13px;color:#78350f;display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,sans-serif';
+      banner.innerHTML =
+        '<span>🔔</span>' +
+        `<span style="flex:1"><strong>blumnAI-qa-bot 새 버전 v${remoteVersion}</strong> 나왔습니다 (현재 v${localVersion}). Claude Code 에 <strong>"🟠 업데이트하기"</strong> 프롬프트를 붙여넣으면 30초 안에 갱신됩니다.</span>` +
+        `<a href="https://github.com/${coreRepo}/blob/main/CHANGELOG.md" target="_blank" rel="noopener" style="color:#78350f;text-decoration:underline;font-weight:600">변경사항 보기</a>` +
+        '<button type="button" style="background:transparent;border:1px solid #f59e0b;color:#78350f;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">나중에</button>';
+      banner.querySelector('button').addEventListener('click', () => {
+        localStorage.setItem(dismissKey, '1');
+        banner.remove();
+        document.body.style.paddingTop = '';
+      });
+      document.body.insertBefore(banner, document.body.firstChild);
+      document.body.style.paddingTop = (banner.offsetHeight + 4) + 'px';
+    }
+
     (async () => {
       try {
         await bootstrap();
@@ -2282,6 +2353,8 @@
         return;
       }
       init();
+      // fire-and-forget — 응답 지연이 UI 를 막지 않게
+      checkCoreUpdate(CONFIG?.deployment?.core_repo || 'blumn-plan/blumnAI-qa-bot');
     })();
   </script>
 </body>
