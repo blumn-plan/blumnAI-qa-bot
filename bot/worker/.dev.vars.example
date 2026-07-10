@@ -1,0 +1,27 @@
+# wrangler dev 로컬 개발용 시크릿·환경변수 — 실제 값은 `.dev.vars` 에 복사해서 채우기 (gitignored)
+#
+# 사용:
+#   cp .dev.vars.example .dev.vars
+#   # 아래 값들 실제 값으로 채우고
+#   npx wrangler dev
+#   → http://localhost:8787 에서 로컬 Worker 동작
+#
+# ⚠️ .dev.vars 파일은 git 에 절대 커밋 X (.gitignore 에 이미 등록)
+
+# Anthropic API key — https://console.anthropic.com 에서 발급받은 sk-ant-...
+ANTHROPIC_API_KEY="sk-ant-...FILL-ME-IN"
+
+# GitHub PAT — repo scope. 로컬 개발은 본인 계정의 PAT 이면 충분
+GITHUB_TOKEN="ghp_...FILL-ME-IN"
+
+# 봇을 얹은 팀 정책 레포 (org/repo 형식)
+GITHUB_REPO="your-org/your-policy-repo"
+
+# CORS 허용 origin — 로컬 dev 서버 (기본 http://localhost:8080) 포함
+ALLOWED_ORIGINS="http://localhost:8080"
+
+# (선택) 사용할 Claude 모델 — 미설정 시 claude-sonnet-4-6
+# CLAUDE_MODEL="claude-sonnet-4-6"
+
+# (선택) C 모드 tunnel URL — 로컬 개발엔 보통 미설정
+# TUNNEL_URL=""

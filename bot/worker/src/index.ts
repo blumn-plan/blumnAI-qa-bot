@@ -46,7 +46,12 @@ async function storyboardsDir(env: Env, project: string): Promise<string> {
   const cfg = await getProjectConfig(env, project);
   return cfg?.storyboards_dir?.trim() || `projects/${project}/docs/storyboards`;
 }
-const DEFAULT_PROJECT_FALLBACK = 'admin_v1';
+/** project 파라미터 fallback — config 의 첫 프로젝트 → 없으면 빈 문자열.
+ *  빈 문자열 반환 시 downstream 은 문서 없음 / 정책 없음 으로 처리. */
+async function defaultProjectFallback(env: Env): Promise<string> {
+  const cfg = await loadTeamConfig(env);
+  return cfg?.projects?.[0]?.id ?? '';
+}
 
 /* ────────── 팀 config.yml 캐싱 fetch ────────── */
 
@@ -57,12 +62,65 @@ interface ProjectConfigEntry {
   storyboards_dir?: string;
 }
 
+interface BotConfig {
+  inject_doc_catalog?: boolean;
+  include_all_docs?: boolean;
+  claude_model?: string;
+}
+
 interface TeamConfig {
   projects?: ProjectConfigEntry[];
+  bot?: BotConfig;
 }
 
 const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
 let cachedConfig: { at: number; data: TeamConfig | null } | null = null;
+
+/* ────────── 범용 fetch 캐시 ──────────
+ *  같은 대화 안에서 반복되는 GitHub 요청 (CLAUDE.md, 정책 md, 피드백, 디렉토리 목록)
+ *  을 인메모리로 재사용. Cloudflare Workers instance 단위 (수명 짧지만
+ *  한 대화 세션 안에서는 hit 이 확실히 나므로 GitHub API 호출 대폭 감소).
+ *
+ *  TTL:
+ *    - TEXT_TTL (60초)  : 정책 md · CLAUDE.md · 피드백 파일 내용
+ *    - LIST_TTL (30초) : 디렉토리 목록 (files added mid-session 감지 위해 짧게)
+ *    - CODE_TTL (60초)  : GitHub Search Code 결과
+ */
+interface CacheEntry<T> { at: number; data: T }
+const TEXT_TTL_MS = 60 * 1000;
+const LIST_TTL_MS = 30 * 1000;
+const CODE_TTL_MS = 60 * 1000;
+const textCache = new Map<string, CacheEntry<string>>();
+const listCache = new Map<string, CacheEntry<ContentEntry[]>>();
+const codeCache = new Map<string, CacheEntry<string>>();
+
+function cacheKey(env: Env, path: string): string {
+  return `${env.GITHUB_REPO}::${path}`;
+}
+async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): Promise<string> {
+  const key = cacheKey(env, path);
+  const c = textCache.get(key);
+  if (c && Date.now() - c.at < ttl) return c.data;
+  const data = await fetchTextFile(env, path);
+  textCache.set(key, { at: Date.now(), data });
+  return data;
+}
+async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS): Promise<ContentEntry[]> {
+  const key = cacheKey(env, path);
+  const c = listCache.get(key);
+  if (c && Date.now() - c.at < ttl) return c.data;
+  const data = await fetchDirListing(env, path);
+  listCache.set(key, { at: Date.now(), data });
+  return data;
+}
+/** 쓰기 작업 후 관련 캐시 항목 무효화 (예: 새 feedback 저장 → qa/feedback 목록 무효화). */
+function invalidateCache(env: Env, ...paths: string[]) {
+  for (const p of paths) {
+    const k = cacheKey(env, p);
+    textCache.delete(k);
+    listCache.delete(k);
+  }
+}
 
 async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
   if (cachedConfig && Date.now() - cachedConfig.at < CONFIG_CACHE_TTL_MS) {
@@ -115,11 +173,60 @@ export default {
       let result: unknown;
       switch (url.pathname) {
         case '/':
-        case '/health':
-          result = { status: 'ok', service: 'planner-qa-bot', mode: env.TUNNEL_URL ? 'proxy' : 'direct' };
+        case '/health': {
+          // 기본 응답 — 팀이 세팅 상태 진단할 때 필요한 정보 포함.
+          // 시크릿 값 자체는 노출 X, 존재 여부(있음/없음) 만 보고.
+          const detailed = url.searchParams.get('detailed') === '1';
+          const base = {
+            status: 'ok' as const,
+            service: 'planner-qa-bot',
+            mode: env.TUNNEL_URL ? 'proxy' : 'direct',
+            time: new Date().toISOString(),
+          };
+          if (!detailed) { result = base; break; }
+          // detailed=1 이면 config·시크릿·프로젝트 진단 리포트
+          const secrets = {
+            ANTHROPIC_API_KEY: !!env.ANTHROPIC_API_KEY,
+            GITHUB_TOKEN: !!env.GITHUB_TOKEN,
+            GITHUB_REPO: env.GITHUB_REPO || null,
+            ALLOWED_ORIGINS: env.ALLOWED_ORIGINS?.split(',').map((s) => s.trim()).filter(Boolean) || [],
+            CLAUDE_MODEL: env.CLAUDE_MODEL || '(default)',
+            TUNNEL_URL: env.TUNNEL_URL ? '(set)' : null,
+          };
+          let configReport: unknown;
+          try {
+            const cfg = await loadTeamConfig(env);
+            if (!cfg) {
+              configReport = { loaded: false, error: 'config.yml not found or parse failed' };
+            } else {
+              configReport = {
+                loaded: true,
+                projects: cfg.projects?.map((p) => ({
+                  id: p.id,
+                  label: p.label,
+                  policies_dir: p.policies_dir || '(default projects/<id>/docs/policies)',
+                  storyboards_dir: p.storyboards_dir || '(default)',
+                })) ?? [],
+                bot: cfg.bot || {},
+              };
+            }
+          } catch (err) {
+            configReport = { loaded: false, error: err instanceof Error ? err.message : String(err) };
+          }
+          result = {
+            ...base,
+            secrets,
+            config: configReport,
+            cache: {
+              textFileEntries: textCache.size,
+              dirListingEntries: listCache.size,
+              codeSearchEntries: codeCache.size,
+            },
+          };
           break;
+        }
         case '/list-docs':
-          result = await listDocs(env, url.searchParams.get('project') || DEFAULT_PROJECT_FALLBACK);
+          result = await listDocs(env, url.searchParams.get('project') || await defaultProjectFallback(env));
           break;
         case '/doc':
           result = await getDoc(env, url.searchParams.get('path') ?? '');
@@ -159,6 +266,10 @@ export default {
         case '/save-storyboard-image':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
           result = await saveStoryboardImage(env, await req.json());
+          break;
+        case '/save-decision-image':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await saveDecisionImage(env, await req.json());
           break;
         case '/list-storyboard-images':
           result = await listStoryboardImages(env, url.searchParams.get('dir') ?? '', url.searchParams.get('prefix') ?? '');
@@ -242,7 +353,7 @@ async function listDocs(env: Env, project: string): Promise<{ project: string; d
   const polDir = await policiesDir(env, project);
   const storyDir = await storyboardsDir(env, project);
 
-  const policyEntries = await fetchDirListing(env, polDir).catch(() => [] as ContentEntry[]);
+  const policyEntries = await fetchDirListingCached(env, polDir).catch(() => [] as ContentEntry[]);
   const policies: DocEntry[] = policyEntries
     .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_'))
     .map((e) => ({
@@ -254,7 +365,7 @@ async function listDocs(env: Env, project: string): Promise<{ project: string; d
   // storyboards — 두 레이아웃 모두 지원:
   //   nested: storyboards/<screen>/<screen>_storyboard_v0.1.0.md  (admin_v1 스타일)
   //   flat:   storyboards/<screen>_storyboard_v0.1.0.md           (backoffice_v2 스타일)
-  const storyboardEntries = await fetchDirListing(env, storyDir).catch(() => [] as ContentEntry[]);
+  const storyboardEntries = await fetchDirListingCached(env, storyDir).catch(() => [] as ContentEntry[]);
   const storyboards: DocEntry[] = [];
   for (const e of storyboardEntries) {
     if (e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && e.name.toLowerCase() !== 'readme.md') {
@@ -268,7 +379,7 @@ async function listDocs(env: Env, project: string): Promise<{ project: string; d
       });
     } else if (e.type === 'dir') {
       // nested 케이스
-      const inner = await fetchDirListing(env, e.path).catch(() => [] as ContentEntry[]);
+      const inner = await fetchDirListingCached(env, e.path).catch(() => [] as ContentEntry[]);
       const md = inner.find((f) => f.type === 'file' && f.name.endsWith('.md'));
       if (md) {
         storyboards.push({
@@ -317,6 +428,8 @@ interface QARequest {
   docPath?: string;
   question: string;
   history?: { role: 'user' | 'assistant'; content: string }[];
+  // 현재 대화의 프로젝트 ID — 카탈로그·전체문서 인젝션 스코프. 미지정 시 docPath 에서 추출.
+  project?: string;
   // 사용자가 질문에 첨부한 이미지 (base64). 정책 vs 화면 drift 비교 같은 시각 비교용.
   attachments?: { mediaType: string; data: string }[];
   // (옵션) 코드 검증 — projects[].code_repo 로 설정된 서비스 코드 레포에서
@@ -362,14 +475,30 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): P
 
   const model = env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
 
+  // 프로젝트 스코프 확정 — 명시 project > docPath 에서 추출 > config 첫 프로젝트
+  const project = body.project?.trim()
+    || extractProjectFromPath(body.docPath)
+    || await defaultProjectFallback(env);
+
+  // 팀 config 에서 bot 옵션 로드 (5분 캐시)
+  const teamConfig = await loadTeamConfig(env);
+  const injectCatalog = teamConfig?.bot?.inject_doc_catalog !== false; // 기본 true
+  const includeAllDocs = teamConfig?.bot?.include_all_docs === true;   // 기본 false
+
   // 컨텍스트: CLAUDE.md + 선택된 doc + 최근 qa/feedback
-  const claudeRules = await fetchTextFile(env, 'CLAUDE.md').catch((err) => {
+  const claudeRules = await fetchTextFileCached(env, 'CLAUDE.md').catch((err) => {
     console.warn('[qa-bot] CLAUDE.md fetch failed:', err instanceof Error ? err.message : String(err));
     return '';
   });
-  const rawFocusedDoc = body.docPath ? await fetchTextFile(env, body.docPath).catch(() => '') : '';
+  const rawFocusedDoc = body.docPath ? await fetchTextFileCached(env, body.docPath).catch(() => '') : '';
   const focusedDoc = body.docPath ? transformImageUrls(body.docPath, rawFocusedDoc) : rawFocusedDoc;
   const recentFeedback = await fetchRecentFeedback(env);
+
+  // 프로젝트 문서 카탈로그 (Approach A) — 항상 활성 (config 로 끌 수 있음)
+  const docCatalog = injectCatalog ? await buildDocCatalog(env, project).catch(() => '') : '';
+
+  // 프로젝트 전체 문서 본문 (Approach B) — 옵션. Anthropic prompt caching 대상
+  const allDocsBundle = includeAllDocs ? await buildAllDocsBundle(env, project, body.docPath).catch(() => '') : '';
 
   // 코드 스니펫 (옵션) — codeRepo 있으면 GitHub Search 로 관련 파일 top-N 인젝션
   const codeSnippets = body.codeRepo
@@ -386,8 +515,12 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): P
       })
     : '';
 
-  const systemPrompt = buildSystemPrompt({
+  // Anthropic prompt caching 활용을 위해 system 을 텍스트 블록 배열로 구성.
+  // 안정적인 부분 (rules · 카탈로그 · 전체 문서) 만 cache_control 마킹 → 5분 캐시.
+  const systemBlocks = buildSystemBlocks({
     claudeRules,
+    docCatalog,
+    allDocsBundle,
     focusedDoc,
     focusedDocPath: body.docPath ?? '',
     recentFeedback,
@@ -424,7 +557,7 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit): P
     body: JSON.stringify({
       model,
       max_tokens: 2048,
-      system: systemPrompt,
+      system: systemBlocks,
       messages,
       stream: true,
     }),
@@ -484,6 +617,8 @@ function errorNdjson(message: string, headers: HeadersInit): Response {
 
 interface SystemPromptParts {
   claudeRules: string;
+  docCatalog: string;      // Approach A — 프로젝트 문서 목록
+  allDocsBundle: string;   // Approach B — 프로젝트 전체 문서 본문
   focusedDoc: string;
   focusedDocPath: string;
   recentFeedback: string;
@@ -492,43 +627,161 @@ interface SystemPromptParts {
   hasAttachments: boolean;
 }
 
-function buildSystemPrompt(p: SystemPromptParts): string {
-  return [
-    '당신은 heythere CRM 어드민 (admin_v1) 정책문서를 근거로 협업자(QA·개발자) 질문에 답변하는 봇입니다.',
-    '아래 [Rules] 의 §A "답변할 때" 규칙을 **반드시** 지키세요 — §A-0 답변 형식 5가지 (결론 한 줄 / ≤ 7줄 / 평이한 단어 / 시각적 묘사 / 인용은 줄 끝 1개만) 와 §A-4 답변 끝 형식 1줄.',
+/** Anthropic prompt caching 을 활용하는 system 메시지 배열 생성.
+ *  안정 블록 (rules + 카탈로그 + 전체 문서) 에 cache_control: ephemeral 마킹 → 5분 TTL 캐시.
+ *  변화 블록 (선택 문서, 최근 피드백, 코드 스니펫) 은 매번 새로 구성. */
+type SystemBlock =
+  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; cache_control: { type: 'ephemeral' } };
+
+function buildSystemBlocks(p: SystemPromptParts): SystemBlock[] {
+  const blocks: SystemBlock[] = [];
+
+  // 블록 1 (캐시 대상) — 안정적. rules + 카탈로그 + 전체 문서
+  const stable = buildStableBlock(p);
+  if (stable) {
+    blocks.push({ type: 'text', text: stable, cache_control: { type: 'ephemeral' } });
+  }
+
+  // 블록 2 (캐시 X) — 매번 바뀜. 선택 문서 · 최근 피드백 · 코드 스니펫 · 첨부 안내
+  const volatile = buildVolatileBlock(p);
+  if (volatile) {
+    blocks.push({ type: 'text', text: volatile });
+  }
+
+  return blocks;
+}
+
+function buildStableBlock(p: SystemPromptParts): string {
+  const lines: string[] = [
+    '당신은 정책문서를 근거로 협업자(QA·개발자) 질문에 답변하는 봇입니다.',
+    '아래 [Rules] 의 §A "답변할 때" 규칙을 **반드시** 지키세요.',
     '답변은 GitHub Pages 챗 박스에 그대로 표시됩니다. 마크다운 OK.',
     '',
     '[답변에 표·이미지 사용 가이드]',
-    '- **표**: 정책 vs 화면 비교, 케이스별 동작 차이, 캠페인 유형 카탈로그 같이 항목이 여러 줄로 나뉘는 정보는 마크다운 표 (`| col1 | col2 |`) 로 작성. 단, ≤ 7줄 규칙은 표 행 수 포함이 아닌 본문 줄 수 기준 — 표가 길어도 본문은 짧게.',
-    '- **이미지**: 본 문서(아래 [현재 협업자가 보고 있는 문서]) 안에 등장한 `![alt](URL)` 이미지 URL 을 답변에 그대로 인용 가능. 화면 캡처가 답변의 결론을 시각적으로 보강하면 적극 활용 (예: "이렇게 노출됩니다" + 캡처 이미지). 단, 같은 이미지를 매 답변에 반복 첨부하지는 말 것 — 처음 한 번만, 또는 비교가 의미 있을 때만.',
-    '- 본 문서에 없는 외부 이미지 URL 은 임의 생성 금지 (깨진 링크 됨).',
-    ...(p.hasAttachments
-      ? ['- **사용자가 이미지를 첨부했습니다** — 첨부 이미지 내용을 직접 시각 분석해서 답변에 반영. 정책 본문과 첨부 화면이 다르면 §A-2 의 drift 경고 형식으로 명시 (`정책상 X 이지만 첨부 화면은 Y. 정책 또는 화면 보완 필요.`).']
-      : []),
-    ...(p.codeSnippets
-      ? [
-          '- **관련 코드 스니펫이 함께 제공됩니다** — 정책 vs 코드 drift 판정에 활용. 답변 규칙 §A-2 (drift) 와 §A-3 (코드 인용) 을 따르세요. 파일 경로·라인 번호는 반드시 함께 표기.',
-        ]
-      : []),
+    '- **표**: 정책 vs 화면 비교, 케이스별 동작 차이, 카탈로그 같이 항목이 여러 줄로 나뉘는 정보는 마크다운 표 (`| col1 | col2 |`) 로 작성. 단, ≤ 7줄 규칙은 표 행 수 포함이 아닌 본문 줄 수 기준.',
+    '- **이미지**: 아래 [현재 협업자가 보고 있는 문서] (또는 [프로젝트 전체 문서]) 안에 등장한 `![alt](URL)` 이미지 URL 만 답변에 그대로 인용 가능. 본 문서에 없는 외부 URL 은 임의 생성 금지.',
+    '',
+    '[📋 변경 제안 블록 — 정책 수정·신설이 필요할 때 답변 맨 끝에 반드시 첨부]',
+    '',
+    '정책 자체를 변경해야 한다고 판단되면 답변 본문 끝에 아래 형식의 블록을 붙이세요.',
+    '프론트가 이 블록을 파싱해서 기획자에게 전달 팝업을 자동 채웁니다:',
+    '',
+    '```',
+    '### 📋 변경 제안',
+    '- 📌 요청 제목: <30자 이내 한 줄 요약>',
+    '- 📄 대상 파일: <파일명>',
+    '- 📍 위치: <§X-Y>',
+    '- ✏️ 변경 전: <현재 정책 문구 또는 "정책 미정의">',
+    '- ✅ 변경 후: <제안 문구, 시각 명세 포함>',
+    '- 💡 근거: <한 줄 사유>',
+    '```',
+    '- 변경 필요 없으면 이 블록 생성 X. 부족한 필드는 "(협업자·기획자 검토 필요)" 로 표기',
+  ];
+
+  // 카탈로그 (Approach A)
+  if (p.docCatalog) {
+    lines.push(
+      '',
+      '[📚 프로젝트 문서 카탈로그 — 관련 문서 안내에 활용]',
+      '아래 문서 목록을 알고 있으니, 사용자 질문이 다른 문서를 참고해야 잘 답변된다고 판단되면',
+      '"이 케이스는 XX 문서 §X-Y 를 참고하세요 (좌측에서 선택)" 처럼 안내하세요.',
+      '단 답변 근거는 아래 [현재 협업자가 보고 있는 문서] 만 사용 (본문 X 인 다른 문서를 근거로',
+      '단정하지 말 것 — 아는 척 금지).',
+      '',
+      p.docCatalog,
+    );
+  }
+
+  // 전체 문서 본문 (Approach B) — 옵션
+  if (p.allDocsBundle) {
+    lines.push(
+      '',
+      '[📖 프로젝트 전체 정책 문서 본문 — 답변에 종합 활용]',
+      '아래 전체 문서를 근거로 여러 정책을 크로스-참조하며 답변할 수 있습니다.',
+      '답변 시 반드시 어느 문서 §X-Y 를 인용했는지 명시하세요.',
+      '',
+      p.allDocsBundle,
+    );
+  }
+
+  lines.push('', '[Rules — CLAUDE.md]', p.claudeRules || '(규칙 파일 없음)');
+  return lines.join('\n');
+}
+
+function buildVolatileBlock(p: SystemPromptParts): string {
+  const parts: string[] = [];
+
+  if (p.hasAttachments) {
+    parts.push('**사용자가 이미지를 첨부했습니다** — 첨부 이미지 내용을 직접 시각 분석해서 답변에 반영. 정책과 다르면 §A-2 drift 형식으로 명시.');
+  }
+  if (p.codeSnippets) {
+    parts.push('**관련 코드 스니펫이 함께 제공됩니다** — 정책 vs 코드 drift 판정에 활용. 파일 경로·라인 번호 반드시 표기.');
+  }
+  parts.push(
     '',
     '[현재 협업자가 보고 있는 문서]',
     p.focusedDocPath ? `경로: ${p.focusedDocPath}` : '(선택된 문서 없음)',
     '',
     p.focusedDoc || '(문서 내용 없음 — 일반 질문)',
-    '',
-    ...(p.codeSnippets
-      ? [
-          `[관련 코드 스니펫 — ${p.codeRepo}]`,
-          p.codeSnippets,
-          '',
-        ]
-      : []),
-    '[Rules — CLAUDE.md]',
-    p.claudeRules,
-    '',
-    '[Recent QA Feedback]',
-    p.recentFeedback || '(없음)',
-  ].join('\n');
+  );
+  if (p.codeSnippets) {
+    parts.push('', `[관련 코드 스니펫 — ${p.codeRepo}]`, p.codeSnippets);
+  }
+  parts.push('', '[Recent QA Feedback]', p.recentFeedback || '(없음)');
+  return parts.join('\n');
+}
+
+/* ────────── 3-a. 문서 카탈로그 · 전체 문서 fetch ────────── */
+
+/** docPath 에서 project id 추출. 예: `projects/admin_v1/docs/policies/foo.md` → `admin_v1` */
+function extractProjectFromPath(p?: string): string {
+  if (!p) return '';
+  const m = p.match(/^projects\/([^/]+)\//);
+  return m ? m[1] : '';
+}
+
+/** 프로젝트 문서 카탈로그 — 제목 + 경로 목록 (컨텐츠 X). 시스템 프롬프트 안정 블록에 삽입.
+ *  listDocs 를 재사용하므로 별도 GitHub API 호출 없음 (5분 캐시). */
+async function buildDocCatalog(env: Env, project: string): Promise<string> {
+  const { docs } = await listDocs(env, project);
+  if (docs.length === 0) return '';
+  const policies = docs.filter((d) => d.kind === 'policy');
+  const storyboards = docs.filter((d) => d.kind === 'storyboard');
+  const lines: string[] = [];
+  if (policies.length) {
+    lines.push('정책 문서:');
+    for (const d of policies) lines.push(`- ${d.title} (${d.path})`);
+  }
+  if (storyboards.length) {
+    lines.push('', '화면설계서:');
+    for (const d of storyboards) lines.push(`- ${d.title} (${d.path})`);
+  }
+  return lines.join('\n');
+}
+
+/** 프로젝트 전체 정책 문서 본문 번들 — Anthropic prompt caching 대상.
+ *  focusedDocPath 는 이미 volatile 블록에 들어가므로 여기서 제외 (중복 방지). */
+async function buildAllDocsBundle(env: Env, project: string, focusedDocPath?: string): Promise<string> {
+  const { docs } = await listDocs(env, project);
+  const policies = docs.filter((d) => d.kind === 'policy' && d.path !== focusedDocPath);
+  if (policies.length === 0) return '';
+  // 총 크기 sanity check — 200K 자 (~50K token) 넘으면 이 요청은 skip.
+  const MAX_BUNDLE_CHARS = 200_000;
+  const chunks: string[] = [];
+  let total = 0;
+  for (const d of policies) {
+    const raw = await fetchTextFileCached(env, d.path).catch(() => '');
+    if (!raw) continue;
+    const block = `\n=== ${d.path} ===\n${raw}`;
+    if (total + block.length > MAX_BUNDLE_CHARS) {
+      chunks.push(`\n[⚠️ 전체 문서 번들 크기 상한 (${MAX_BUNDLE_CHARS}자) 초과 — 이후 문서 생략]`);
+      break;
+    }
+    chunks.push(block);
+    total += block.length;
+  }
+  return chunks.join('');
 }
 
 /* ────────── 3-b. 코드 스니펫 fetch (옵션) ──────────
@@ -561,6 +814,11 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<strin
     .join(' ');
   const query = `${keywords} repo:${opts.repo}${pathQualifier ? ' ' + pathQualifier : ''}`;
 
+  // 같은 질문·키워드로 60초 내에 다시 오면 캐시 사용 → 대화 반복 시 GitHub Search rate 절약
+  const cacheK = `search::${query}::${opts.maxSnippets}::${opts.snippetLines}`;
+  const cached = codeCache.get(cacheK);
+  if (cached && Date.now() - cached.at < CODE_TTL_MS) return cached.data;
+
   const searchRes = await ghFetch(env, `/search/code?q=${encodeURIComponent(query)}&per_page=${opts.maxSnippets}`, {
     headers: { Accept: 'application/vnd.github+json' },
   });
@@ -576,7 +834,7 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<strin
   for (const it of items) {
     const fullName = it.repository?.full_name ?? opts.repo;
     try {
-      const raw = await fetchTextFile({ ...env, GITHUB_REPO: fullName }, it.path);
+      const raw = await fetchTextFileCached({ ...env, GITHUB_REPO: fullName }, it.path);
       const truncated = raw.split('\n').slice(0, opts.snippetLines).join('\n');
       const ext = it.path.split('.').pop() ?? '';
       snippets.push(`--- ${fullName}/${it.path} (첫 ${opts.snippetLines}줄) ---\n\`\`\`${ext}\n${truncated}\n\`\`\``);
@@ -584,7 +842,9 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<strin
       console.warn(`[qa-bot] fetch code file failed: ${it.path}`, err);
     }
   }
-  return snippets.join('\n\n');
+  const combined = snippets.join('\n\n');
+  codeCache.set(cacheK, { at: Date.now(), data: combined });
+  return combined;
 }
 
 /** 질문에서 검색용 키워드 2-4개 추출 — 매우 단순한 heuristic.
@@ -617,14 +877,14 @@ function extPathToQualifier(glob: string): string {
 }
 
 async function fetchRecentFeedback(env: Env): Promise<string> {
-  const entries = await fetchDirListing(env, 'qa/feedback').catch(() => []);
+  const entries = await fetchDirListingCached(env, 'qa/feedback').catch(() => []);
   const mdFiles = entries
     .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_'))
     .sort((a, b) => b.name.localeCompare(a.name))
     .slice(0, 10);
   if (mdFiles.length === 0) return '';
   const contents = await Promise.all(
-    mdFiles.map(async (f) => `\n=== ${f.path} ===\n${await fetchTextFile(env, f.path)}`),
+    mdFiles.map(async (f) => `\n=== ${f.path} ===\n${await fetchTextFileCached(env, f.path)}`),
   );
   return contents.join('\n');
 }
@@ -674,6 +934,7 @@ async function forwardToDecisions(env: Env, body: ForwardRequest): Promise<Forwa
     throw new Error(`GitHub create file ${res.status}: ${text.slice(0, 500)}`);
   }
   const data = (await res.json()) as { content: { sha: string; html_url: string } };
+  invalidateCache(env, 'qa/decisions', decisionPath);
   return { decisionPath, commitSha: data.content.sha, htmlUrl: data.content.html_url };
 }
 
@@ -776,37 +1037,28 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
 
 /* ────────── /list-projects ────────── */
 
-const PROJECT_LABELS: Record<string, string> = {
-  admin_v1: '어드민 v1 (admin_v1)',
-  backoffice_v2: '백오피스 v2 (backoffice_v2)',
-};
-const DEFAULT_PROJECT = 'admin_v1';
-
 /** 우선순위: config.yml 의 projects[] → 없으면 `projects/` 폴더 스캔 fallback.
- *  config.yml 이 있으면 팀이 policies_dir 을 자유 경로로 지정한 경우에도 dropdown 에 노출됨. */
-async function listProjects(env: Env): Promise<{ projects: Array<{ id: string; label: string; label_from?: string }>; default: string }> {
+ *  라벨은 config 의 `projects[].label` 을 그대로 사용. 없으면 id 노출. 팀 별 하드코딩 없음. */
+async function listProjects(env: Env): Promise<{ projects: Array<{ id: string; label: string }>; default: string }> {
   const cfg = await loadTeamConfig(env);
   const fromConfig = cfg?.projects ?? [];
   if (fromConfig.length > 0) {
     const projects = fromConfig
       .filter((p) => p.id)
-      .map((p) => ({
-        id: p.id,
-        label: (p as { label?: string }).label || PROJECT_LABELS[p.id] || p.id,
-      }));
-    return { projects, default: projects[0]?.id ?? DEFAULT_PROJECT };
+      .map((p) => ({ id: p.id, label: p.label || p.id }));
+    return { projects, default: projects[0]?.id ?? '' };
   }
 
-  // fallback — config.yml 없는 팀 (v0.0.0 스타일)
-  const entries = await fetchDirListing(env, 'projects').catch(() => [] as ContentEntry[]);
+  // fallback — config.yml 없는 팀
+  const entries = await fetchDirListingCached(env, 'projects').catch(() => [] as ContentEntry[]);
   const projects: Array<{ id: string; label: string }> = [];
   for (const e of entries) {
     if (e.type !== 'dir') continue;
-    const hasDocs = await fetchDirListing(env, `${e.path}/docs`).then(() => true).catch(() => false);
+    const hasDocs = await fetchDirListingCached(env, `${e.path}/docs`).then(() => true).catch(() => false);
     if (!hasDocs) continue;
-    projects.push({ id: e.name, label: PROJECT_LABELS[e.name] || e.name });
+    projects.push({ id: e.name, label: e.name });
   }
-  return { projects, default: DEFAULT_PROJECT };
+  return { projects, default: projects[0]?.id ?? '' };
 }
 
 /* ────────── /list-decisions, /list-feedbacks ────────── */
@@ -919,6 +1171,34 @@ function escapeHtml(s: string): string {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
 
+/** 기획자 메모 본문 렌더 —
+ *  - `![alt](url)` 마크다운 이미지 → `<img class="planner-memo-img" src="url" alt="alt">`
+ *  - 나머지 텍스트는 escapeHtml + 개행 → <br>
+ *  - url 은 http(s)/data:/절대경로 (`/qa/decisions/images/...`) 만 허용 (스크립트 인젝션 차단) */
+function renderNoteBodyHtml(content: string): string {
+  const imgRe = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+  let out = '';
+  let lastIdx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = imgRe.exec(content)) !== null) {
+    // 이미지 이전 텍스트 (escape + 개행 → <br>)
+    const before = content.slice(lastIdx, m.index);
+    out += escapeHtml(before).replace(/\r?\n/g, '<br>');
+    const alt = m[1] || 'image';
+    const url = m[2].trim();
+    // 안전 URL 만 통과
+    if (/^(https?:\/\/|\/qa\/decisions\/images\/|data:image\/)/i.test(url)) {
+      out += `<img class="planner-memo-img" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`;
+    } else {
+      // 안전하지 않으면 원본 문자열 그대로 노출 (링크로 렌더 X)
+      out += escapeHtml(m[0]);
+    }
+    lastIdx = m.index + m[0].length;
+  }
+  out += escapeHtml(content.slice(lastIdx)).replace(/\r?\n/g, '<br>');
+  return out;
+}
+
 // 합의문 상단(제목 바로 아래) 에 "📝 기획자 적용 메모" 또는 "🚫 기획자 보류 사유"
 // 박스형 블록을 멱등하게 신설/갱신/제거. content 가 비어있거나 kind 가 null 이면 블록 제거.
 // 기존 블록이 파일 하단에 있던 옛 포맷도 함께 제거해 상단으로 이동시킴.
@@ -945,7 +1225,7 @@ function upsertPlannerNote(md: string, opts: PlannerNoteOpts): string {
   const desc = applied
     ? '협업자가 요청한 내용과 실제 적용된 내용에 차이가 있어 아래처럼 반영했습니다.'
     : '아래 사유로 이번 변경 요청을 보류합니다.';
-  const bodyHtml = escapeHtml(content).replace(/\r?\n/g, '<br>');
+  const bodyHtml = renderNoteBodyHtml(content);
 
   const block =
     `${PLANNER_NOTE_START}\n` +
@@ -1115,6 +1395,8 @@ async function saveFeedback(env: Env, body: FeedbackBody): Promise<{ feedbackPat
     throw new Error(`GitHub create ${putRes.status}: ${text.slice(0, 500)}`);
   }
   const data = (await putRes.json()) as { content: { sha: string; html_url: string }; commit: { sha: string; html_url: string } };
+  // 새 피드백이 즉시 /qa 시스템 프롬프트에 반영되도록 관련 캐시 무효화
+  invalidateCache(env, 'qa/feedback', relPath);
   return {
     feedbackPath: relPath,
     commitSha: data.commit.sha,
@@ -1223,6 +1505,61 @@ async function saveStoryboardImage(env: Env, body: { targetPath: string; dataUrl
   }
   const bytes = Math.floor((base64Content.length * 3) / 4);
   return { saved: true, path: body.targetPath, bytes };
+}
+
+/* ────────── /save-decision-image ──────────
+ *  기획자 메모용 이미지 업로드. 파일은 `qa/decisions/images/<decision-slug>/<filename>` 에 저장.
+ *  reference 는 memo 안 `![alt](path)` 로 삽입되어 upsertPlannerNote 가 <img> 태그로 렌더.
+ */
+async function saveDecisionImage(
+  env: Env,
+  body: { decisionPath: string; dataUrl: string; filename?: string },
+): Promise<{ saved: boolean; path: string; markdownRef: string; bytes: number }> {
+  if (!body.decisionPath) throw new Error('decisionPath required');
+  if (!body.dataUrl) throw new Error('dataUrl required');
+  // decisionPath 는 `qa/decisions/YYYY-MM-DD-slug.md` 형식이어야 함
+  const decisionMatch = body.decisionPath.match(/^qa\/decisions\/(\d{4}-\d{2}-\d{2}-[^./]+)\.md$/);
+  if (!decisionMatch) {
+    throw new Error('decisionPath 는 qa/decisions/YYYY-MM-DD-slug.md 형식이어야 합니다');
+  }
+  const decisionSlug = decisionMatch[1];
+
+  const match = String(body.dataUrl).match(/^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/i);
+  if (!match) throw new Error('dataUrl 은 data:image/<png|jpg|jpeg|gif|webp>;base64,... 형식이어야 합니다');
+  const ext = match[1].toLowerCase() === 'jpeg' ? 'jpg' : match[1].toLowerCase();
+  const base64Content = match[2].replace(/\s/g, '');
+
+  // 파일명 sanitize — 확장자 확정, 특수문자 제거
+  const rawName = (body.filename || `image-${Date.now()}.${ext}`).replace(/[\/\\]/g, '');
+  const safeBase = rawName.replace(/\.[^.]+$/, '').replace(/[^\w.-]/g, '_').slice(0, 60) || `image-${Date.now()}`;
+  // 충돌 회피 — 같은 이름 이미 있으면 -1, -2, … 붙임
+  const dir = `qa/decisions/images/${decisionSlug}`;
+  let filename = `${safeBase}.${ext}`;
+  let targetPath = `${dir}/${filename}`;
+  let suffix = 1;
+  while ((await fileExists(env, targetPath)) && suffix < 100) {
+    filename = `${safeBase}-${suffix}.${ext}`;
+    targetPath = `${dir}/${filename}`;
+    suffix++;
+  }
+  if (suffix >= 100) throw new Error('너무 많은 동명 이미지가 있습니다');
+
+  const putRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(targetPath)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `decision-image: ${filename}`,
+      content: base64Content,
+    }),
+  });
+  if (!putRes.ok) {
+    const text = await putRes.text();
+    throw new Error(`GitHub image upload ${putRes.status}: ${text.slice(0, 500)}`);
+  }
+  const bytes = Math.floor((base64Content.length * 3) / 4);
+  // 렌더 시 편의를 위해 마크다운 이미지 참조 문자열도 함께 반환.
+  // 경로는 GitHub Pages 에서 서빙되는 상대 경로 기준 — /qa/decisions/images/... 접근.
+  const markdownRef = `![${safeBase}](/${targetPath})`;
+  return { saved: true, path: targetPath, markdownRef, bytes };
 }
 
 /* ────────── /list-storyboard-images ────────── */

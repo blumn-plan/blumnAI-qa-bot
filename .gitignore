@@ -9,3 +9,7 @@ node_modules/
 dist/
 .wrangler/
 .claude/
+
+# 로컬 dev 미리보기용 (repo root — 실제 팀 config 는 팀 레포에)
+/blumnAI-qa-bot.config.yml
+/version

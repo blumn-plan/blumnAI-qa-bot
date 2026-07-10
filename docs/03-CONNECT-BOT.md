@@ -80,13 +80,37 @@ npx wrangler secret list
 
 ---
 
+## 🩺 원격 진단 — `/health?detailed=1`
+
+셋업 중 뭔가 안 되면 **브라우저를 F5 새로고침** 하세요. qa-collab.html / qa-planner.html 이 자동으로 Worker 의 `/health?detailed=1` 을 호출해서 원인을 체크리스트로 보여줍니다:
+
+- ✅/❌ Anthropic API key 등록 여부
+- ✅/❌ GitHub PAT 등록 여부
+- ✅/❌ GITHUB_REPO · ALLOWED_ORIGINS 값
+- ✅/❌ `config.yml` 파싱 상태 + 프로젝트 목록
+- 캐시 통계
+
+직접 curl 로도 확인 가능:
+```bash
+curl "https://<your-worker>.workers.dev/health?detailed=1" | jq
+```
+
+시크릿 **값 자체는 응답에 포함되지 않음** (등록 여부만 boolean 반환) — 안전하게 공유·스크린샷 가능.
+
+---
+
 ## 트러블슈팅 — A 모드
 
 | 증상 | 원인·해결 |
 |---|---|
+| qa.html 진단 화면에 ❌ Anthropic API key | IT기획팀에 재발급 요청 → `wrangler secret put ANTHROPIC_API_KEY` |
+| qa.html 진단 화면에 ❌ GitHub PAT | Classic PAT (`repo` scope) 재발급 → `wrangler secret put GITHUB_TOKEN` |
+| qa.html 진단 화면에 ❌ config.yml 파싱 | 팀 레포 루트에 `blumnAI-qa-bot.config.yml` 이 있고 YAML 문법 유효한지 확인 |
 | `wrangler login` 브라우저 인증 실패 | 회사 방화벽. 개인 핫스팟으로 재시도 |
 | `wrangler secret put` 권한 에러 | `wrangler login` 다시 |
-| 답변 매번 실패 (Anthropic 에러) | API key 만료 또는 한도 초과. https://console.anthropic.com 의 Usage / Billing 확인 |
+| 답변 매번 실패 (401 · invalid_api_key) | API key 만료. `/health?detailed=1` 확인 후 재등록 |
+| 답변 매번 실패 (429 · rate_limit) | 호출 한도 초과. https://console.anthropic.com Usage/Billing 확인 |
+| CORS 차단 | wrangler.toml 의 `ALLOWED_ORIGINS` 에 페이지 URL 추가 후 재배포 |
 | 답변 너무 느림 (>15초) | Anthropic 응답 지연. 지속되면 `claude_model` 을 `claude-haiku-4-5-...` 로 낮춰서 테스트 |
 | PAT 이 코드 레포 접근 못함 (코드 검증 켠 팀) | classic PAT 이면 `repo` scope 재확인. fine-grained 이면 코드 레포도 selected repositories 에 추가 |
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>heythere_planer · 정책 Q&A</title>
+  <title>blumnAI QA Bot · 정책 Q&A</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E📋%3C/text%3E%3C/svg%3E" />
   <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
@@ -92,6 +92,7 @@
     main.doc article .planner-memo-rejected .planner-memo-head { color: #b91c1c; }
     main.doc article .planner-memo-desc { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
     main.doc article .planner-memo-body { font-size: 13px; line-height: 1.65; color: var(--text); }
+    main.doc article .planner-memo-body img.planner-memo-img { max-width: 100%; max-height: 320px; border-radius: 6px; border: 1px solid var(--border); margin: 8px 0; display: block; }
     main.doc .empty { padding: 60px 32px; color: var(--muted); text-align: center; }
 
     aside.chat { display: flex; flex-direction: column; background: var(--bg); min-width: 0; min-height: 0; }
@@ -529,10 +530,11 @@
     <form method="dialog">
       <div class="head">📤 기획자에게 전달 — 변경 요청을 전달이력에 기록</div>
       <div class="body">
-        <label for="fwd-topic">변경 요청 제목 (목록에 노출)</label>
-        <input id="fwd-topic" required placeholder="예: 대시보드 필터 초기화 버튼 위치 변경" />
-        <label for="fwd-summary">어디에 어떻게 반영해 달라 (한눈에 보이게)</label>
-        <textarea id="fwd-summary" required placeholder="예: 대시보드_v0.1.3.md §3-2 [필터 영역] — 현재 활성 시에만 노출 → 항상 노출로 변경. 사유: 사용자 혼동 줄임."></textarea>
+        <label for="fwd-topic">변경 요청 제목 (핵심 요약 — 목록·기획자 알림에 노출)</label>
+        <input id="fwd-topic" required placeholder="예: 대시보드 §3-2 필터 초기화 버튼 위치 변경" />
+        <label for="fwd-summary">합의 요약 (기획자가 이것만 봐도 판단 가능하게)</label>
+        <textarea id="fwd-summary" required placeholder="AI 답변에 📋 변경 제안 블록이 있으면 자동으로 6필드가 채워집니다.
+없으면 대화 히스토리 기반 fallback 이 채워지고, 부족한 부분은 직접 다듬어주세요."></textarea>
       </div>
       <div class="foot">
         <button value="cancel" formnovalidate>취소</button>
@@ -612,6 +614,35 @@
       if (!WORKER_URL || WORKER_URL.startsWith('__')) {
         throw new Error('blumnAI-qa-bot.config.yml 의 deployment.worker_url 를 채워주세요');
       }
+      // 팀 brand_name 을 브라우저 탭 title 에 반영
+      if (cfg?.ui?.brand_name) {
+        document.title = `${cfg.ui.brand_name} · 정책 Q&A`;
+      }
+    }
+
+    /* ────────── 세션 캐시 (탭 살아 있는 동안만) ──────────
+     *  한 번 fetch 한 문서·목록을 5분 동안 재사용. 새 대화·문서 재선택 시 API 호출 X. */
+    const DOC_CACHE_TTL_MS = 5 * 60 * 1000;
+    const docContentCache = new Map(); // key = path, value = { at, content }
+    const listDocsCache   = new Map(); // key = project, value = { at, docs }
+    async function fetchDocCached(path) {
+      const c = docContentCache.get(path);
+      if (c && Date.now() - c.at < DOC_CACHE_TTL_MS) return c.content;
+      const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      docContentCache.set(path, { at: Date.now(), content: data.content });
+      return data.content;
+    }
+    async function fetchListDocsCached(project) {
+      const c = listDocsCache.get(project);
+      if (c && Date.now() - c.at < DOC_CACHE_TTL_MS) return c.docs;
+      const res = await fetch(`${WORKER_URL}/list-docs?project=${encodeURIComponent(project)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const docs = data.docs || [];
+      listDocsCache.set(project, { at: Date.now(), docs });
+      return docs;
     }
 
     /* ────────── 상태 ────────── */
@@ -871,11 +902,23 @@
       $('#policy-list').innerHTML = '<li><button disabled>로딩 중...</button></li>';
       $('#storyboard-list').innerHTML = '';
       try {
-        const res = await fetch(`${WORKER_URL}/list-docs?project=${encodeURIComponent(state.currentProject)}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        state.docs = (data.docs || []).filter((d) => !isGuidePath(d.path));
+        const docs = await fetchListDocsCached(state.currentProject);
+        state.docs = docs.filter((d) => !isGuidePath(d.path));
         renderDocList();
+        // 0 docs 시 friendly CTA — 정책 md 없거나 경로 안 맞을 때 명확한 안내
+        if (state.docs.length === 0) {
+          const projLabel = state.projects.find((p) => p.id === state.currentProject)?.label || state.currentProject;
+          $('#policy-list').innerHTML = `
+            <li style="padding:12px;font-size:12px;color:var(--muted);line-height:1.6">
+              <div style="font-size:22px;margin-bottom:8px">📭</div>
+              <strong>${escapeHtml(projLabel)}</strong> 프로젝트에<br>정책 md 파일이 없습니다.<br><br>
+              가능한 원인:<br>
+              · 정책 폴더가 비어 있음<br>
+              · <code>policies_dir</code> 설정 경로가 실제와 다름<br>
+              · 파일명이 <code>xxx_v0.1.0.md</code> 형식이 아님<br><br>
+              🩺 <a href="${WORKER_URL}/health?detailed=1" target="_blank">서버 진단 결과 열기</a>
+            </li>`;
+        }
       } catch (err) {
         $('#policy-list').innerHTML = `<li><button disabled style="color:var(--error)">목록 로드 실패: ${err.message}</button></li>`;
       }
@@ -977,10 +1020,8 @@
           state.docView = 'markdown';
           $('#view-toggle').querySelectorAll('button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === 'markdown'));
           try {
-            const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            article.innerHTML += marked.parse(data.content);
+            const content = await fetchDocCached(path);
+            article.innerHTML += marked.parse(content);
             assignDocHeaderIds(article);
             bindCiteAnchorsInArticle(article);
           } catch (err) {
@@ -1001,10 +1042,8 @@
       article.className = '';
       article.innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
       try {
-        const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        article.innerHTML = marked.parse(data.content);
+        const content = await fetchDocCached(path);
+        article.innerHTML = marked.parse(content);
         assignDocHeaderIds(article);
         bindCiteAnchorsInArticle(article);
       } catch (err) {
@@ -1195,6 +1234,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             docPath: state.currentDoc?.path,
+            project: state.currentProject,
             question,
             history: state.history.slice(0, -1).map(({ role, content }) => ({ role, content })),
             attachments: attachmentsForSend.length
@@ -1527,48 +1567,83 @@
 
     /* ────────── 기획자에게 전달 ────────── */
     // AI 가 답변에 붙인 "📋 변경 제안" 블록을 파싱해서 다이얼로그를 미리 채움.
-    // 위치 (`📍 §X-Y`) 가 있으면 그걸 제목으로, 변경 후 본문이 있으면 요약으로 자동 입력.
+    // 워커 시스템 프롬프트가 정책 변경 필요 시 이 블록을 답변 끝에 붙이도록 지시함 (index.ts buildSystemPrompt).
     function parseChangeProposal(answer) {
       const m = answer.match(/### 📋 변경 제안\s*\n([\s\S]*?)(?=\n###|\n##|$)/);
       if (!m) return null;
       const block = m[1];
       const get = (label) => {
-        const r = block.match(new RegExp(`-\\s*${label}:?\\s*([^\\n]+)`));
+        const r = block.match(new RegExp(`-\\s*${label}:?\\s*([\\s\\S]*?)(?=\\n-\\s*[📌📄📍✏️✅💡]|$)`));
         return r ? r[1].trim() : '';
       };
       return {
-        target: get('📄\\s*대상\\s*파일'),
+        title:   get('📌\\s*요청\\s*제목'),
+        target:  get('📄\\s*대상\\s*파일'),
         section: get('📍\\s*위치'),
-        before: get('✏️\\s*변경\\s*전'),
-        after: get('✅\\s*변경\\s*후'),
-        reason: get('💡\\s*근거'),
+        before:  get('✏️\\s*변경\\s*전'),
+        after:   get('✅\\s*변경\\s*후'),
+        reason:  get('💡\\s*근거'),
       };
+    }
+
+    // 대화가 여러 라운드일 때 마지막 몇 개 Q/A 를 간결히 요약해서 fallback 본문 생성
+    function buildFallbackSummary(history, docTitle) {
+      const pairs = [];
+      let lastU = null;
+      for (const m of history) {
+        if (m?.role === 'user' && m.content) lastU = m;
+        else if (m?.role === 'assistant' && m.content && lastU) {
+          pairs.push({ q: lastU.content, a: m.content });
+          lastU = null;
+        }
+      }
+      if (pairs.length === 0) return { title: docTitle || '정책 변경 요청', body: '' };
+      // 마지막 3라운드까지만 요약. 답변에서 안내문 line 제거
+      const recent = pairs.slice(-3);
+      const clean = (s) => s.replace(/\n+→\s*OK.*$/m, '').replace(/### 📋 변경 제안[\s\S]*$/m, '').trim();
+      // 첫 문장 = 요청의 핵심으로 가정
+      const firstQ = pairs[0].q.trim();
+      const shortTitle = firstQ.replace(/[?!.]+$/, '').slice(0, 40);
+      const body = [
+        '## 상황',
+        `- 문서: ${docTitle || '(미지정)'}`,
+        `- 협업자 질문(요약): ${firstQ.replace(/\s+/g, ' ').slice(0, 200)}`,
+        '',
+        '## 논의된 내용',
+        ...recent.map((p, i) => `**Q${i + 1}.** ${p.q.replace(/\s+/g, ' ').slice(0, 300)}\n**A${i + 1}.** ${clean(p.a).replace(/\s+/g, ' ').slice(0, 500)}`),
+        '',
+        '## 요청 사항 (기획자 확인 필요)',
+        '- 어느 정책 · 어느 절 · 어떻게 변경 → 여기 채워주세요',
+        '- 근거 · 사유 → 여기 채워주세요',
+      ].join('\n\n');
+      return { title: shortTitle, body };
     }
 
     $('#forward-btn').addEventListener('click', () => {
       if (state.history.length === 0) { toast('아직 대화가 없어요', 'error'); return; }
-      const lastUser = [...state.history].reverse().find((m) => m.role === 'user');
       const lastAssistant = [...state.history].reverse().find((m) => m.role === 'assistant');
+      const docTitle = state.currentDoc?.title || '';
       const proposal = lastAssistant ? parseChangeProposal(lastAssistant.content) : null;
 
-      if (proposal && proposal.section) {
-        // 변경 제안 블록이 있으면 그 5필드를 그대로 요약으로 사용
-        $('#fwd-topic').value = `${state.currentDoc?.title || ''} ${proposal.section}`.trim();
-        const sumParts = [];
-        if (proposal.target) sumParts.push(`📄 ${proposal.target}`);
-        if (proposal.section) sumParts.push(`📍 ${proposal.section}`);
-        if (proposal.after) sumParts.push(`✅ ${proposal.after}`);
-        if (proposal.reason) sumParts.push(`💡 ${proposal.reason}`);
+      if (proposal) {
+        // 📋 변경 제안 블록 있음 — 6필드로 구조화된 요약
+        // 제목: 📌 요청 제목 우선, 없으면 화면명+절번호
+        $('#fwd-topic').value = proposal.title
+          || `${docTitle} ${proposal.section}`.trim()
+          || docTitle
+          || '정책 변경 요청';
+        const sumParts = ['## 합의 요약'];
+        if (proposal.target)  sumParts.push(`- 📄 **대상 파일**: ${proposal.target}`);
+        if (proposal.section) sumParts.push(`- 📍 **위치**: ${proposal.section}`);
+        if (proposal.before)  sumParts.push(`- ✏️ **변경 전**: ${proposal.before}`);
+        if (proposal.after)   sumParts.push(`- ✅ **변경 후**: ${proposal.after}`);
+        if (proposal.reason)  sumParts.push(`- 💡 **근거**: ${proposal.reason}`);
         $('#fwd-summary').value = sumParts.join('\n');
       } else {
-        // 블록이 없으면 질문 + 답변 본문을 그대로 미리 채움 (사용자가 다듬어 보낼 수 있게)
-        // 답변 끝의 안내문 line 제외 — "→ OK 면 댓글" 류 제거.
-        $('#fwd-topic').value = lastUser ? lastUser.content.slice(0, 60) : (state.currentDoc?.title ?? '');
-        const cleanAnswer = (lastAssistant?.content || '').replace(/\n+→\s*OK.*$/m, '').trim();
-        const parts = [];
-        if (lastUser) parts.push(`❓ 질문\n${lastUser.content}`);
-        if (cleanAnswer) parts.push(`💬 답변\n${cleanAnswer}`);
-        $('#fwd-summary').value = parts.join('\n\n');
+        // 블록 없음 — 대화 히스토리 기반으로 구조화된 fallback 요약 생성
+        const fallback = buildFallbackSummary(state.history, docTitle);
+        $('#fwd-topic').value = fallback.title;
+        $('#fwd-summary').value = fallback.body;
       }
       $('#forward-dialog').showModal();
     });
@@ -2082,10 +2157,7 @@
       $('#doc-content').className = '';
       $('#doc-content').innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
       try {
-        const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const md = data.content;
+        const md = await fetchDocCached(path);
         const date = (md.match(/^\|\s*일자\s*\|\s*([^|]+?)\s*\|\s*$/m) || [])[1]?.trim() || '';
         const user = (md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m) || [])[1]?.trim() || '익명';
         const improvementMatch = md.match(/##\s*개선\s*요청\s*사항\s*\n+([\s\S]*?)(?=\n##|$)/);
@@ -2102,7 +2174,7 @@
           </table>
           <h2>📌 적용 룰 (AI 가 다음 답변부터 반영)</h2>
           <blockquote style="border-left:3px solid var(--primary); background: var(--user-bg); padding:10px 14px; margin:12px 0; border-radius:4px;">${marked.parse(improvement)}</blockquote>
-          <p style="color:var(--muted);font-size:12px;margin-top:24px">상세 (원본 질문·답변) 가 필요하면 <a href="https://github.com/${CONFIG?.deployment?.github_repo || 'lunasoft-org/heythere_planer'}/blob/main/${escapeAttr(path)}" target="_blank">GitHub 에서 원본 md 보기</a>.</p>
+          <p style="color:var(--muted);font-size:12px;margin-top:24px">상세 (원본 질문·답변) 가 필요하면 ${CONFIG?.deployment?.github_repo ? `<a href="https://github.com/${CONFIG.deployment.github_repo}/blob/main/${escapeAttr(path)}" target="_blank">GitHub 에서 원본 md 보기</a>` : '(github_repo 미설정)'}</p>
         `;
       } catch (err) {
         $('#doc-content').innerHTML = `<p style="color:var(--error)">로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
@@ -2286,15 +2358,34 @@
     // 사용자에게 friendly 한 에러 메시지로 매핑 (Phase 2 ⑫ 항목 일부 선반영)
     function friendlyError(err) {
       const msg = err instanceof Error ? err.message : String(err);
-      // 타임아웃 (Worker abort) — claude CLI 가 느려서 끊긴 경우. 서버는 살아 있음.
+      // 타임아웃 (Worker abort) — 답변 생성이 오래 걸린 경우
       if (/aborted|timeout|context canceled|signal is aborted/i.test(msg)) {
-        return '답변 생성이 너무 오래 걸려 끊겼어요. claude CLI 로그를 확인하거나 더 짧게 질문해보세요.';
+        return '답변 생성이 너무 오래 걸려 끊겼어요. 더 짧게 질문하거나 잠시 후 다시 시도해주세요.';
       }
       if (/HTTP 530|Local server unreachable/i.test(msg)) {
-        return 'PC 서버가 꺼져 있어요. 호스트에게 start.bat 실행 요청하세요.';
+        return 'PC 서버가 꺼져 있어요 (C 모드). 호스트에게 start.bat 실행 요청하세요.';
       }
-      if (/Failed to fetch|NetworkError/i.test(msg)) {
-        return '서버 연결이 안 돼요. 인터넷 또는 Worker URL 을 확인하세요.';
+      if (/Failed to fetch|NetworkError|net::ERR/i.test(msg)) {
+        return '서버 연결이 안 돼요. 인터넷 또는 Worker URL 을 확인하세요. F5 새로고침 시 진단 화면이 뜹니다.';
+      }
+      // 흔한 시크릿 만료·오류 패턴
+      if (/401|authentication_error|invalid_api_key|invalid api key|sk-ant/i.test(msg)) {
+        return 'Anthropic API key 가 만료·잘못됐어요. IT기획팀에 재발급 요청 후 wrangler secret put ANTHROPIC_API_KEY 로 갱신하세요.';
+      }
+      if (/403.*rate|429|rate_limit|too many requests/i.test(msg)) {
+        return 'Anthropic 호출 한도 초과. 잠시 후 다시 시도하거나 월 spending limit 확인하세요.';
+      }
+      if (/GitHub.*401|bad credentials|401.*github/i.test(msg)) {
+        return 'GitHub PAT (ghp_...) 만료 또는 오류. Classic PAT 재발급 후 wrangler secret put GITHUB_TOKEN 로 갱신하세요.';
+      }
+      if (/GitHub.*404|not found.*repository/i.test(msg)) {
+        return 'GitHub 레포·경로 못 찾음. GITHUB_REPO 시크릿 또는 config.yml 의 policies_dir 확인하세요.';
+      }
+      if (/CORS|Cross-Origin/i.test(msg)) {
+        return 'CORS 차단. wrangler.toml 의 ALLOWED_ORIGINS 에 이 페이지 URL 을 추가하고 재배포하세요.';
+      }
+      if (/HTTP 5\d\d/.test(msg)) {
+        return `서버 오류: ${msg.slice(0, 120)}. Worker 로그 확인 필요 (wrangler tail).`;
       }
       return msg.slice(0, 200);
     }
@@ -2345,11 +2436,89 @@
       document.body.style.paddingTop = (banner.offsetHeight + 4) + 'px';
     }
 
+    /* ────────── 🩺 진단 패널 — bootstrap/API 실패 시 표시 ──────────
+     *  Worker 의 /health?detailed=1 을 fetch 해서 시크릿·config·프로젝트 상태를
+     *  체크리스트로 렌더. 팀 담당자가 F12 안 열어도 원인 파악 가능. */
+    async function renderErrorScreen(err) {
+      const workerUrlHint = (typeof WORKER_URL === 'string' && WORKER_URL && !WORKER_URL.startsWith('__')) ? WORKER_URL : null;
+      let diagnosticHtml = '';
+      if (workerUrlHint) {
+        try {
+          const res = await fetch(`${workerUrlHint}/health?detailed=1`, { signal: AbortSignal.timeout(8000) });
+          if (res.ok) {
+            const h = await res.json();
+            diagnosticHtml = renderDiagnostic(h);
+          } else {
+            diagnosticHtml = `<div class="diag-warn">서버 응답 실패 (${res.status}). worker_url 이 정확한지, Worker 가 배포됐는지 확인하세요.</div>`;
+          }
+        } catch (fetchErr) {
+          const fm = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+          diagnosticHtml = `<div class="diag-warn">서버 응답 없음: ${escapeHtml(fm)}<br>worker_url 오타 또는 배포 실패 가능성 (CORS·네트워크·wrangler deploy).</div>`;
+        }
+      } else {
+        diagnosticHtml = '<div class="diag-warn">worker_url 이 아직 채워지지 않았습니다 — 진단할 서버 주소 없음. config.yml 의 <code>deployment.worker_url</code> 을 먼저 설정하세요.</div>';
+      }
+      document.body.innerHTML = `
+        <style>
+          body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f6f7f9; color:#1f2328; margin:0; padding:40px 20px; }
+          .err-wrap { max-width:640px; margin:0 auto; }
+          .err-head { text-align:center; margin-bottom:24px; }
+          .err-head .icon { font-size:48px; margin-bottom:12px; }
+          .err-head h2 { margin:0 0 6px; font-size:20px; }
+          .err-msg { color:#6b7280; font-size:14px; padding:12px 16px; background:#fff; border-radius:8px; border:1px solid #e3e5e8; margin-bottom:16px; }
+          .diag { background:#fff; border:1px solid #e3e5e8; border-radius:8px; padding:16px 20px; margin-bottom:16px; }
+          .diag h3 { margin:0 0 12px; font-size:14px; color:#374151; }
+          .diag ul { margin:0; padding:0; list-style:none; font-size:13px; }
+          .diag li { padding:4px 0; display:flex; gap:8px; align-items:flex-start; }
+          .diag li .k { min-width:180px; color:#6b7280; }
+          .diag li .v { flex:1; word-break:break-all; }
+          .diag li.ok .icon { color:#059669; }
+          .diag li.miss .icon { color:#dc2626; }
+          .diag-warn { color:#92400e; background:#fffbeb; border:1px solid #fcd34d; border-radius:6px; padding:10px 14px; font-size:13px; margin-bottom:12px; }
+          .foot { text-align:center; font-size:12px; color:#9ca3af; margin-top:20px; }
+          .foot a { color:#6366f1; text-decoration:none; }
+        </style>
+        <div class="err-wrap">
+          <div class="err-head">
+            <div class="icon">⚙️</div>
+            <h2>설정이 완료되지 않았습니다</h2>
+          </div>
+          <div class="err-msg"><strong>원인 메시지</strong>: ${escapeHtml(err.message || String(err))}</div>
+          ${diagnosticHtml}
+          <div class="foot">
+            자세한 안내는 <a href="https://github.com/blumn-plan/blumnAI-qa-bot/blob/main/docs/01-INSTALL.md" target="_blank">docs/01-INSTALL.md</a>
+            · 서버 재진단하려면 이 페이지 새로고침
+          </div>
+        </div>`;
+    }
+
+    function renderDiagnostic(h) {
+      const rows = [];
+      const mark = (ok) => ok ? '<span class="icon">✅</span>' : '<span class="icon">❌</span>';
+      const row = (ok, k, v) => `<li class="${ok ? 'ok' : 'miss'}">${mark(ok)}<span class="k">${escapeHtml(k)}</span><span class="v">${v}</span></li>`;
+      const s = h.secrets || {};
+      rows.push(row(!!s.ANTHROPIC_API_KEY, 'Anthropic API key', s.ANTHROPIC_API_KEY ? '등록됨' : '❗ IT기획팀에 발급 요청 → wrangler secret put ANTHROPIC_API_KEY'));
+      rows.push(row(!!s.GITHUB_TOKEN, 'GitHub PAT', s.GITHUB_TOKEN ? '등록됨' : '❗ Classic PAT (repo scope) 발급 후 wrangler secret put GITHUB_TOKEN'));
+      rows.push(row(!!s.GITHUB_REPO, 'GITHUB_REPO', s.GITHUB_REPO || '❗ wrangler.toml [vars] 에 GITHUB_REPO 설정 필요'));
+      const originsOk = Array.isArray(s.ALLOWED_ORIGINS) && s.ALLOWED_ORIGINS.length > 0;
+      rows.push(row(originsOk, 'ALLOWED_ORIGINS', originsOk ? escapeHtml(s.ALLOWED_ORIGINS.join(', ')) : '❗ Pages URL 을 wrangler.toml 에 추가하고 재배포'));
+      const c = h.config || {};
+      if (c.loaded) {
+        const projs = c.projects || [];
+        rows.push(row(projs.length > 0, 'config.yml 프로젝트 수', projs.length > 0 ? `${projs.length}개 (${projs.map((p) => p.id).join(', ')})` : '❗ config.yml projects[] 비어 있음'));
+      } else {
+        rows.push(row(false, 'config.yml 파싱', `❗ ${escapeHtml(c.error || '실패')} — 레포 루트에 blumnAI-qa-bot.config.yml 파일 확인`));
+      }
+      const cacheEntries = (h.cache?.textFileEntries || 0) + (h.cache?.dirListingEntries || 0);
+      rows.push(row(true, '캐시 항목', `${cacheEntries}개 (worker instance 수명 안)`));
+      return `<div class="diag"><h3>🩺 서버 진단 (/health?detailed=1)</h3><ul>${rows.join('')}</ul></div>`;
+    }
+
     (async () => {
       try {
         await bootstrap();
       } catch (err) {
-        document.body.innerHTML = `<div style="font-family:-apple-system,sans-serif;padding:60px 40px;text-align:center;background:#f6f7f9;color:#1f2328"><div style="max-width:500px;margin:0 auto"><div style="font-size:48px;margin-bottom:16px">⚙️</div><h2 style="margin:0 0 8px;font-size:20px">설정이 필요합니다</h2><p style="color:#6b7280;font-size:14px;margin:0 0 24px">${err.message}</p><p style="color:#9ca3af;font-size:12px">자세한 안내는 <code>docs/01-INSTALL.md</code> 참고</p></div></div>`;
+        await renderErrorScreen(err);
         return;
       }
       init();

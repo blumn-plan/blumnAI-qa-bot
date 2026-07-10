@@ -75,7 +75,8 @@ const server = http.createServer(async (req, res) => {
       '/delete-feedback',
       '/save-storyboard-image',
       '/list-storyboard-images',
-      '/delete-storyboard-image'
+      '/delete-storyboard-image',
+      '/save-decision-image'
     ].includes(url.pathname);
 
     if (!isApi) {
@@ -178,6 +179,10 @@ const server = http.createServer(async (req, res) => {
       case '/delete-storyboard-image':
         if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' });
         result = await deleteStoryboardImage(await readJson(req));
+        break;
+      case '/save-decision-image':
+        if (req.method !== 'POST') return sendJson(res, 405, { error: 'POST only' });
+        result = await saveDecisionImage(await readJson(req));
         break;
       default:
         return sendJson(res, 404, { error: 'not found' });
@@ -692,6 +697,32 @@ const PLANNER_NOTE_END = '<!-- planner-note:end -->';
 // 합의문 상단(제목 바로 아래) 에 "📝 기획자 적용 메모" 또는 "🚫 기획자 보류 사유"
 // 박스형 블록을 멱등하게 신설/갱신/제거. content 가 비어있거나 kind 가 null 이면 블록 제거.
 // 기존 블록이 파일 하단에 있던 옛 포맷도 함께 제거해 상단으로 이동시킴.
+/** 기획자 메모 본문 렌더 —
+ *  - `![alt](url)` 마크다운 이미지 → `<img class="planner-memo-img" src="url" alt="alt">`
+ *  - 나머지 텍스트는 escapeHtml + 개행 → <br>
+ *  - url 은 http(s)/data:/절대경로 (`/qa/decisions/images/...`) 만 허용 (스크립트 인젝션 차단)
+ *  - Worker(src/index.ts) 의 renderNoteBodyHtml 과 동일 로직 유지. */
+function renderNoteBodyHtml(content) {
+  const imgRe = /!\[([^\]]*)\]\(([^)\s]+)\)/g;
+  let out = '';
+  let lastIdx = 0;
+  let m;
+  while ((m = imgRe.exec(content)) !== null) {
+    const before = content.slice(lastIdx, m.index);
+    out += escapeHtml(before).replace(/\r?\n/g, '<br>');
+    const alt = m[1] || 'image';
+    const url = m[2].trim();
+    if (/^(https?:\/\/|\/qa\/decisions\/images\/|data:image\/)/i.test(url)) {
+      out += `<img class="planner-memo-img" src="${escapeHtml(url)}" alt="${escapeHtml(alt)}">`;
+    } else {
+      out += escapeHtml(m[0]);
+    }
+    lastIdx = m.index + m[0].length;
+  }
+  out += escapeHtml(content.slice(lastIdx)).replace(/\r?\n/g, '<br>');
+  return out;
+}
+
 function upsertPlannerNote(md, opts) {
   const kind = opts && opts.kind ? opts.kind : null; // 'applied' | 'rejected' | null
   const content = opts && typeof opts.content === 'string' ? opts.content.trim() : '';
@@ -715,7 +746,7 @@ function upsertPlannerNote(md, opts) {
   const desc = applied
     ? '협업자가 요청한 내용과 실제 적용된 내용에 차이가 있어 아래처럼 반영했습니다.'
     : '아래 사유로 이번 변경 요청을 보류합니다.';
-  const bodyHtml = escapeHtml(content).replace(/\r?\n/g, '<br>');
+  const bodyHtml = renderNoteBodyHtml(content);
 
   const block =
     `${PLANNER_NOTE_START}\n` +
@@ -773,7 +804,8 @@ async function updateDecisionStatus(body) {
   if (!existing) throw new Error('"기획자 ..." 표 행을 찾지 못했습니다 (decision md 첫 표 양식 확인)');
 
   let replaced = md.replace(re, `$1${newText}$3`);
-  // 상단 메모 박스 갱신 — applied+note / rejected+reason 일 때만 삽입, pending 이면 제거.
+  // 상단 메모 박스 갱신 — applied+note · rejected+reason 일 때만 삽입, pending 이면 제거.
+  // 이미지는 메모 텍스트 안에 `![](data:image/...)` 형태로 인라인 포함 (renderNoteBodyHtml 이 <img> 로 렌더).
   if (body.status === 'applied') {
     replaced = upsertPlannerNote(replaced, { kind: 'applied', content: note, plannerName });
   } else if (body.status === 'rejected') {
@@ -801,6 +833,67 @@ async function updateDecisionStatus(body) {
   }
 
   return { path: body.path, status: body.status, statusText: newText, committed };
+}
+
+/* ────────── /save-decision-image — 기획자 메모용 이미지 업로드 ──────────
+   apply modal 에서 첨부한 이미지를 `qa/decisions/images/<decision-slug>/<filename>` 에 저장.
+   Worker(src/index.ts) 의 saveDecisionImage 과 동일한 규약. 파일 저장 + git commit + push.
+   응답으로 markdownRef (`![name](/qa/decisions/images/...)`) 를 함께 반환해 클라이언트가 메모에 그대로 붙일 수 있음.
+   메모 렌더 시 renderNoteBodyHtml 이 이 마크다운을 <img class="planner-memo-img"> 로 안전하게 렌더. */
+
+async function saveDecisionImage(body) {
+  if (!body.decisionPath) throw new Error('decisionPath required');
+  if (!body.dataUrl) throw new Error('dataUrl required');
+  const decisionMatch = String(body.decisionPath).match(/^qa\/decisions\/(\d{4}-\d{2}-\d{2}-[^./]+)\.md$/);
+  if (!decisionMatch) {
+    throw new Error('decisionPath 는 qa/decisions/YYYY-MM-DD-slug.md 형식이어야 합니다');
+  }
+  const decisionSlug = decisionMatch[1];
+
+  const match = String(body.dataUrl).match(/^data:image\/(png|jpe?g|gif|webp);base64,(.+)$/i);
+  if (!match) throw new Error('dataUrl 은 data:image/<png|jpg|jpeg|gif|webp>;base64,... 형식이어야 합니다');
+  const ext = match[1].toLowerCase() === 'jpeg' ? 'jpg' : match[1].toLowerCase();
+  const base64Content = match[2].replace(/\s/g, '');
+  const buffer = Buffer.from(base64Content, 'base64');
+
+  const rawName = (body.filename || `image-${Date.now()}.${ext}`).replace(/[\/\\]/g, '');
+  const safeBase = (rawName.replace(/\.[^.]+$/, '').replace(/[^\w.-]/g, '_').slice(0, 60)) || `image-${Date.now()}`;
+
+  const dir = `qa/decisions/images/${decisionSlug}`;
+  const absDir = path.normalize(path.join(PLANNER_ROOT, dir));
+  if (!absDir.startsWith(PLANNER_ROOT)) throw new Error('invalid path');
+  await fs.mkdir(absDir, { recursive: true });
+
+  // 충돌 회피 — 같은 이름 이미 있으면 -1, -2, … 붙임
+  let filename = `${safeBase}.${ext}`;
+  let absPath = path.join(absDir, filename);
+  let suffix = 1;
+  while (suffix < 100) {
+    try { await fs.access(absPath); }
+    catch (_) { break; } // ENOENT → 사용 가능
+    filename = `${safeBase}-${suffix}.${ext}`;
+    absPath = path.join(absDir, filename);
+    suffix++;
+  }
+  if (suffix >= 100) throw new Error('너무 많은 동명 이미지가 있습니다');
+  const targetPath = `${dir}/${filename}`;
+
+  await fs.writeFile(absPath, buffer);
+
+  // git add + commit + push (실패해도 파일은 남음 — 다음 상태 갱신 때 함께 커밋됨)
+  try {
+    await runGit(['add', targetPath]);
+    const statusOut = await runGit(['status', '--porcelain', targetPath]);
+    if (statusOut.trim()) {
+      await runGit(['commit', '-m', `decision-image: ${filename}`]);
+      await runGit(['push', 'origin', 'main']);
+    }
+  } catch (err) {
+    console.warn('[save-decision-image] git push 실패 (파일은 저장됨):', err.message);
+  }
+
+  const markdownRef = `![${safeBase}](/${targetPath})`;
+  return { saved: true, path: targetPath, markdownRef, bytes: buffer.length };
 }
 
 /* ────────── /save-storyboard-image — storyboard paste-zone 이미지 저장 ──────────

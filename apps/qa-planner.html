@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>heythere_planer · 기획자 모드</title>
+  <title>blumnAI QA Bot · 기획자 모드</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E🎯%3C/text%3E%3C/svg%3E" />
   <script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
@@ -130,6 +130,12 @@
     main.detail article .planner-memo-rejected .planner-memo-head { color: #b91c1c; }
     main.detail article .planner-memo-desc { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
     main.detail article .planner-memo-body { font-size: 13px; line-height: 1.65; color: var(--text); }
+    main.detail article .planner-memo-body img.planner-memo-img { max-width: 100%; max-height: 320px; border-radius: 6px; border: 1px solid var(--border); margin: 8px 0; display: block; }
+    .apply-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; padding: 8px; border: 1px dashed var(--border); border-radius: 6px; background: #fafafa; }
+    .apply-attachments .thumb { position: relative; display: inline-block; }
+    .apply-attachments .thumb img { max-height: 80px; max-width: 120px; border-radius: 6px; border: 1px solid var(--border); display: block; }
+    .apply-attachments .thumb button.remove { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%; background: #b91c1c; color: white; border: 0; cursor: pointer; font-size: 12px; line-height: 20px; padding: 0; }
+    .apply-attachments .thumb .name { font-size: 10px; color: var(--muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -175,11 +181,17 @@
         협업자가 요청한 내용과 <b>실제로 적용·배포한 내용이 다르면</b> 아래에 차이를 적어주세요.<br>
         입력한 내용은 합의문 본문에 메모로 남아 협업자가 확인합니다. 비워두면 그대로 적용 처리됩니다.
       </p>
-      <textarea id="apply-note" placeholder="예) 요청한 14일 대신 카친캠 실측에 맞춰 1~27일로 적용, 장기 미접속은 300~365일로 조정"></textarea>
-      <div class="row">
-        <button class="cancel" id="apply-cancel">취소</button>
-        <button class="primary" id="apply-as-is">그대로 적용</button>
-        <button class="primary" id="apply-with-note">메모 저장하고 적용</button>
+      <textarea id="apply-note" placeholder="예) 요청한 14일 대신 카친캠 실측에 맞춰 1~27일로 적용, 장기 미접속은 300~365일로 조정
+💡 이미지 첨부: 이 창 안에서 Ctrl+V 로 붙여넣거나, 파일을 드래그, 또는 아래 [📎 이미지] 버튼"></textarea>
+      <div id="apply-attachments" class="apply-attachments" hidden></div>
+      <div class="row" style="justify-content:space-between;gap:8px;align-items:center">
+        <button type="button" id="apply-image-btn" class="cancel" title="이미지 첨부">📎 이미지</button>
+        <input type="file" id="apply-image-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+        <div style="display:flex;gap:8px">
+          <button class="cancel" id="apply-cancel">취소</button>
+          <button class="primary" id="apply-as-is">그대로 적용</button>
+          <button class="primary" id="apply-with-note">메모 저장하고 적용</button>
+        </div>
       </div>
     </div>
   </div>
@@ -274,6 +286,9 @@
       WORKER_URL = cfg?.deployment?.worker_url;
       if (!WORKER_URL || WORKER_URL.startsWith('__')) {
         throw new Error('blumnAI-qa-bot.config.yml 의 deployment.worker_url 를 채워주세요');
+      }
+      if (cfg?.ui?.brand_name) {
+        document.title = `${cfg.ui.brand_name} · 기획자 모드`;
       }
     }
 
@@ -667,14 +682,86 @@
     });
 
     /* 적용 메모 다이얼로그 — 협업자 요청과 실제 적용 내용 차이를 합의문에 기록 */
+    // 이번 세션 첨부 이미지 목록 — [{ id, name, dataUrl }]
+    let applyAttachments = [];
     function openApplyModal() {
       if (!state.currentPath) { toast('항목 선택 안 됨', 'error'); return; }
       const ta = $('#apply-note');
       ta.value = extractExistingPlannerNote(state.currentContent);
+      applyAttachments = [];
+      renderApplyAttachments();
       $('#apply-modal').classList.add('show');
       setTimeout(() => ta.focus(), 0);
     }
-    function closeApplyModal() { $('#apply-modal').classList.remove('show'); }
+    function closeApplyModal() {
+      $('#apply-modal').classList.remove('show');
+      applyAttachments = [];
+      renderApplyAttachments();
+    }
+    function renderApplyAttachments() {
+      const wrap = $('#apply-attachments');
+      if (applyAttachments.length === 0) {
+        wrap.hidden = true; wrap.innerHTML = '';
+        return;
+      }
+      wrap.hidden = false;
+      wrap.innerHTML = applyAttachments.map((a) => `
+        <div class="thumb" data-id="${a.id}">
+          <img src="${a.dataUrl}" alt="${a.name}">
+          <div class="name" title="${a.name}">${a.name}</div>
+          <button type="button" class="remove" title="첨부 제거" data-id="${a.id}">×</button>
+        </div>
+      `).join('');
+      wrap.querySelectorAll('button.remove').forEach((b) => {
+        b.addEventListener('click', () => {
+          const id = b.dataset.id;
+          applyAttachments = applyAttachments.filter((a) => a.id !== id);
+          renderApplyAttachments();
+        });
+      });
+    }
+    async function addAttachmentFile(file) {
+      if (!file || !file.type?.startsWith('image/')) { toast('이미지 파일만 첨부 가능', 'error'); return; }
+      const MAX_BYTES = 5 * 1024 * 1024;
+      if (file.size > MAX_BYTES) { toast('이미지가 5MB 를 넘습니다', 'error'); return; }
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(r.error);
+        r.readAsDataURL(file);
+      });
+      applyAttachments.push({
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name || `image-${Date.now()}.png`,
+        dataUrl,
+      });
+      renderApplyAttachments();
+    }
+    // 이미지 파일 선택
+    $('#apply-image-btn').addEventListener('click', () => $('#apply-image-input').click());
+    $('#apply-image-input').addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      for (const f of files) await addAttachmentFile(f);
+      e.target.value = ''; // 같은 파일 재선택 가능하게
+    });
+    // Ctrl+V 붙여넣기
+    $('#apply-modal').addEventListener('paste', async (e) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imgs = items.filter((it) => it.kind === 'file' && it.type.startsWith('image/'));
+      if (imgs.length === 0) return;
+      e.preventDefault();
+      for (const it of imgs) { const f = it.getAsFile(); if (f) await addAttachmentFile(f); }
+    });
+    // 드래그 앤 드롭
+    ['dragover', 'dragenter'].forEach((ev) => $('#apply-modal').addEventListener(ev, (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) { e.preventDefault(); }
+    }));
+    $('#apply-modal').addEventListener('drop', async (e) => {
+      const files = Array.from(e.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/'));
+      if (files.length === 0) return;
+      e.preventDefault();
+      for (const f of files) await addAttachmentFile(f);
+    });
     // 기존 메모 블록이 있으면 textarea 에 prefill — "메모 수정" 시나리오 대응
     // 신 포맷: <div class="planner-memo-body">본문<br>...</div>
     // 옛 포맷: 헤더(### 📝) + blockquote(> ...) + 이후 라인 본문
@@ -705,11 +792,46 @@
       closeApplyModal();
       updateStatus('applied', { note: '' });
     });
-    $('#apply-with-note').addEventListener('click', () => {
-      const note = $('#apply-note').value.trim();
-      if (!note) { toast('메모를 입력하거나 "그대로 적용" 을 눌러주세요', 'error'); return; }
-      closeApplyModal();
-      updateStatus('applied', { note });
+    $('#apply-with-note').addEventListener('click', async () => {
+      const btn = $('#apply-with-note');
+      const noteText = $('#apply-note').value.trim();
+      if (!noteText && applyAttachments.length === 0) {
+        toast('메모를 입력하거나 이미지를 첨부하거나 "그대로 적용" 을 눌러주세요', 'error');
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '업로드 중…';
+      try {
+        // 첨부 이미지들을 /save-decision-image 로 업로드해서 markdown ref 로 변환
+        const uploadedRefs = [];
+        for (const att of applyAttachments) {
+          const res = await fetch(`${WORKER_URL}/save-decision-image`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              decisionPath: state.currentPath,
+              dataUrl: att.dataUrl,
+              filename: att.name,
+            }),
+          });
+          if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`이미지 업로드 실패 (${att.name}): HTTP ${res.status} — ${errText.slice(0, 200)}`);
+          }
+          const data = await res.json();
+          uploadedRefs.push(data.markdownRef || `![${att.name}](/${data.path})`);
+        }
+        const finalNote = uploadedRefs.length
+          ? (noteText ? `${noteText}\n\n${uploadedRefs.join('\n')}` : uploadedRefs.join('\n'))
+          : noteText;
+        closeApplyModal();
+        await updateStatus('applied', { note: finalNote });
+      } catch (err) {
+        toast(friendlyError(err), 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '메모 저장하고 적용';
+      }
     });
 
     async function updateStatus(status, extra = {}) {
@@ -786,12 +908,77 @@
       document.body.style.paddingTop = (banner.offsetHeight + 4) + 'px';
     }
 
+    /* 🩺 진단 패널 — bootstrap 실패 시 /health?detailed=1 결과와 함께 표시 */
+    async function renderErrorScreen(err) {
+      const workerUrlHint = (typeof WORKER_URL === 'string' && WORKER_URL && !WORKER_URL.startsWith('__')) ? WORKER_URL : null;
+      let diagnosticHtml = '';
+      if (workerUrlHint) {
+        try {
+          const res = await fetch(`${workerUrlHint}/health?detailed=1`, { signal: AbortSignal.timeout(8000) });
+          if (res.ok) diagnosticHtml = renderDiagnostic(await res.json());
+          else diagnosticHtml = `<div class="diag-warn">서버 응답 실패 (${res.status})</div>`;
+        } catch (fetchErr) {
+          const fm = fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+          diagnosticHtml = `<div class="diag-warn">서버 응답 없음: ${escapeHtml(fm)}</div>`;
+        }
+      } else {
+        diagnosticHtml = '<div class="diag-warn">worker_url 이 채워지지 않았습니다.</div>';
+      }
+      document.body.innerHTML = `
+        <style>
+          body { font-family:-apple-system,BlinkMacSystemFont,sans-serif; background:#f6f7f9; color:#1f2328; margin:0; padding:40px 20px; }
+          .err-wrap { max-width:640px; margin:0 auto; }
+          .err-head { text-align:center; margin-bottom:24px; }
+          .err-head .icon { font-size:48px; margin-bottom:12px; }
+          .err-head h2 { margin:0 0 6px; font-size:20px; }
+          .err-msg { color:#6b7280; font-size:14px; padding:12px 16px; background:#fff; border-radius:8px; border:1px solid #e3e5e8; margin-bottom:16px; }
+          .diag { background:#fff; border:1px solid #e3e5e8; border-radius:8px; padding:16px 20px; margin-bottom:16px; }
+          .diag h3 { margin:0 0 12px; font-size:14px; color:#374151; }
+          .diag ul { margin:0; padding:0; list-style:none; font-size:13px; }
+          .diag li { padding:4px 0; display:flex; gap:8px; align-items:flex-start; }
+          .diag li .k { min-width:180px; color:#6b7280; }
+          .diag li .v { flex:1; word-break:break-all; }
+          .diag li.ok .icon { color:#059669; }
+          .diag li.miss .icon { color:#dc2626; }
+          .diag-warn { color:#92400e; background:#fffbeb; border:1px solid #fcd34d; border-radius:6px; padding:10px 14px; font-size:13px; margin-bottom:12px; }
+          .foot { text-align:center; font-size:12px; color:#9ca3af; margin-top:20px; }
+          .foot a { color:#6366f1; text-decoration:none; }
+        </style>
+        <div class="err-wrap">
+          <div class="err-head"><div class="icon">⚙️</div><h2>설정이 완료되지 않았습니다</h2></div>
+          <div class="err-msg"><strong>원인 메시지</strong>: ${escapeHtml(err.message || String(err))}</div>
+          ${diagnosticHtml}
+          <div class="foot">
+            <a href="https://github.com/blumn-plan/blumnAI-qa-bot/blob/main/docs/01-INSTALL.md" target="_blank">01-INSTALL.md</a>
+            · 새로고침으로 재진단
+          </div>
+        </div>`;
+    }
+    function renderDiagnostic(h) {
+      const mark = (ok) => ok ? '<span class="icon">✅</span>' : '<span class="icon">❌</span>';
+      const row = (ok, k, v) => `<li class="${ok ? 'ok' : 'miss'}">${mark(ok)}<span class="k">${escapeHtml(k)}</span><span class="v">${v}</span></li>`;
+      const s = h.secrets || {};
+      const rows = [
+        row(!!s.ANTHROPIC_API_KEY, 'Anthropic API key', s.ANTHROPIC_API_KEY ? '등록됨' : '❗ IT기획팀에 발급 요청'),
+        row(!!s.GITHUB_TOKEN, 'GitHub PAT', s.GITHUB_TOKEN ? '등록됨' : '❗ Classic PAT (repo scope) 발급 필요'),
+        row(!!s.GITHUB_REPO, 'GITHUB_REPO', s.GITHUB_REPO || '❗ wrangler.toml 에 설정 필요'),
+      ];
+      const c = h.config || {};
+      if (c.loaded) {
+        const projs = c.projects || [];
+        rows.push(row(projs.length > 0, 'config.yml 프로젝트 수', projs.length > 0 ? `${projs.length}개 (${projs.map((p) => p.id).join(', ')})` : '❗ projects[] 비어 있음'));
+      } else {
+        rows.push(row(false, 'config.yml 파싱', `❗ ${escapeHtml(c.error || '실패')}`));
+      }
+      return `<div class="diag"><h3>🩺 서버 진단 (/health?detailed=1)</h3><ul>${rows.join('')}</ul></div>`;
+    }
+
     /* 초기 로드 + polling + 알림 버튼 상태 */
     (async () => {
       try {
         await bootstrap();
       } catch (err) {
-        document.body.innerHTML = `<div style="font-family:-apple-system,sans-serif;padding:60px 40px;text-align:center;background:#f6f7f9;color:#1f2328"><div style="max-width:500px;margin:0 auto"><div style="font-size:48px;margin-bottom:16px">⚙️</div><h2 style="margin:0 0 8px;font-size:20px">설정이 필요합니다</h2><p style="color:#6b7280;font-size:14px;margin:0 0 24px">${err.message}</p><p style="color:#9ca3af;font-size:12px">자세한 안내는 <code>docs/01-INSTALL.md</code> 참고</p></div></div>`;
+        await renderErrorScreen(err);
         return;
       }
       $('#notif-toggle').addEventListener('click', toggleNotif);
