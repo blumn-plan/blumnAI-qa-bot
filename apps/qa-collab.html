@@ -330,6 +330,10 @@
     aside.chat .msg .feedback-list a:hover { text-decoration: underline; }
     aside.chat .msg.regenerated { border-left: 3px solid var(--success); padding-left: 9px; }
     aside.chat .msg .regen-tag { display: inline-block; background: var(--success); color: white; padding: 1px 6px; border-radius: 10px; font-size: 10px; margin-bottom: 4px; }
+    aside.chat .msg .msg-actions { display: flex; gap: 6px; margin-top: 8px; opacity: 0; transition: opacity 0.2s; }
+    aside.chat .msg:hover .msg-actions, aside.chat .msg:focus-within .msg-actions { opacity: 1; }
+    aside.chat .msg .msg-actions button.msg-act { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
+    aside.chat .msg .msg-actions button.msg-act:hover { background: var(--panel); color: var(--text); border-color: var(--primary); }
 
     /* 스트리밍 커서 (claude 답변 점진 도착 표시) */
     aside.chat .msg .stream-cursor { display: inline-block; color: var(--muted); animation: cursor-blink 1s steps(2) infinite; margin-left: 1px; }
@@ -1220,9 +1224,21 @@
       $('#send-btn').disabled = false; // 전송 중에도 [취소] 눌러야 하니 활성 유지
       $('#send-btn').innerHTML = '<span class="btn-spinner"></span>취소';
       $('#send-btn').setAttribute('data-mode', 'cancel');
+      // 재답변(regenerated) 케이스는 이미 사용자 메시지가 화면·history 에 있으므로 스킵
+      if (opts.skipUserMessage) {
+        // history 에 user 메시지가 마지막에 없다면 추가 (안전장치)
+        const last = state.history[state.history.length - 1];
+        if (!last || last.role !== 'user' || last.content !== question) {
+          // 안전장치 — 이론상 도달하지 X. 도달했으면 정상 흐름으로.
+          opts.skipUserMessage = false;
+        }
+      }
       // 사용자 메시지 — 첨부 이미지가 있으면 인라인으로 함께 표시
+      // (재답변 시 skipUserMessage 로 스킵 — 사용자 메시지가 이미 화면에 있음)
       const attachmentsForSend = pendingAttachments.slice();
-      addMessage('user', question, { attachments: attachmentsForSend });
+      if (!opts.skipUserMessage) {
+        addMessage('user', question, { attachments: attachmentsForSend });
+      }
       $('#question').value = '';
       pendingAttachments.length = 0;
       renderAttachments();
@@ -1417,6 +1433,33 @@
       $('#messages').scrollTop = $('#messages').scrollHeight;
     }
 
+    /* 답변 카드 액션 — 재답변 · 복사 */
+    async function handleMessageAction(act, content) {
+      if (act === 'copy') {
+        try {
+          await navigator.clipboard.writeText(content);
+          toast('📋 답변 본문 복사됨', 'success');
+        } catch (err) {
+          toast('복사 실패: ' + err.message, 'error');
+        }
+        return;
+      }
+      if (act === 'regen') {
+        if (state.sending) { toast('이미 답변 진행 중이에요', 'error'); return; }
+        // 마지막 assistant 를 history 에서 pop 하고 마지막 user 질문을 재실행
+        const lastAssistIdx = [...state.history].map((m, i) => m.role === 'assistant' ? i : -1).filter((i) => i >= 0).pop();
+        if (lastAssistIdx === undefined) { toast('재답변할 답변이 없어요', 'error'); return; }
+        const lastUser = [...state.history.slice(0, lastAssistIdx)].reverse().find((m) => m.role === 'user');
+        if (!lastUser) { toast('원래 질문을 찾을 수 없어요', 'error'); return; }
+        // history 에서 마지막 assistant 제거 (user 는 그대로) + UI 마지막 카드 제거
+        state.history.splice(lastAssistIdx, 1);
+        const msgs = $('#messages').querySelectorAll('.msg.assistant');
+        if (msgs.length) msgs[msgs.length - 1].remove();
+        // 재실행 — user 메시지는 이미 있으니 스킵. regenerated 플래그로 UI 태그
+        await sendQuestion(lastUser.content, { regenerated: true, skipUserMessage: true });
+      }
+    }
+
     function addMessage(role, content, meta = {}) {
       const div = document.createElement('div');
       const classes = ['msg', role];
@@ -1450,8 +1493,13 @@
       // 역할 라벨: 사용자 → '나' / AI → '제이나미봇'
       const roleLabel = role === 'assistant' ? '제이나미봇' : (role === 'user' ? '나' : role);
 
-      // per-message 액션·CTA 제거 — 툴바의 [📤 기획자에게 전달] / [📝 답변 규칙 추가] 가 대체
-      div.innerHTML = `<div class="role">${roleLabel}</div>${regenTagHtml}<div class="body">${bodyHtml}</div>`;
+      // per-message 액션 — assistant 답변에만: [🔄 재답변] [📋 복사]
+      const cardActions = role === 'assistant' ? `
+        <div class="msg-actions">
+          <button type="button" class="msg-act" data-act="regen" title="같은 질문으로 다시 답변받기">🔄 재답변</button>
+          <button type="button" class="msg-act" data-act="copy" title="답변 본문 복사">📋 복사</button>
+        </div>` : '';
+      div.innerHTML = `<div class="role">${roleLabel}</div>${regenTagHtml}<div class="body">${bodyHtml}</div>${cardActions}`;
 
       // §N 인용 클릭
       div.querySelectorAll('a.cite').forEach((a) => {
@@ -1459,6 +1507,11 @@
           e.preventDefault();
           scrollToCitation(a.dataset.anchor);
         });
+      });
+
+      // 답변 액션 버튼 — 재답변·복사
+      div.querySelectorAll('button.msg-act').forEach((btn) => {
+        btn.addEventListener('click', () => handleMessageAction(btn.dataset.act, content));
       });
 
       $('#messages').appendChild(div);

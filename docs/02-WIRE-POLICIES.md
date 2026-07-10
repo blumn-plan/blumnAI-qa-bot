@@ -200,3 +200,37 @@ projects/<프로젝트 id>/docs/storyboards/<화면이름>/<화면이름>_storyb
 - [ ] 봇에 "이 정책 §2-1 요약해줘" 물어봤을 때 만족스러운 답변
 
 마지막 항목이 가장 중요. 봇 답변이 이상하면 정책 본문에 정보가 빠진 것입니다.
+
+## 🩺 자동 검증 CLI
+
+체크리스트 위 5가지 항목 (파일명·h1·§번호·본문 길이·시각 명세) 을 **자동으로 스캔** 하는 CLI 도구가 코어에 포함되어 있어요:
+
+```bash
+# 팀 정책 레포 루트에서 실행 (모든 projects/*/docs/policies 자동 감지)
+node .blumnAI-qa-bot/scripts/check-policies.mjs
+
+# 또는 특정 폴더 지정
+node .blumnAI-qa-bot/scripts/check-policies.mjs projects/admin_v1/docs/policies
+```
+
+**출력 예시**:
+
+```
+📊 정책 md 규약 검증 리포트
+  스캔 폴더: 1개
+  대상 파일: 12개
+  실패: 2건 · 경고: 3건
+
+  ✅ projects/admin_v1/docs/policies/대시보드_v0.1.5.md
+  ❌ projects/admin_v1/docs/policies/캠페인_v0.1.md
+      · ❌ 파일명 규약 위반 — <이름>_v<X.Y.Z>.md 형식이어야 함
+  ⚠️  projects/admin_v1/docs/policies/설정_v0.1.0.md
+      · ⚠️  ## §3. 알림 — 본문 15줄 (권장 ≤ 12줄, 봇 답변 품질 저하)
+      · ⚠️  시각 명세 (색·문구·버튼) 힌트 감지 안 됨
+```
+
+- **exit code 0**: 모두 통과
+- **exit code 1**: 실패(❌) 있음 → CI 에서 fail 처리 가능
+- **exit code 2**: 스캔 대상 없음
+
+**🔵 점검하기 프롬프트** 안에서 AI 가 이 CLI 를 자동 실행하고 리포트를 해석해줍니다 — 사용자가 직접 실행할 필요 X. 다만 CI 에 훅 걸어두면 정책 md PR 마다 자동 검증되어 편해요.
