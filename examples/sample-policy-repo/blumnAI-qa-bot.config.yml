@@ -4,11 +4,18 @@
 ui:
   brand_name: "샘플팀 QA Bot"
   team_name: "샘플팀"
+  # 기획자 모드 (qa-planner.html) 접근 비번 — "친절한 friction barrier" 용.
+  # 진짜 보안 아님 (클라 소스 노출). 팀 밖에서 우연히 진입 방지용.
+  # 비워두면 default (팀별로 발급된 값) 사용. 팀별로 반드시 자기 값으로 바꾸세요.
+  planner_password: ""
 
 deployment:
   github_repo: "lunasoft-org/sample-policy-repo"
   worker_url: "https://sample-qa-bot.example.workers.dev"   # 실제 배포 후 받은 URL 로 교체
   pages_url: "https://lunasoft-org.github.io/sample-policy-repo"
+  # (옵션) 코어 봇 레포 — 새 버전 알림 배너가 이 레포의 CHANGELOG 를 폴링해서 비교.
+  # 기본값 blumn-plan/blumnAI-qa-bot. fork 를 쓰는 경우에만 override.
+  core_repo: "blumn-plan/blumnAI-qa-bot"
 
 projects:
   - id: sample
@@ -16,7 +23,18 @@ projects:
     policies_dir: "projects/sample/docs/policies"
     storyboards_dir: ""
     storyboard_layout: "flat"
-    code_repo: ""
+
+    # (옵션) 코드 검증 — 봇이 답변할 때 정책 vs 실제 코드 drift 판정에 활용.
+    # 자세한 셋업은 docs/06-CONNECT-CODE.md 참고.
+    code_repo: ""                  # 예: "your-org/sample-admin-frontend"
+    code_paths:                    # 봇이 코드 검색 시 우선 참고할 경로 (glob).
+      []                           # 비우면 레포 전체 대상.
+      # - "src/**/*.tsx"
+      # - "src/**/*.ts"
+    code_search_hint: ""           # 검색 시 항상 함께 붙일 힌트 키워드
+                                   # (예: "campaign OR marketing")
+    code_max_snippets: 3           # 시스템 프롬프트에 삽입할 파일 개수 상한
+    code_snippet_lines: 120        # 각 스니펫 최대 라인 수
 
 storage:
   decisions_dir: "qa/decisions"

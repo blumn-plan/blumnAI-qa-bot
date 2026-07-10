@@ -1,0 +1,121 @@
+name: Release Notify (Teams / Slack Webhook)
+
+# 코어 릴리즈 시 사용팀 Teams/Slack 채널에 자동 알림.
+#
+# 트리거: GitHub 릴리즈 publish (수동 릴리즈 or 태그 push)
+#
+# 구독 방식:
+#   1. 각 팀 채널에 Incoming Webhook 만들어서 URL 획득 (Teams: 팀 이름 우클릭 → 커넥터 → Incoming Webhook)
+#   2. 이 레포 Settings → Secrets and variables → Actions 에 secret 등록:
+#      - Teams  : TEAMS_WEBHOOK_<팀이름> (예: TEAMS_WEBHOOK_PLANNER, TEAMS_WEBHOOK_AD)
+#      - Slack  : SLACK_WEBHOOK_<팀이름>
+#   3. 아래 subscribers 배열에 팀명 + secret 이름 등록 (PR 로 추가)
+#
+# 알림 안 받으려는 팀은 등록만 안 하면 됨 (조용히 skip).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      test_message:
+        description: '테스트 메시지 (릴리즈 없이 수동 실행 시)'
+        required: false
+        default: '수동 트리거 테스트'
+
+jobs:
+  notify-teams:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        subscriber:
+          # 여기에 팀 추가 — 각 항목: { name, kind: teams|slack, secret_name }
+          - { name: '기획팀', kind: 'teams', secret_name: 'TEAMS_WEBHOOK_PLANNER' }
+          # - { name: '광고팀', kind: 'teams', secret_name: 'TEAMS_WEBHOOK_AD' }
+          # - { name: 'CRM팀', kind: 'slack', secret_name: 'SLACK_WEBHOOK_CRM' }
+    steps:
+      - name: Prepare payload
+        id: prep
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+            NAME="${{ github.event.release.name }}"
+            BODY=$(printf '%s' "${{ github.event.release.body }}" | head -c 2000)
+            URL="${{ github.event.release.html_url }}"
+          else
+            TAG="test"
+            NAME="${{ inputs.test_message }}"
+            BODY="수동 트리거 실행"
+            URL="https://github.com/${{ github.repository }}"
+          fi
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "NAME=$NAME" >> $GITHUB_OUTPUT
+          {
+            echo 'BODY<<EOF'
+            printf '%s\n' "$BODY"
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+          echo "URL=$URL" >> $GITHUB_OUTPUT
+
+      - name: Resolve webhook secret
+        id: resolve
+        env:
+          SECRET_MAP_JSON: ${{ toJSON(secrets) }}
+        run: |
+          NAME='${{ matrix.subscriber.secret_name }}'
+          # secrets 컨텍스트에서 해당 이름의 값을 꺼내 masked output 으로
+          URL=$(echo "$SECRET_MAP_JSON" | jq -r --arg n "$NAME" '.[$n] // ""')
+          if [ -z "$URL" ]; then
+            echo "no webhook secret for $NAME — skip"
+            echo "skip=1" >> $GITHUB_OUTPUT
+          else
+            echo "::add-mask::$URL"
+            echo "url=$URL" >> $GITHUB_OUTPUT
+            echo "skip=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post to Teams
+        if: matrix.subscriber.kind == 'teams' && steps.resolve.outputs.skip == '0'
+        run: |
+          cat > /tmp/payload.json <<EOF
+          {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "6366f1",
+            "summary": "blumnAI-qa-bot ${{ steps.prep.outputs.TAG }} 릴리즈",
+            "sections": [{
+              "activityTitle": "🚀 blumnAI-qa-bot 새 버전 릴리즈",
+              "activitySubtitle": "${{ steps.prep.outputs.TAG }} — ${{ steps.prep.outputs.NAME }}",
+              "text": $(jq -Rsa . <<< "${{ steps.prep.outputs.BODY }}")
+            }],
+            "potentialAction": [{
+              "@type": "OpenUri",
+              "name": "CHANGELOG 보기",
+              "targets": [{"os": "default", "uri": "${{ steps.prep.outputs.URL }}"}]
+            }, {
+              "@type": "OpenUri",
+              "name": "업데이트하기 가이드",
+              "targets": [{"os": "default", "uri": "https://github.com/${{ github.repository }}/blob/main/README.md#-업데이트하기--코어-봇-새-버전-알림-왔을-때만"}]
+            }]
+          }
+          EOF
+          curl -sS -H "Content-Type: application/json" -d @/tmp/payload.json "${{ steps.resolve.outputs.url }}"
+
+      - name: Post to Slack
+        if: matrix.subscriber.kind == 'slack' && steps.resolve.outputs.skip == '0'
+        run: |
+          BODY=$(jq -Rsa . <<< "${{ steps.prep.outputs.BODY }}")
+          cat > /tmp/payload.json <<EOF
+          {
+            "text": "🚀 *blumnAI-qa-bot ${{ steps.prep.outputs.TAG }}* — ${{ steps.prep.outputs.NAME }}\n<${{ steps.prep.outputs.URL }}|CHANGELOG 보기> · Claude Code 에 \"🟠 업데이트하기\" 프롬프트 붙여넣기",
+            "blocks": [
+              {"type": "header", "text": {"type": "plain_text", "text": "🚀 blumnAI-qa-bot ${{ steps.prep.outputs.TAG }}"}},
+              {"type": "section", "text": {"type": "mrkdwn", "text": ${BODY}}},
+              {"type": "actions", "elements": [
+                {"type": "button", "text": {"type": "plain_text", "text": "CHANGELOG 보기"}, "url": "${{ steps.prep.outputs.URL }}"}
+              ]}
+            ]
+          }
+          EOF
+          curl -sS -H "Content-Type: application/json" -d @/tmp/payload.json "${{ steps.resolve.outputs.url }}"

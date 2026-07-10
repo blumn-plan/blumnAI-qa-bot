@@ -1,10 +1,12 @@
-# 01. 설치 가이드 (Install)
+# 01. 설치 가이드 (Install) — A 모드 기준
 
 각 서비스 팀이 이 AI QA 봇을 가져다가 본인 서비스 정책과 연결해서 쓰는 step-by-step 절차.
 
 **대상 독자**: 본인이 코딩 안 해본 비개발자(기획자·QA운영자)여도 따라할 수 있게 작성. **Claude Code 같은 AI 에이전트를 옆에 두고 함께 진행**하도록 설계됨.
 
-**총 소요 시간**: 약 20-30분 (Cloudflare/GitHub 처음이면 +10분)
+**총 소요 시간**: 약 15-25분 (Cloudflare/GitHub 처음이면 +10분)
+
+**기본 모드는 A 모드 (Anthropic API)** — 이 문서는 A 모드 절차만 다룹니다. Max 구독으로 우회하는 C 모드는 특수 상황용이며, 별도로 [03-CONNECT-BOT §부록](03-CONNECT-BOT.md#부록--c-모드-pc-max-우회-특수-상황용) 을 참고하세요.
 
 ---
 
@@ -26,22 +28,27 @@
 **옆에 Claude Code 창을 열고 아래 프롬프트를 그대로 붙여넣으세요.** AI 가 이 가이드를 읽고 스텝별로 안내해줍니다:
 
 ```
-blumnAI-qa-bot 을 우리 팀 정책 레포에 설치하려 합니다.
+blumnAI-qa-bot 을 우리 팀 정책 레포에 A 모드 (Anthropic API 사용) 로
+설치하려 합니다.
 
 정보:
 - 팀 이름: ○○팀 (예: 광고팀)
 - GitHub 조직명: ○○ (예: blumn-plan)
 - 새로 만들 정책 레포 이름: ○○-policies (예: ad-team-policies)
 - 프로젝트 ID (봇 안에서 쓸 영문 식별자): ○○_v1 (예: ad_v1)
-- 운영 모드: C 모드 (무료, Max 구독 활용) 또는 A 모드 (유료 API)
+- (선택) 코드 검증 붙일 것: 예 / 아니오
+  · 예 → 코드 레포: ○○/○○-admin-frontend
 
 가이드: https://github.com/blumn-plan/blumnAI-qa-bot/blob/main/docs/01-INSTALL.md
 
-이 가이드에 따라 진행해주세요. 스텝별로:
+이 가이드의 A 모드 절차만 따라 진행해주세요. 스텝별로:
 - 🤖 표시된 항목은 알아서 처리 후 결과 보고
 - 👤 표시된 항목은 "직접 하실 것" 이라고 명시하고 화면·URL 안내
-- 시크릿 값(API key, PAT)은 절대 저에게 입력받지 말고, wrangler 명령어만
-  실행하도록 안내해주세요.
+- 시크릿 값 (Anthropic API key sk-ant-..., GitHub PAT ghp-...) 은
+  절대 저에게 입력받지 말고, wrangler 명령어만 실행하도록 안내해주세요
+- C 모드 (PC Max 우회) 스텝은 스킵. 물어보지도 마세요
+
+설치 완료 후 07-FIRST-TEST.md 의 첫 테스트 시나리오까지 이어서 진행.
 ```
 
 AI 가 아래 §0 준비물부터 순서대로 진행해줍니다.
@@ -55,12 +62,11 @@ AI 가 아래 §0 준비물부터 순서대로 진행해줍니다.
 | 항목 | 왜 필요한가 | 담당 |
 |---|---|---|
 | GitHub 계정 (회사용) | 정책 레포 호스팅 + Pages 정적 호스팅 | 👤 |
-| **Claude Max 구독** (C 모드) 또는 **Anthropic API key** (A 모드) | AI 답변 엔진 | 👤 |
+| **Anthropic API key** (`sk-ant-...`) | AI 답변 엔진 (A 모드) | 👤 발급 · 회사 카드 결제 등록 |
 | Cloudflare 계정 | Worker (백엔드) 호스팅. 무료, 카드 X | 👤 (새로 가입 가능) |
-| Node.js 18+ | wrangler / launcher.js 실행 | 🤖 (AI 가 `node --version` 으로 확인. 없으면 설치 안내) |
-| (C 모드 한정) **PC 1대** | `start.bat` 24/7 가동용. 개인 PC 또는 회사 공용 PC | 👤 |
+| Node.js 18+ | wrangler 실행 | 🤖 (AI 가 `node --version` 으로 확인. 없으면 설치 안내) |
 
-**모드 선택** — C 모드 (Max 구독 활용, 무료) 추천. 자세한 비교는 [00-OVERVIEW.md](00-OVERVIEW.md#두-가지-운영-모드--c-모드-추천).
+> 💡 Max 구독으로 우회하는 C 모드는 PC 상시 가동·터널 유지 부담이 있어 이 가이드에서는 다루지 않습니다. 특수 상황용으로 필요하면 [03-CONNECT-BOT §부록](03-CONNECT-BOT.md#부록--c-모드-pc-max-우회-특수-상황용) 참조.
 
 ---
 
@@ -319,27 +325,20 @@ Claude Code 에게:
 
 > 🔒 **AI 채팅창에 절대 시크릿 값 붙여넣지 마세요.** 아래는 wrangler 프롬프트에만 직접 입력.
 
-VS Code 터미널에서 (또는 AI 가 `wrangler secret put` 명령만 실행시켜준 뒤):
+A 모드는 시크릿 **2개** 등록해야 합니다:
 
-**C 모드** (Max 구독 활용):
 ```bash
 cd .blumnAI-qa-bot/worker
-npx wrangler secret put GITHUB_TOKEN
-```
-→ `? Enter a secret value:` 뜨면 👤 본인이 GitHub PAT (ghp_...) 를 직접 붙여넣기 → Enter
-
-**A 모드** (유료 API):
-```bash
 npx wrangler secret put ANTHROPIC_API_KEY
 ```
-→ 👤 본인이 sk-ant-... 붙여넣기 → Enter
+→ `? Enter a secret value:` 뜨면 👤 본인이 `sk-ant-...` 직접 붙여넣기 → Enter
 
 ```bash
 npx wrangler secret put GITHUB_TOKEN
 ```
-→ 👤 본인이 ghp_... 붙여넣기 → Enter
+→ 👤 본인이 `ghp_...` 직접 붙여넣기 → Enter
 
-PAT/API key 발급 방법은 [03-CONNECT-BOT.md](03-CONNECT-BOT.md).
+PAT/API key 발급 방법은 [03-CONNECT-BOT.md](03-CONNECT-BOT.md) §1, §2 참고.
 
 ### 5-5. Worker 배포 — 🤖 AI 에게 위임
 
@@ -389,32 +388,9 @@ wrangler deploy 다시 실행해줘.
 
 ---
 
-## 7. (C 모드 한정) PC 에서 launcher 실행 (2분)
+## 7. 컨피그 푸시 + 동작 확인 (2분)
 
-> A 모드면 이 단계 스킵.
-
-### 7-1. 최초 실행 — 👤 본인이 직접
-
-PC 파일 탐색기에서 `.blumnAI-qa-bot/local-server/start.bat` 를 **더블 클릭**.
-
-성공 시 콘솔에:
-```
-[server] listening on http://localhost:8788
-[tunnel] https://random-words-1234.trycloudflare.com
-[launcher] ✨ TUNNEL_URL 등록 완료. qa.html 에서 챗 가능
-```
-
-> ⚠️ 이 콘솔창은 닫지 마세요. 닫으면 챗 즉시 중단.
-
-### 7-2. 부팅 시 자동 실행 (선택) — 👤 본인이 직접
-
-Windows 시작 프로그램 등록. 자세한 절차는 [03-CONNECT-BOT.md](03-CONNECT-BOT.md#6-c-모드만-pc-부팅-시-자동-실행-선택-2분).
-
----
-
-## 8. 컨피그 푸시 + 동작 확인 (2분)
-
-### 8-1. 최종 push — 🤖 AI 에게 위임
+### 7-1. 최종 push — 🤖 AI 에게 위임
 
 Claude Code 에게:
 ```
@@ -422,7 +398,7 @@ blumnAI-qa-bot.config.yml 와 .blumnAI-qa-bot/ 를 stage + commit + push 해줘.
 커밋 메시지: "blumnAI-qa-bot 초기 설치"
 ```
 
-### 8-2. 브라우저에서 최종 확인 — 👤 본인이 직접
+### 7-2. 브라우저에서 최종 확인 — 👤 본인이 직접
 
 브라우저에서:
 ```
@@ -435,11 +411,12 @@ https://your-org.github.io/ad-team-policies/.blumnAI-qa-bot/apps/qa-collab.html
 
 ---
 
-## 9. 다음 단계
+## 8. 다음 단계
 
+- [07-FIRST-TEST.md](07-FIRST-TEST.md) — **바로 이어서** 5분 첫 테스트 5개 시나리오 실행 (🟢 세팅하기 마스터 프롬프트에 포함되어 있으면 자동 진행)
+- (옵션) [06-CONNECT-CODE.md](06-CONNECT-CODE.md) — 서비스 코드 레포까지 연결해 정책 vs 코드 drift 판정
 - [02-WIRE-POLICIES.md](02-WIRE-POLICIES.md) — 실제 정책 markdown 작성 규약
-- [04-OPERATE.md](04-OPERATE.md) — 협업자·기획자 화면 사용법
-- 첫 질문 던져보기 → AI 답변 확인 → 동료에게 Pages URL 공유
+- [04-OPERATE.md](04-OPERATE.md) — 협업자·기획자 화면 사용법 (팀 온보딩 자료로 공유)
 
 ---
 
@@ -448,7 +425,8 @@ https://your-org.github.io/ad-team-policies/.blumnAI-qa-bot/apps/qa-collab.html
 | 증상 | 원인·해결 |
 |---|---|
 | qa.html 에서 ⚙️ "설정이 필요합니다" 화면 | `blumnAI-qa-bot.config.yml` 가 레포 루트에 없거나 `worker_url` 미입력. 4-5단계 재확인 |
-| "PC 서버가 꺼져 있어요" (C 모드) | `start.bat` 콘솔창이 닫혔거나 PC 절전 중. 7단계 재실행 |
 | "Failed to fetch" | Worker URL 오타 또는 CORS. `security.allowed_origins` 가 Pages URL 정확한지 확인 |
-| Pages 에서 404 | `.nojekyll` 파일 누락 또는 빌드 대기. 6-1~6-4 재확인, 2-3분 대기 |
+| Pages 에서 404 | `.nojekyll` 파일 누락 또는 빌드 대기. 6-1~6-3 재확인, 2-3분 대기 |
 | `npx wrangler login` 브라우저 인증 안 됨 | 회사 방화벽 가능성. 개인 핫스팟으로 재시도 |
+| 답변 매번 실패 (Anthropic 에러) | API key 만료 또는 한도 초과. https://console.anthropic.com Usage/Billing 확인 |
+| C 모드 관련 이슈 | 이 가이드는 A 모드 기준. C 모드는 [03-CONNECT-BOT §부록](03-CONNECT-BOT.md#부록--c-모드-pc-max-우회-특수-상황용) |

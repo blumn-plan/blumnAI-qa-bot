@@ -1,0 +1,27 @@
+# CODEOWNERS — blumnAI-qa-bot 원본 코어 레포 리뷰 정책
+#
+# 이 파일은 GitHub 이 PR 리뷰어를 자동 요청할 때 참고합니다.
+# main 브랜치 보호와 함께 쓰이면: 각 파일 유형별로 지정된 팀 승인 없이는 머지 불가.
+#
+# ⚠️ 팀명은 실제 GitHub 조직의 team 이름으로 바꾸세요 (예: @blumn-plan/planning).
+#    아직 GitHub team 이 없으면 개인 계정으로 우선 시작 가능 (예: @jsmja).
+
+# 기본 규칙 — 모든 파일은 기획팀 리뷰 필수
+*                            @blumn-plan/planning-team
+
+# 봇 실행 코드 — 기획팀 + 개발팀 이중 리뷰
+apps/                        @blumn-plan/planning-team @blumn-plan/dev-team
+bot/worker/                  @blumn-plan/planning-team @blumn-plan/dev-team
+bot/local-server/            @blumn-plan/planning-team @blumn-plan/dev-team
+create/                      @blumn-plan/planning-team @blumn-plan/dev-team
+
+# 릴리즈·CI — 기획팀 + 인프라 담당
+.github/workflows/           @blumn-plan/planning-team @blumn-plan/dev-team
+
+# 가이드 문서 — 기획팀 단독
+docs/                        @blumn-plan/planning-team
+README.md                    @blumn-plan/planning-team
+CHANGELOG.md                 @blumn-plan/planning-team
+
+# 답변 규칙·예시 — 기획팀 단독
+examples/                    @blumn-plan/planning-team

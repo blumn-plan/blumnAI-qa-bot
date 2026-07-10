@@ -2,6 +2,48 @@
 
 코어 봇 레포에 새 버전 (`v0.2.0` 등) 이 나왔을 때, 본인 서비스 정책 레포 안의 코어 사본을 최신으로 갱신하는 절차.
 
+## 🔔 새 버전이 나오면 어떻게 알 수 있나 — 3가지 알림 방식
+
+새 버전 릴리즈 시 각 팀에 자동으로 알림이 갑니다. 아래 중 팀 상황에 맞는 것 하나 이상 켜두세요:
+
+### 방식 1. 자동 배너 (기본 켜짐)
+
+각 팀의 `qa-collab.html` / `qa-planner.html` 이 로드될 때 코어 CHANGELOG 를 자동 fetch → 로컬 `.blumnAI-qa-bot/version` 과 비교 → 다르면 **상단에 노란 배너 자동 표시**:
+
+```
+🔔 blumnAI-qa-bot 새 버전 v0.2.0 나왔습니다 (현재 v0.1.0).
+   Claude Code 에 "🟠 업데이트하기" 프롬프트를 붙여넣으면 30초 안에 갱신됩니다.
+   [변경사항 보기]  [나중에]
+```
+
+- 셋업 필요 X — 봇 사용 중이면 자동 감지
+- [나중에] 누르면 그 버전 배너만 dismiss (다음 새 버전엔 다시 뜸)
+- 코어 레포 URL 이 fork 라면 `config.yml` 의 `deployment.core_repo` 를 fork 로 override
+
+### 방식 2. GitHub Watch 구독 (팀원별 개별)
+
+각 팀원이 개인적으로 알림 받고 싶으면:
+1. https://github.com/blumn-plan/blumnAI-qa-bot 접속
+2. 우상단 **Watch** → **Custom** → **Releases** 체크 → **Apply**
+3. 새 릴리즈 나오면 GitHub 알림 + 메일로 도착
+
+### 방식 3. Teams / Slack 채널 웹훅
+
+팀 채널에 릴리즈 알림 카드가 자동 게시:
+
+1. 팀 Teams 채널 우클릭 → **커넥터** → **Incoming Webhook** 추가 → URL 획득
+   (Slack 이면: Slack 앱 → Incoming Webhooks 추가 → URL 획득)
+2. 코어 메인테이너에게 아래 정보 전달 (Slack DM 또는 지라):
+   - 팀 이름 (예: `광고팀`)
+   - 웹훅 kind (`teams` 또는 `slack`)
+   - **⚠️ URL 은 시크릿** — 직접 붙여넣지 말고 "코어 레포 Secrets 에 `TEAMS_WEBHOOK_AD` 로 등록해달라" 요청
+3. 코어 메인테이너가 `.github/workflows/release-notify.yml` 의 `subscribers` 목록에 팀 항목 추가 (PR 로 진행)
+4. 다음 릴리즈부터 팀 채널에 자동 카드 표시
+
+---
+
+## 실제 업그레이드 절차
+
 > 🤝 **AI 에게 위임 가능한 작업이 대부분**입니다. Claude Code 창에 아래 프롬프트 하나로 끝나는 경우가 많아요:
 > ```
 > blumnAI-qa-bot 코어 v0.2.0 이 나왔어. 우리 레포의 .blumnAI-qa-bot/ 아래를
