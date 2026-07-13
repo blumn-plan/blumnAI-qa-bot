@@ -54,6 +54,12 @@
 - 📱 **모바일 반응형** — `<= 900px` 에서 사이드바가 hamburger 오버레이 drawer 로 전환 (좌측 슬라이드 인·아웃, backdrop, ESC/외부 클릭 닫기, 문서 선택 시 자동 닫기). 문서·챗은 세로 스택 (문서 45vh + 챗 55vh). `<= 640px` 에서 챗 우선 (문서 35vh + 챗 65vh) + 툴바 wrap
 - 🔁 **/qa 자동 재시도** — 전송 실패 시 backoff 500ms → 1500ms 로 최대 3회 시도. 재시도 대상: 408 · 425 · 429 · 500 · 502 · 503 · 504 + 네트워크 오류 (`Failed to fetch`, `NetworkError`). 즉시 실패: 401/403/404 + `AbortError` (사용자 취소). 로딩 placeholder 에 "재시도 중… (N/3)" 상태 표시
 - 🔍 **채팅 이미지 lightbox** — 사용자 첨부 · 봇 답변 안 이미지 · 기획자 메모 이미지 모두 클릭 시 전체화면 확대 (기존 `<a target="_blank">` → 직접 img + event delegation). ESC/backdrop/× 로 닫기. hover 시 살짝 확대 + zoom-in 커서로 힌트
+- 🎬 **데모 모드 (`?demo=1`)** — Worker 없이도 UI 전체 검증. mock 응답으로 `/list-projects`, `/list-docs`, `/doc`, `/qa` (NDJSON 스트리밍), `/forward`, `/feedback`, `/save-decision-image` 등 커버. 상단에 보라색 데모 배너 표시. 팀 담당자·개발자가 로컬에서 30초 안에 UI 개선사항 즉시 확인 가능
+- 🩺 **CI 워크플로우** (`.github/workflows/ci.yml`) — main push · PR 마다 자동 실행: tsc --noEmit + vitest + HTML 스크립트 파싱 + 정책 md 규약 스캔 (sample-policy-repo 대상)
+- 🚀 **Staging 자동 배포** (`.github/workflows/deploy-staging.yml`) — `workflow_dispatch` (수동) + main push (opt-in, `STAGING_AUTO_DEPLOY=1` 변수 시) 로 Cloudflare Worker `blumnai-qa-bot-staging` 자동 배포. 시크릿 6개 미등록 시 자동 skip 으로 안전. `wrangler.toml.template` 에 `[env.staging]` 블록 신설
+- 📚 **Sample-policy-repo 확장** — 정책 md 4개 (대시보드 · 캠페인 관리 · 결제포인트 · 알림설정). 실전 감 있는 §번호·시각 명세·버전 이력 표 포함. 모두 정책 스캔 CLI 통과
+- 🧹 **wrangler.toml.template 팀 중립화** — `heythere_planer`·`lunasoft-org` 하드코딩 제거하고 `your-org/your-policy-repo` placeholder + `[env.staging]` 스테이징 환경 추가
+- 📄 **docs/08-STAGING.md** 신규 — 3가지 개발자 테스트 방법 (데모 모드 · wrangler dev · Actions staging) 상세 가이드 + 개선 흐름 다이어그램 + FAQ
 
 ## v0.0.0 — 2026-06-30
 

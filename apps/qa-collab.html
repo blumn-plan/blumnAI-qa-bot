@@ -668,6 +668,83 @@
       if (cfg?.ui?.brand_name) {
         document.title = `${cfg.ui.brand_name} · 정책 Q&A`;
       }
+      // ?demo=1 데모 모드 — Worker 없이 mock 데이터로 UI 전체 동작 시연
+      if (new URLSearchParams(location.search).get('demo') === '1') {
+        installDemoMocks();
+      }
+    }
+
+    /* ────────── 🎬 데모 모드 — Worker fetch 를 mock 응답으로 대체 ──────────
+     *  ?demo=1 URL 쿼리로 활성. 팀 담당자·개발자가 wrangler dev 없이도
+     *  UI 개선사항 전체 (문서 목록·챗·팝업·이미지·재답변·내보내기 등) 를
+     *  즉시 확인 가능. 실전 배포는 안 씀. */
+    function installDemoMocks() {
+      console.log('🎬 데모 모드 활성 — 모든 Worker 요청이 mock 응답으로 대체됩니다.');
+      document.title = '🎬 DEMO · ' + document.title;
+      const banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#6366f1;color:white;padding:6px 12px;font-size:12px;text-align:center;z-index:9999';
+      banner.innerHTML = '🎬 데모 모드 — Worker 없이 mock 데이터. 실제 배포에선 ?demo=1 을 URL 에서 제거';
+      document.body.appendChild(banner);
+      document.body.style.paddingTop = '30px';
+
+      const originalFetch = window.fetch;
+      window.fetch = async function (url, opts = {}) {
+        const u = String(url);
+        if (!u.startsWith(WORKER_URL)) return originalFetch(url, opts);
+        const path = u.substring(WORKER_URL.length).split('?')[0];
+        return demoRoute(path, u, opts);
+      };
+    }
+
+    async function demoRoute(path, fullUrl, opts) {
+      const jsonRes = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
+      if (path === '/list-projects') {
+        return jsonRes({ projects: [{ id: 'sample', label: '샘플 프로젝트 (데모)' }], default: 'sample' });
+      }
+      if (path === '/list-docs') {
+        return jsonRes({ project: 'sample', docs: [
+          { path: 'projects/sample/docs/policies/대시보드_v0.1.0.md', title: '대시보드 v0.1.0', kind: 'policy' },
+          { path: 'projects/sample/docs/policies/캠페인_관리_v0.1.2.md', title: '캠페인 관리 v0.1.2', kind: 'policy' },
+          { path: 'projects/sample/docs/policies/결제포인트_v0.2.0.md', title: '결제포인트 v0.2.0', kind: 'policy' },
+          { path: 'projects/sample/docs/policies/알림설정_v0.1.0.md', title: '알림설정 v0.1.0', kind: 'policy' },
+        ]});
+      }
+      if (path === '/doc') {
+        const p = new URL(fullUrl).searchParams.get('path') || '';
+        const samples = {
+          '대시보드_v0.1.0.md': '# 대시보드 v0.1.0\n\n## §1. 화면 구성\n- 상단 알림 배너\n- 핵심 지표 카드\n- 시계열 차트\n- 최근 활동 리스트\n\n## §2. 알림 배너 정책\n\n### §2-1. 표시 조건\n- 잔액 부족 → 주황 배너\n- 외부 연동 끊김 → 빨강 배너\n',
+          '캠페인_관리_v0.1.2.md': '# 캠페인 관리 v0.1.2\n\n## §2. 상태 뱃지\n\n### §2-1. 표시 규칙\n- 초록 "발송 완료" · 주황 "부분 실패" · 빨강 "발송 실패"\n\n## §3. 캠페인 액션\n\n### §3-2. 삭제\n- 삭제 확인 모달 필수 — "정말 삭제하시겠어요?" + [취소]/[삭제]\n',
+          '결제포인트_v0.2.0.md': '# 결제포인트 v0.2.0\n\n## §3. 환불\n\n### §3-1. 자동 환불 조건\n- 결제 후 24시간 이내 + 사용 이력 0건 → [환불 요청] 버튼 활성\n',
+          '알림설정_v0.1.0.md': '# 알림설정 v0.1.0\n\n## §1. 알림 채널\n- 이메일 · 브라우저 푸시 · 슬랙 · SMS\n',
+        };
+        const key = p.split('/').pop();
+        return jsonRes({ path: p, content: samples[key] || '# ' + key + '\n\n(데모 · 본문 없음)' });
+      }
+      if (path === '/qa') {
+        // NDJSON 스트리밍 mock — 답변을 조각내서 흘려보냄
+        const encoder = new TextEncoder();
+        const body = JSON.parse(await new Response(opts.body).text());
+        const answer = `데모 모드 응답입니다.\n\n질문: "${(body.question || '').slice(0, 60)}"\n\n관련 정책은 캠페인 관리 v0.1.2 §3-2 를 참고하세요. 삭제 시 확인 모달이 필수예요.\n\n### 📋 변경 제안\n- 📌 요청 제목: 캠페인 삭제 확인 모달 추가\n- 📄 대상 파일: 캠페인_관리_v0.1.2.md\n- 📍 위치: §3-2\n- ✏️ 변경 전: (정책 미정의)\n- ✅ 변경 후: 삭제 클릭 → "정말 삭제하시겠어요?" 모달 → [취소]/[빨강 삭제]\n- 💡 근거: 사용자 실수 방지`;
+        const stream = new ReadableStream({
+          async start(controller) {
+            controller.enqueue(encoder.encode(JSON.stringify({ type: 'meta', appliedFeedbacks: [], via: 'demo' }) + '\n'));
+            const chunks = answer.match(/.{1,25}/gs) || [answer];
+            for (const c of chunks) {
+              await new Promise((r) => setTimeout(r, 50));
+              controller.enqueue(encoder.encode(JSON.stringify({ type: 'text', content: c }) + '\n'));
+            }
+            controller.close();
+          }
+        });
+        return new Response(stream, { status: 200, headers: { 'Content-Type': 'application/x-ndjson' } });
+      }
+      if (path === '/list-decisions') return jsonRes({ decisions: [] });
+      if (path === '/list-feedbacks') return jsonRes({ feedbacks: [] });
+      if (path === '/forward') return jsonRes({ decisionPath: 'qa/decisions/demo.md', commitSha: 'demo', htmlUrl: '#' });
+      if (path === '/feedback') return jsonRes({ feedbackPath: 'qa/feedback/demo.md', commitSha: 'demo', htmlUrl: '#' });
+      if (path === '/save-decision-image') return jsonRes({ saved: true, path: 'demo/img.png', markdownRef: '![demo](demo/img.png)', bytes: 100 });
+      if (path === '/health') return jsonRes({ status: 'demo', service: 'mock-worker' });
+      return jsonRes({ error: `demo mock 미대응 endpoint: ${path}` }, 501);
     }
 
     /* ────────── 세션 캐시 (탭 살아 있는 동안만) ──────────

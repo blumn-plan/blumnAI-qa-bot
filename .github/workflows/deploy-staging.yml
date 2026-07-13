@@ -1,0 +1,134 @@
+name: Deploy Staging
+
+# 코어 변경사항을 실제 백엔드로 검증할 수 있는 staging 환경 배포.
+#
+# 트리거:
+#   - workflow_dispatch (수동, 원할 때)
+#   - main push (자동, opt-in: SECRETS 설정된 경우만 배포)
+#
+# 필요 시크릿 (Settings → Secrets and variables → Actions):
+#   - CF_API_TOKEN         : Cloudflare API 토큰 (Workers Scripts:Edit 권한)
+#   - CF_ACCOUNT_ID        : Cloudflare Account ID
+#   - STG_ANTHROPIC_API_KEY: staging 전용 Anthropic API key (별도 상한 권장)
+#   - STG_GITHUB_TOKEN     : staging repo read/write PAT (repo scope)
+#   - STG_GITHUB_REPO      : staging 데이터 레포 (예: "blumn-plan/blumnAI-qa-bot-staging-data")
+#   - STG_ALLOWED_ORIGINS  : Pages URL (예: "https://blumn-plan.github.io")
+#
+# 이 시크릿들이 하나라도 없으면 배포 스텝은 skip (CI 만 실행). 안전한 opt-in.
+#
+# 배포 후 URL:
+#   Worker : https://blumnai-qa-bot-staging.<subdomain>.workers.dev
+#   Pages  : https://blumn-plan.github.io/blumnAI-qa-bot/apps/qa-collab.html (별도 활성 필요)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: '배포 사유 (선택)'
+        required: false
+        default: '수동 트리거'
+  push:
+    branches: [main]
+
+jobs:
+  deploy-worker:
+    runs-on: ubuntu-latest
+    # 시크릿 없으면 자동 skip
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.STAGING_AUTO_DEPLOY == '1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets present
+        id: secrets_check
+        run: |
+          missing=""
+          [ -z "${{ secrets.CF_API_TOKEN }}" ]         && missing="$missing CF_API_TOKEN"
+          [ -z "${{ secrets.CF_ACCOUNT_ID }}" ]        && missing="$missing CF_ACCOUNT_ID"
+          [ -z "${{ secrets.STG_ANTHROPIC_API_KEY }}" ] && missing="$missing STG_ANTHROPIC_API_KEY"
+          [ -z "${{ secrets.STG_GITHUB_TOKEN }}" ]     && missing="$missing STG_GITHUB_TOKEN"
+          [ -z "${{ secrets.STG_GITHUB_REPO }}" ]      && missing="$missing STG_GITHUB_REPO"
+          if [ -n "$missing" ]; then
+            echo "⚠️  Staging 배포에 필요한 시크릿 누락:$missing"
+            echo "   Settings → Secrets 에서 등록하세요. 자세히: docs/08-STAGING.md"
+            echo "skip=1" >> $GITHUB_OUTPUT
+          else
+            echo "skip=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Node.js
+        if: steps.secrets_check.outputs.skip == '0'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: bot/worker/package-lock.json
+
+      - name: Install worker deps
+        if: steps.secrets_check.outputs.skip == '0'
+        working-directory: bot/worker
+        run: npm ci --no-audit --no-fund
+
+      - name: Prepare wrangler.toml from template
+        if: steps.secrets_check.outputs.skip == '0'
+        working-directory: bot/worker
+        run: |
+          if [ -f wrangler.toml.template ] && [ ! -f wrangler.toml ]; then
+            cp wrangler.toml.template wrangler.toml
+          fi
+          # staging 환경 이름·변수 확인 (템플릿에 [env.staging] 필요)
+          if ! grep -q '\[env.staging\]' wrangler.toml; then
+            echo "❌ wrangler.toml 에 [env.staging] 섹션 없음. bot/worker/wrangler.toml.template 참고."
+            exit 1
+          fi
+
+      - name: Update ALLOWED_ORIGINS + GITHUB_REPO in wrangler.toml
+        if: steps.secrets_check.outputs.skip == '0'
+        working-directory: bot/worker
+        run: |
+          # sed 로 staging env vars 갱신 (기본값 있어도 시크릿으로 override)
+          python3 - <<EOF
+          import re, os
+          with open('wrangler.toml') as f: t = f.read()
+          repo = os.environ['STG_GITHUB_REPO']
+          origins = os.environ['STG_ALLOWED_ORIGINS']
+          # [env.staging.vars] 블록 안 GITHUB_REPO, ALLOWED_ORIGINS 대체
+          def replace_in_block(text, block_re, key, value):
+              m = re.search(block_re, text, re.DOTALL)
+              if not m: return text
+              block = m.group(0)
+              new_block = re.sub(rf'({key}\s*=\s*)"[^"]*"', rf'\1"{value}"', block)
+              if key not in block:
+                  new_block = block.rstrip() + f'\n{key} = "{value}"\n'
+              return text.replace(block, new_block)
+          t = replace_in_block(t, r'\[env\.staging\.vars\][^\[]*', 'GITHUB_REPO', repo)
+          t = replace_in_block(t, r'\[env\.staging\.vars\][^\[]*', 'ALLOWED_ORIGINS', origins)
+          with open('wrangler.toml','w') as f: f.write(t)
+          print('✅ wrangler.toml staging vars 갱신 완료')
+          EOF
+        env:
+          STG_GITHUB_REPO: ${{ secrets.STG_GITHUB_REPO }}
+          STG_ALLOWED_ORIGINS: ${{ secrets.STG_ALLOWED_ORIGINS }}
+
+      - name: Push staging secrets to Worker
+        if: steps.secrets_check.outputs.skip == '0'
+        working-directory: bot/worker
+        run: |
+          echo "${{ secrets.STG_ANTHROPIC_API_KEY }}" | npx wrangler secret put ANTHROPIC_API_KEY --env staging
+          echo "${{ secrets.STG_GITHUB_TOKEN }}" | npx wrangler secret put GITHUB_TOKEN --env staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Deploy Worker (staging)
+        if: steps.secrets_check.outputs.skip == '0'
+        working-directory: bot/worker
+        run: npx wrangler deploy --env staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Report
+        if: steps.secrets_check.outputs.skip == '0'
+        run: |
+          echo "✅ Staging Worker 배포 완료"
+          echo "확인: https://blumnai-qa-bot-staging.workers.dev/health?detailed=1"

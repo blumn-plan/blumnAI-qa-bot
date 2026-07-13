@@ -1,17 +1,44 @@
-# Cloudflare Worker 설정 — planner QA bot.
+# Cloudflare Worker 설정 템플릿 — 각 팀이 이 파일을 wrangler.toml 로 복사한 뒤 값 채우기.
 #
-# secrets (배포 후 별도 등록 — DEPLOY.md 참고):
-#   wrangler secret put ANTHROPIC_API_KEY
-#   wrangler secret put GITHUB_TOKEN
+# 필수 시크릿 (wrangler CLI 로 별도 등록 — docs/03-CONNECT-BOT.md 참고):
+#   wrangler secret put ANTHROPIC_API_KEY   # 값 : sk-ant-...
+#   wrangler secret put GITHUB_TOKEN        # 값 : ghp_... (repo scope Classic PAT)
 #
-# vars 는 public — 여기 그대로 둬도 됨.
+# vars 는 public — 그대로 커밋되어도 안전한 값들 (팀 레포 이름 · CORS · 모델).
 
-name = "planner-qa-bot"
+name = "planner-qa-bot"           # ← 팀별 자유. 예: "ad-team-qa-bot"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
 workers_dev = true
 
 [vars]
-GITHUB_REPO = "lunasoft-org/heythere_planer"
-ALLOWED_ORIGINS = "https://lunasoft-org.github.io,https://verbose-chainsaw-2qw8p2w.pages.github.io"
+# 팀 정책 레포 (org/repo 형식)
+GITHUB_REPO = "your-org/your-policy-repo"
+# CORS 허용 origin — 팀 Pages URL. 쉼표 구분으로 여러 개 가능
+ALLOWED_ORIGINS = "https://your-org.github.io"
+# 사용할 Claude 모델
+CLAUDE_MODEL = "claude-sonnet-4-6"
+
+
+# ────────────────────────────────────────────────────────────────
+# [env.staging] — 코어 개발 검증용 staging Worker
+#
+# 이 환경은 blumn-plan/blumnAI-qa-bot 코어 레포에서 .github/workflows/deploy-staging.yml
+# 이 사용합니다. 팀 배포엔 관련 없음 — 코어 메인테이너용.
+#
+# 배포 : npx wrangler deploy --env staging
+# URL  : https://blumnai-qa-bot-staging.<subdomain>.workers.dev
+# 데이터 : STG_GITHUB_REPO 시크릿이 가리키는 별도 staging 데이터 레포 사용
+#          (예: blumn-plan/blumnAI-qa-bot-staging-data)
+# ────────────────────────────────────────────────────────────────
+
+[env.staging]
+name = "blumnai-qa-bot-staging"
+workers_dev = true
+
+[env.staging.vars]
+# GITHUB_REPO · ALLOWED_ORIGINS 는 Actions 가 STG_* 시크릿 값으로 override.
+# 아래 값은 시크릿 미설정 시 fallback (실제 배포 X).
+GITHUB_REPO = "blumn-plan/blumnAI-qa-bot-staging-data"
+ALLOWED_ORIGINS = "https://blumn-plan.github.io"
 CLAUDE_MODEL = "claude-sonnet-4-6"

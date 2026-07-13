@@ -1,0 +1,53 @@
+name: CI
+
+# 모든 push · PR 에서 자동 실행:
+#   - Worker TypeScript 타입 검사 (tsc --noEmit)
+#   - Worker 유닛 테스트 (vitest)
+#   - HTML 스크립트 파싱 검증
+#   - 정책 md 규약 검증 (샘플 레포 대상)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: bot/worker/package-lock.json
+
+      - name: Install worker deps
+        working-directory: bot/worker
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check (tsc --noEmit)
+        working-directory: bot/worker
+        run: npx tsc --noEmit
+
+      - name: Run vitest (unit tests)
+        working-directory: bot/worker
+        run: npm test
+
+      - name: Verify HTML scripts parse
+        run: |
+          node -e "
+          const fs=require('fs');
+          for (const p of ['apps/qa-collab.html','apps/qa-planner.html']){
+            const html=fs.readFileSync(p,'utf8');
+            const m=html.match(/<script>([\s\S]*?)<\/script>/);
+            if(!m){ console.error('no inline script in', p); process.exit(1); }
+            try { new Function(m[1]); console.log('OK', p, m[1].length); }
+            catch(e){ console.error('FAIL', p, e.message); process.exit(1); }
+          }"
+
+      - name: Validate sample-policy-repo policies
+        run: node scripts/check-policies.mjs examples/sample-policy-repo/projects/sample/docs/policies
