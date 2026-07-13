@@ -60,6 +60,7 @@
 - 📚 **Sample-policy-repo 확장** — 정책 md 4개 (대시보드 · 캠페인 관리 · 결제포인트 · 알림설정). 실전 감 있는 §번호·시각 명세·버전 이력 표 포함. 모두 정책 스캔 CLI 통과
 - 🧹 **wrangler.toml.template 팀 중립화** — `heythere_planer`·`lunasoft-org` 하드코딩 제거하고 `your-org/your-policy-repo` placeholder + `[env.staging]` 스테이징 환경 추가
 - 📄 **docs/08-STAGING.md** 신규 — 3가지 개발자 테스트 방법 (데모 모드 · wrangler dev · Actions staging) 상세 가이드 + 개선 흐름 다이어그램 + FAQ
+- 🩹 **세팅하기 갭 수정** — `.blumnAI-qa-bot/version` 파일 생성 스텝이 누락되어 있었음 (실전 배포 확인 중 발견 · 404). 01-INSTALL §3 파일 복사 목록에 추가 (5개 → 6개), README 세팅하기 프롬프트 스텝 B 에도 명시 추가, 05-UPGRADE 자동 배너 절에 ⚠️ 경고 박스로 강조, `examples/sample-policy-repo/.blumnAI-qa-bot/version` 샘플 파일 신설 (내용 `v0.1.0`)
 
 ## v0.0.0 — 2026-06-30
 

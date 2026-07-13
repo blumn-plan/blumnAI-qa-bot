@@ -20,6 +20,8 @@
 - [나중에] 누르면 그 버전 배너만 dismiss (다음 새 버전엔 다시 뜸)
 - 코어 레포 URL 이 fork 라면 `config.yml` 의 `deployment.core_repo` 를 fork 로 override
 
+> ⚠️ **`.blumnAI-qa-bot/version` 파일이 반드시 있어야 배너 동작.** 없으면 (F12 Network 탭에서 `../version` 요청이 404 로 뜨는 경우) 배너 로직이 조용히 skip 됩니다. 초기 세팅 시 [01-INSTALL §3](01-INSTALL.md#3-코어-코드-사본-깔기-5분) 파일 복사 목록에 포함되어 있으니 확인하세요. 없으면 지금 만들어야 하는 값은 **코어 CHANGELOG.md 최상단 버전 문자열 그대로** (예: `v0.1.0`).
+
 ### 방식 2. GitHub Watch 구독 (팀원별 개별)
 
 각 팀원이 개인적으로 알림 받고 싶으면:

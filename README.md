@@ -244,6 +244,9 @@ B. 홈 레포에 .blumnAI-qa-bot/ + blumnAI-qa-bot.config.yml 얹기
    - config.yml 의 projects[] 배열에 위에서 확정한 **각 프로젝트를 별도 항목으로 등록**
    - 각 항목마다 policies_dir · storyboards_dir · code_repo · code_paths 채우기
      (파일 이동 없이 발견한 실제 경로 그대로 사용)
+   - **.blumnAI-qa-bot/version 파일 반드시 생성** — 코어 CHANGELOG.md 최상단 버전
+     (예: "v0.1.0") 을 한 줄로 저장. 없으면 자동 업데이트 배너가 조용히 skip 됨.
+     샘플: examples/sample-policy-repo/.blumnAI-qa-bot/version
 C. **기획자 모드 비번 정하기** — config 의 ui.planner_password 채우기
    위 [팀 전체 정보] 에 지정한 값 사용. "랜덤 생성" 이면 8자 이상 안전한 값 생성해 안내
 D. Anthropic API key (sk-ant-...) + GitHub PAT (ghp_...) 시크릿 등록
