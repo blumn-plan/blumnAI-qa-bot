@@ -31,7 +31,13 @@ C 모드 (Max 구독 우회, PC 상시 가동 필요) 는 특수 상황용이며
 
 ## 🏛 이 레포는 뭐고 어떻게 쓰나
 
-**이 레포 (`blumn-plan/blumnAI-qa-bot`)** = 기획팀이 지속적으로 유지·업데이트하는 **재사용 가능한 코어 봇**입니다. 이 레포 안에는 어떤 팀의 정책 md 도 들어있지 않아요 — 그건 각 팀 정책 레포의 몫.
+**이 레포 (`blumn-plan/blumnAI-qa-bot`) = 봇의 원본** 입니다. 기획팀이 지속적으로 유지·업데이트하는 **재사용 가능한 원본 봇** 이에요. 이 레포 안에는 어떤 팀의 정책 md 도 들어있지 않아요 — 그건 각 팀 정책 레포의 몫.
+
+> 📖 **용어 정의**  
+> 이 문서에서 아래 세 표현은 모두 **같은 뜻** 이에요 — 이 레포 (`blumn-plan/blumnAI-qa-bot`) 를 가리킵니다:  
+> **"원본"** = **"원본 봇"** = **"코어 (Core)"**  
+>  
+> (개발 문서에서는 "코어" 라는 영어 유래 용어를 쓰기도 하지만, 이 README 는 "원본" 으로 통일했어요. 다른 문서·주석에서 "코어" 를 만나면 같은 뜻으로 이해하시면 됩니다.)
 
 각 서비스팀은 이 코어를 **자기 정책 레포 안의 `.blumnAI-qa-bot/` 폴더에 통째로 복사해서** 씁니다. **직접 복사할 필요는 없어요** — 아래의 🟢 세팅하기 프롬프트가 자동으로 처리해줍니다.
 
@@ -39,7 +45,7 @@ C 모드 (Max 구독 우회, PC 상시 가동 필요) 는 특수 상황용이며
 [코어 (이 레포)]                    [팀 정책 레포]
 blumn-plan/blumnAI-qa-bot   →→→→   blumn/○○-planer
      (봇 파일 통째)                   ├ blumnAI-qa-bot.config.yml   ← 팀 설정
-                                     ├ .blumnAI-qa-bot/             ← 코어 사본
+                                     ├ .blumnAI-qa-bot/             ← 원본 봇 사본
                                      ├ (팀 정책 md — 원래 있던 것)
                                      └ qa/                          ← 봇이 자동 생성
 ```
@@ -47,9 +53,9 @@ blumn-plan/blumnAI-qa-bot   →→→→   blumn/○○-planer
 **기억할 4가지**:
 
 1. ❌ **fork 하지 마세요** — 파일 복사 방식이 정답입니다. fork 는 코어 업데이트를 받기 어려워져요. 복사는 세팅하기 프롬프트가 자동으로 해줍니다
-2. 🔔 **코어에 새 버전이 나오면** 팀 봇 화면 상단에 배너가 자동으로 표시됩니다 → 🟠 업데이트하기 프롬프트를 한 번 실행하면 30초 만에 갱신 (팀 정책 파일은 절대로 건드리지 않아요)
+2. 🔔 **원본 봇 (`blumn-plan/blumnAI-qa-bot`) 에 새 버전이 나오면** 팀 봇 화면 상단에 배너가 자동으로 표시됩니다 → 🟠 업데이트하기 프롬프트를 한 번 실행하면 30초 만에 갱신 (팀 정책 파일은 절대로 건드리지 않아요)
 3. 🔄 **팀 정책 변경은 봇 화면 안에서** 이루어집니다 — 사용자가 [📤 기획전달] 을 누르면 AI 가 정책 md 를 자동으로 수정
-4. 🎁 **코어 봇 자체에 개선 아이디어가 있으면** 봇 툴바의 [🎁] 클릭 → GitHub Issue 가 자동으로 생성됩니다. 팀 사본을 수정해도 원본에는 자동으로 반영되지 않으니, 반드시 PR + 리뷰 절차를 거쳐야 합니다 ([CONTRIBUTING.md](CONTRIBUTING.md) 참고)
+4. 🎁 **원본 봇 자체에 개선 아이디어가 있으면** 봇 툴바의 [🎁] 클릭 → GitHub Issue 가 자동으로 생성됩니다. 팀 사본을 수정해도 원본에는 자동으로 반영되지 않으니, 반드시 PR + 리뷰 절차를 거쳐야 합니다 ([CONTRIBUTING.md](CONTRIBUTING.md) 참고)
 
 자세한 코어-사본 원칙은 [docs/05-UPGRADE.md](docs/05-UPGRADE.md) 에 정리해뒀습니다.
 
@@ -157,7 +163,7 @@ B. 홈 레포에 .blumnAI-qa-bot/ + blumnAI-qa-bot.config.yml 얹기
    - config.yml 의 projects[] 배열에 위에서 확정한 **각 프로젝트를 별도 항목으로 등록**
    - 각 항목마다 policies_dir · storyboards_dir · code_repo · code_paths 채우기
      (파일 이동 없이 발견한 실제 경로 그대로 사용)
-   - **.blumnAI-qa-bot/version 파일 반드시 생성** — 코어 CHANGELOG.md 최상단 버전
+   - **.blumnAI-qa-bot/version 파일 반드시 생성** — 원본 봇 CHANGELOG.md 최상단 버전
      (예: "v0.1.0") 을 한 줄로 저장. 없으면 자동 업데이트 배너가 조용히 skip 됨.
      샘플: examples/sample-policy-repo/.blumnAI-qa-bot/version
 C. **기획자 모드 비번 정하기** — config 의 ui.planner_password 채우기
@@ -268,17 +274,17 @@ G. 07-FIRST-TEST 시나리오 실행
 
 **이런 경우에 사용하세요**:
 - 봇 화면 상단에 노란 배너가 뜬 경우
-- 코어 메인테이너가 Slack 으로 새 버전을 공지한 경우
+- 원본 봇 메인테이너 (기획팀) 가 Slack 으로 새 버전을 공지한 경우
 - ⚠️ SECURITY 표시가 붙은 릴리즈 (즉시 적용 권장)
 
 ```
-blumnAI-qa-bot 코어에 새 버전 (v○.○.○) 이 나왔습니다.
+원본 봇 (blumn-plan/blumnAI-qa-bot) 에 새 버전 (v○.○.○) 이 나왔습니다.
 우리 팀 레포의 .blumnAI-qa-bot/ 아래를 최신으로 갱신하고 싶어요.
 
 가이드: https://github.com/blumn-plan/blumnAI-qa-bot/blob/main/docs/05-UPGRADE.md
 
 절차:
-1. 코어 CHANGELOG.md fetch → "⚠️ BREAKING" 표기 확인
+1. 원본 봇 CHANGELOG.md fetch → "⚠️ BREAKING" 표기 확인
 2. Breaking change 있으면 저에게 먼저 알림 (승인 후 진행)
 3. 05-UPGRADE 의 §핵심 원칙 표 대로:
    - .blumnAI-qa-bot/apps/, worker/, local-server/, version → 덮어쓰기
