@@ -2,6 +2,19 @@
 
 이 레포는 [SemVer](https://semver.org/lang/ko/) 를 따릅니다. 코어 변경 시 사용자 레포에 영향을 주는 항목은 ⚠ 표시.
 
+## v0.2.0 — 2026-07-13 (in progress)
+
+**Highlights** — SaaS 모드 Phase 1 MVP: 팀별 셋업 없이 하나의 URL 에서 wizard 로 3분 셋업 후 즉시 사용.
+
+- 🚀 **SaaS 모드 Phase 1 MVP** — 팀별 Cloudflare Worker 배포 · `.blumnAI-qa-bot/` 복사 · wrangler secret 등록 등 30-60분 셋업 프로세스를 브라우저 wizard 3분으로 대체. 방향 결정: 팀별 결제 · URL 은 `blumnai-qa.ai` 예정
+  - Worker: `scopeEnvFromRequest()` 헤더 기반 인증 (`X-Bot-{GitHub-Repo|GitHub-Token|Anthropic-Key}`). `SAAS_MODE=1` 환경변수 시 CORS 무제한 (인증은 헤더로만)
+  - Worker: `loadTeamConfig` cache 를 `Map<GITHUB_REPO, ...>` 로 refactor — 다중 팀 격리
+  - Frontend: `getConfig()` 가 config.yml 없으면 SaaS 모드로 자동 전환. localStorage 에 저장된 설정 사용 · 없으면 `openSaasWizard()` 자동 실행
+  - Frontend: `botFetch()` wrapper — SaaS 모드에서 모든 Worker 요청에 인증 헤더 자동 첨부. 9개 fetch 호출 지점 모두 이관
+  - Frontend: 툴바에 [⚙️] 버튼 (SaaS 모드에서만 표시) — wizard 재오프해서 설정 변경
+  - **하위 호환**: 기존 팀 모드 (config.yml 있는 배포) 은 아무 영향 없이 그대로 동작
+- 📄 **docs/09-SAAS-MODE.md** 신규 — 사용자 관점 · 코어 메인테이너 관점 · 헤더 스펙 · 보안 고려사항 · 향후 로드맵
+
 ## v0.1.0 — 2026-07-09 (in progress)
 
 **Highlights** — 비개발자 온보딩 전면 개선 + 코드 검증 옵션 신설.

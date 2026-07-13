@@ -536,6 +536,7 @@
         <button id="clear-btn" type="button" class="icon-only" title="새 대화 — 현재 대화를 지우고 새 질문 시작">↻</button>
         <button id="export-btn" type="button" class="icon-only" title="내보내기 — 현재 대화를 markdown 파일로 다운로드">💾</button>
         <button id="core-idea-btn" type="button" class="icon-only" title="봇 기능·버그·UI 개선 제안 → GitHub Issue 로 등록">🎁</button>
+        <button id="saas-settings-btn" type="button" class="icon-only" style="display:none" title="설정 변경 — 팀 정책 레포·API key 등">⚙️</button>
         <button id="forward-btn" class="primary" type="button" disabled title="기획자에게 전달 — 이 답변을 변경 요청으로 전달 (qa/decisions/ 에 자동 저장)">📤 기획전달</button>
         <button id="improve-toolbar-btn" class="improve" type="button" title="답변 규칙 추가 — 언제든 가능">📝 답변 규칙</button>
         <span class="info-wrap">
@@ -679,10 +680,31 @@
     /* ────────── 컨피그 로드 ──────────
        blumnAI-qa-bot.config.yml 의 deployment.worker_url 에서 자동 로드.
        사용자 레포 루트에 yml 이 있어야 동작. */
+    /** 모든 Worker 요청 앞에 붙는 fetch wrapper — SaaS 모드에선 인증 헤더 자동 첨부.
+     *  워커 side 에서 X-Bot-{GitHub-Repo|GitHub-Token|Anthropic-Key} 를 읽어 env 오버라이드.
+     *  팀 모드 (SAAS_MODE=false) 에선 헤더 없이 그대로 통과 → 하위 호환. */
+    function botFetch(url, opts = {}) {
+      if (!SAAS_MODE || !SAAS_CONFIG) return fetch(url, opts);
+      const headers = new Headers(opts.headers || {});
+      if (SAAS_CONFIG.github_repo)   headers.set('X-Bot-GitHub-Repo',   SAAS_CONFIG.github_repo);
+      if (SAAS_CONFIG.github_token)  headers.set('X-Bot-GitHub-Token',  SAAS_CONFIG.github_token);
+      if (SAAS_CONFIG.anthropic_key) headers.set('X-Bot-Anthropic-Key', SAAS_CONFIG.anthropic_key);
+      return fetch(url, { ...opts, headers });
+    }
+
+    /* ────────── 컨피그 로드 — 팀 모드 or SaaS 모드 자동 감지 ──────────
+     *  1. 팀 모드 (레거시): 팀 정책 레포에 config.yml 이 있음 → 즉시 사용
+     *  2. SaaS 모드 (신규): config.yml 없음 → localStorage 의 사용자 설정 사용
+     *     ↳ 저장된 설정 없으면 첫 방문 wizard 자동 실행 */
+    const SAAS_CONFIG_KEY = 'blumnai-qa-saas-config-v1';
     let WORKER_URL = null;
     let CONFIG = null;
+    let SAAS_MODE = false;
+    let SAAS_CONFIG = null;
+
     async function getConfig() {
       if (CONFIG) return CONFIG;
+      // 팀 모드 시도 — 정책 레포 안 config.yml
       const tryPaths = ['../../blumnAI-qa-bot.config.yml', './blumnAI-qa-bot.config.yml', '/blumnAI-qa-bot.config.yml'];
       for (const p of tryPaths) {
         try {
@@ -693,23 +715,157 @@
           }
         } catch (e) {}
       }
-      throw new Error('blumnAI-qa-bot.config.yml 을 찾을 수 없습니다 — 사용자 레포 루트에 있는지 확인하세요');
+      // SaaS 모드 fallback — localStorage 우선
+      SAAS_MODE = true;
+      const stored = localStorage.getItem(SAAS_CONFIG_KEY);
+      if (stored) {
+        try {
+          SAAS_CONFIG = JSON.parse(stored);
+          CONFIG = saasToTeamConfig(SAAS_CONFIG);
+          return CONFIG;
+        } catch (_) { localStorage.removeItem(SAAS_CONFIG_KEY); }
+      }
+      // 첫 방문 — wizard 필요
+      return null;
+    }
+
+    /** SaaS 사용자 입력 → 팀 모드 config 구조로 변환. downstream 은 동일 코드 재사용 */
+    function saasToTeamConfig(saas) {
+      return {
+        ui: { brand_name: saas.team_name || '내 팀', team_name: saas.team_name || '', planner_password: saas.planner_password || '' },
+        deployment: {
+          worker_url: saas.worker_url || location.origin,
+          github_repo: saas.github_repo,
+          core_repo: 'blumn-plan/blumnAI-qa-bot',
+        },
+        projects: (saas.projects && saas.projects.length ? saas.projects : [{
+          id: 'default',
+          label: '기본 프로젝트',
+          policies_dir: saas.policies_dir || '',
+          storyboards_dir: saas.storyboards_dir || '',
+          code_repo: saas.code_repo || '',
+        }]),
+        bot: { inject_doc_catalog: true, include_all_docs: false, claude_model: 'claude-sonnet-4-6' },
+      };
     }
     async function bootstrap() {
-      const cfg = await getConfig();
+      let cfg = await getConfig();
+      // SaaS 모드에서 저장된 설정 없으면 wizard 자동 실행
+      if (!cfg && SAAS_MODE) {
+        cfg = await openSaasWizard();
+        if (!cfg) throw new Error('SaaS 설정 취소됨');
+      }
+      if (!cfg) throw new Error('blumnAI-qa-bot.config.yml 을 찾을 수 없습니다');
       WORKER_URL = cfg?.deployment?.worker_url;
       if (!WORKER_URL || WORKER_URL.startsWith('__')) {
-        throw new Error('blumnAI-qa-bot.config.yml 의 deployment.worker_url 를 채워주세요');
+        if (SAAS_MODE) WORKER_URL = location.origin; // SaaS 는 같은 도메인의 Worker 사용
+        else throw new Error('blumnAI-qa-bot.config.yml 의 deployment.worker_url 를 채워주세요');
       }
-      // 팀 brand_name 을 브라우저 탭 title 에 반영
       if (cfg?.ui?.brand_name) {
         document.title = `${cfg.ui.brand_name} · 정책 Q&A`;
       }
-      // ?demo=1 데모 모드 — Worker 없이 mock 데이터로 UI 전체 동작 시연
       if (new URLSearchParams(location.search).get('demo') === '1') {
         installDemoMocks();
       }
     }
+
+    /* ────────── 🚀 SaaS 설정 wizard ──────────
+     *  첫 방문 시 (또는 [⚙️ 설정] 클릭 시) 열리는 모달. 사용자가 입력한 값을
+     *  localStorage 에 저장하고 즉시 CONFIG 로 변환해 반환. 취소 시 null. */
+    async function openSaasWizard() {
+      return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.75);z-index:10001;display:flex;align-items:center;justify-content:center;padding:20px;overflow-y:auto';
+        const modal = document.createElement('div');
+        modal.style.cssText = 'background:white;border-radius:12px;max-width:560px;width:100%;padding:24px 28px;box-shadow:0 20px 60px rgba(0,0,0,0.3);font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-height:90vh;overflow-y:auto';
+        const existing = SAAS_CONFIG || {};
+        modal.innerHTML = `
+          <div style="text-align:center;margin-bottom:20px">
+            <div style="font-size:36px">🚀</div>
+            <h2 style="margin:8px 0 4px;font-size:20px;color:#1f2937">blumnAI QA 봇 시작하기</h2>
+            <p style="margin:0;color:#6b7280;font-size:13px">팀 정책·코드 위치와 API 키를 입력하면 바로 시작합니다 (3분)</p>
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">팀 이름 <span style="color:#dc2626">*</span></label>
+            <input id="sw-team" required style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px" placeholder="예: 광고팀" value="${escapeHtml(existing.team_name || '')}">
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">정책 문서 GitHub 레포 <span style="color:#dc2626">*</span></label>
+            <input id="sw-repo" required style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:monospace" placeholder="예: blumn/ad-team-policies" value="${escapeHtml(existing.github_repo || '')}">
+            <p style="font-size:11px;color:#6b7280;margin:4px 0 0">org/repo 형식. 정책 md 가 있는 레포 (private 도 OK, 아래 PAT 로 접근)</p>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+            <div>
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">정책 폴더 경로</label>
+              <input id="sw-policies" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:monospace" placeholder="예: docs/policies" value="${escapeHtml(existing.policies_dir || '')}">
+            </div>
+            <div>
+              <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">화면설계서 폴더 (선택)</label>
+              <input id="sw-storyboards" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:monospace" placeholder="예: docs/storyboards" value="${escapeHtml(existing.storyboards_dir || '')}">
+            </div>
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">서비스 코드 레포 (선택)</label>
+            <input id="sw-code" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:monospace" placeholder="예: blumn/ad-admin-frontend — 정책 vs 코드 drift 판정 시" value="${escapeHtml(existing.code_repo || '')}">
+          </div>
+          <div style="border-top:1px dashed #e5e7eb;margin:20px 0 16px;padding-top:14px">
+            <p style="margin:0 0 12px;font-size:12px;color:#6b7280;line-height:1.5">🔒 <b>인증 정보</b> — 브라우저 localStorage 에만 저장. 서버에 안 갑니다.<br>다른 사람과 공유 X.</p>
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">GitHub PAT <span style="color:#dc2626">*</span></label>
+            <input id="sw-pat" type="password" required style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:monospace" placeholder="ghp_..." value="${escapeHtml(existing.github_token || '')}">
+            <p style="font-size:11px;color:#6b7280;margin:4px 0 0">Classic PAT (repo scope). <a href="https://github.com/settings/tokens/new?scopes=repo&description=blumnai-qa-bot" target="_blank" style="color:#6366f1">발급하기 →</a></p>
+          </div>
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">Anthropic API Key <span style="color:#dc2626">*</span></label>
+            <input id="sw-anthropic" type="password" required style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px;font-family:monospace" placeholder="sk-ant-..." value="${escapeHtml(existing.anthropic_key || '')}">
+            <p style="font-size:11px;color:#6b7280;margin:4px 0 0">팀별 결제. <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:#6366f1">Anthropic Console →</a></p>
+          </div>
+          <div style="margin-bottom:20px">
+            <label style="display:block;font-size:12px;font-weight:600;color:#374151;margin-bottom:4px">기획자 모드 비번 (선택)</label>
+            <input id="sw-pw" style="width:100%;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px" placeholder="qa-planner.html 접근 비번. 비워두면 default" value="${escapeHtml(existing.planner_password || '')}">
+          </div>
+          <div style="display:flex;gap:10px;justify-content:flex-end">
+            <button id="sw-cancel" type="button" style="padding:8px 16px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">취소</button>
+            <button id="sw-save" type="button" style="padding:8px 16px;border:0;background:#6366f1;color:white;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">💾 저장하고 시작하기</button>
+          </div>
+        `;
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+        modal.querySelector('#sw-team').focus();
+
+        const close = () => overlay.remove();
+        modal.querySelector('#sw-cancel').addEventListener('click', () => { close(); resolve(null); });
+        modal.querySelector('#sw-save').addEventListener('click', () => {
+          const saas = {
+            team_name: modal.querySelector('#sw-team').value.trim(),
+            github_repo: modal.querySelector('#sw-repo').value.trim(),
+            policies_dir: modal.querySelector('#sw-policies').value.trim(),
+            storyboards_dir: modal.querySelector('#sw-storyboards').value.trim(),
+            code_repo: modal.querySelector('#sw-code').value.trim(),
+            github_token: modal.querySelector('#sw-pat').value.trim(),
+            anthropic_key: modal.querySelector('#sw-anthropic').value.trim(),
+            planner_password: modal.querySelector('#sw-pw').value.trim(),
+          };
+          const missing = ['team_name','github_repo','github_token','anthropic_key'].filter((k) => !saas[k]);
+          if (missing.length) {
+            alert('필수 항목을 채워주세요: ' + missing.join(', '));
+            return;
+          }
+          if (!/^[\w.-]+\/[\w.-]+$/.test(saas.github_repo)) {
+            alert('GitHub 레포는 "org/repo" 형식이어야 합니다');
+            return;
+          }
+          localStorage.setItem(SAAS_CONFIG_KEY, JSON.stringify(saas));
+          SAAS_CONFIG = saas;
+          CONFIG = saasToTeamConfig(saas);
+          close();
+          resolve(CONFIG);
+        });
+      });
+    }
+
+    // (escapeHtml 은 하단 utility 로 이미 정의됨)
 
     /* ────────── 🎬 데모 모드 — Worker fetch 를 mock 응답으로 대체 ──────────
      *  ?demo=1 URL 쿼리로 활성. 팀 담당자·개발자가 wrangler dev 없이도
@@ -792,7 +948,7 @@
     async function fetchDocCached(path) {
       const c = docContentCache.get(path);
       if (c && Date.now() - c.at < DOC_CACHE_TTL_MS) return c.content;
-      const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
+      const res = await botFetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       docContentCache.set(path, { at: Date.now(), content: data.content });
@@ -801,7 +957,7 @@
     async function fetchListDocsCached(project) {
       const c = listDocsCache.get(project);
       if (c && Date.now() - c.at < DOC_CACHE_TTL_MS) return c.docs;
-      const res = await fetch(`${WORKER_URL}/list-docs?project=${encodeURIComponent(project)}`);
+      const res = await botFetch(`${WORKER_URL}/list-docs?project=${encodeURIComponent(project)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const docs = data.docs || [];
@@ -1062,7 +1218,7 @@
         });
       }
       try {
-        const projRes = await fetch(`${WORKER_URL}/list-projects`);
+        const projRes = await botFetch(`${WORKER_URL}/list-projects`);
         if (!projRes.ok) throw new Error(`projects HTTP ${projRes.status}`);
         const projData = await projRes.json();
         state.projects = projData.projects;
@@ -1512,7 +1668,7 @@
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
           try {
             if (attempt > 1) updateLoadingPlaceholderText(loadingPlaceholder, `재시도 중… (${attempt}/${MAX_ATTEMPTS})`);
-            res = await fetch(`${WORKER_URL}/qa`, {
+            res = await botFetch(`${WORKER_URL}/qa`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               signal: state.streamAbort.signal,
@@ -1904,7 +2060,7 @@
       const answer = dlg.dataset.answer;
 
       try {
-        const res = await fetch(`${WORKER_URL}/feedback`, {
+        const res = await botFetch(`${WORKER_URL}/feedback`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ docPath: state.currentDoc?.path, title, improvement, question, answer, user: state.user.name || '익명' }),
@@ -1998,6 +2154,19 @@
     });
 
     /* 🎁 코어 봇 개선 제안 — GitHub Issue 로 리다이렉트 (URL 프리필) */
+    // SaaS 모드에서만 [⚙️ 설정] 버튼 표시 + 클릭 시 wizard 재오프
+    if (SAAS_MODE) {
+      const btn = $('#saas-settings-btn');
+      btn.style.display = '';
+      btn.addEventListener('click', async () => {
+        const newCfg = await openSaasWizard();
+        if (newCfg) {
+          // 설정 바뀌었으니 페이지 재로드 (state·캐시 clean 시작)
+          location.reload();
+        }
+      });
+    }
+
     $('#core-idea-btn').addEventListener('click', () => {
       $('#ci-title').value = '';
       $('#ci-body').value = '';
@@ -2169,7 +2338,7 @@
       }
 
       try {
-        const res = await fetch(`${WORKER_URL}/forward`, {
+        const res = await botFetch(`${WORKER_URL}/forward`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ docPath: state.currentDoc?.path, topic, summary, qa, user: state.user.name || '익명' }),
@@ -2320,7 +2489,7 @@
       if (!confirm(`${label} 파일을 레포에서 영구 삭제할까요?\n\n${relPath}\n\n되돌릴 수 없습니다 (git history 에는 남음).`)) return;
       const endpoint = kind === 'decision' ? '/delete-decision' : '/delete-feedback';
       try {
-        const res = await fetch(`${WORKER_URL}${endpoint}`, {
+        const res = await botFetch(`${WORKER_URL}${endpoint}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: relPath }),
@@ -2460,7 +2629,7 @@
     async function loadDecisions() {
       const ul = $('#decisions-list');
       try {
-        const res = await fetch(`${WORKER_URL}/list-decisions?limit=100`);
+        const res = await botFetch(`${WORKER_URL}/list-decisions?limit=100`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         state.decisions = (data.items || []).filter((d) => !isGuidePath(d.path));
@@ -2558,7 +2727,7 @@
     async function loadFeedbacks() {
       const ul = $('#feedbacks-list');
       try {
-        const res = await fetch(`${WORKER_URL}/list-feedbacks?limit=20`);
+        const res = await botFetch(`${WORKER_URL}/list-feedbacks?limit=20`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         state.feedbacks = (data.items || []).filter((f) => !isGuidePath(f.path));

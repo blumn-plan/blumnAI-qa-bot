@@ -37,6 +37,29 @@ export interface Env {
   /** C 모드 (Max 활용): 설정되어 있으면 모든 요청을 로컬 PC tunnel URL 로 proxy.
    *  미설정 시 기존 A 모드 (Anthropic API 직접 호출). 모드 전환은 `wrangler secret put/delete TUNNEL_URL`. */
   TUNNEL_URL?: string;
+  /** SaaS 모드 활성화 — "1" or "true" 로 설정 시:
+   *  - CORS 제한 해제 (아무 origin 허용, 사용자 헤더로 접근 통제)
+   *  - 요청 헤더 X-Bot-{GitHub-Repo|GitHub-Token|Anthropic-Key} 를 env 값 대신 사용
+   *  다중 팀이 같은 Worker 를 공유하되 각자의 시크릿·레포로 동작. */
+  SAAS_MODE?: string;
+}
+
+/** 요청 헤더에 SaaS 모드용 인증 값이 있으면 env 를 override 해서 반환.
+ *  - X-Bot-GitHub-Repo    : 팀 정책 레포 (org/repo)
+ *  - X-Bot-GitHub-Token   : 팀 접근용 PAT
+ *  - X-Bot-Anthropic-Key  : 팀 Anthropic API key
+ *  값 없으면 env 그대로 반환 (하위 호환 팀 배포는 영향 X). */
+function scopeEnvFromRequest(env: Env, req: Request): Env {
+  const reqRepo = req.headers.get('X-Bot-GitHub-Repo');
+  const reqToken = req.headers.get('X-Bot-GitHub-Token');
+  const reqAnthropic = req.headers.get('X-Bot-Anthropic-Key');
+  if (!reqRepo && !reqToken && !reqAnthropic) return env;
+  return {
+    ...env,
+    GITHUB_REPO: reqRepo || env.GITHUB_REPO,
+    GITHUB_TOKEN: reqToken || env.GITHUB_TOKEN,
+    ANTHROPIC_API_KEY: reqAnthropic || env.ANTHROPIC_API_KEY,
+  };
 }
 
 /**
@@ -83,7 +106,8 @@ interface TeamConfig {
 }
 
 const CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
-let cachedConfig: { at: number; data: TeamConfig | null } | null = null;
+// SaaS 모드에선 팀 (GITHUB_REPO) 별로 config 다름 → repo 를 캐시 키로.
+const configCache = new Map<string, { at: number; data: TeamConfig | null }>();
 
 /* ────────── 범용 fetch 캐시 ──────────
  *  같은 대화 안에서 반복되는 GitHub 요청 (CLAUDE.md, 정책 md, 피드백, 디렉토리 목록)
@@ -132,19 +156,20 @@ function invalidateCache(env: Env, ...paths: string[]) {
 }
 
 async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
-  if (cachedConfig && Date.now() - cachedConfig.at < CONFIG_CACHE_TTL_MS) {
-    return cachedConfig.data;
+  const key = env.GITHUB_REPO || '(no-repo)';
+  const cached = configCache.get(key);
+  if (cached && Date.now() - cached.at < CONFIG_CACHE_TTL_MS) {
+    return cached.data;
   }
   try {
     const raw = await fetchTextFile(env, 'blumnAI-qa-bot.config.yml');
-    // 동적 import — TS build 는 esbuild bundler 가 처리.
     const YAML = await import('yaml');
     const parsed = YAML.parse(raw) as TeamConfig | null;
-    cachedConfig = { at: Date.now(), data: parsed ?? null };
+    configCache.set(key, { at: Date.now(), data: parsed ?? null });
     return parsed ?? null;
   } catch (err) {
     console.warn('[qa-bot] load config.yml failed:', err instanceof Error ? err.message : String(err));
-    cachedConfig = { at: Date.now(), data: null };
+    configCache.set(key, { at: Date.now(), data: null });
     return null;
   }
 }
@@ -158,11 +183,15 @@ export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     const origin = req.headers.get('Origin') ?? '';
-    const allowed = env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean);
-    const allowOrigin = allowed.includes(origin) ? origin : allowed[0] ?? '*';
+    // SaaS 모드: 아무 origin 도 허용 (요청 자체의 인증 헤더로 접근 통제).
+    // 팀 모드: ALLOWED_ORIGINS 로 CORS 제한.
+    const saasMode = env.SAAS_MODE === '1' || env.SAAS_MODE === 'true';
+    const allowed = env.ALLOWED_ORIGINS?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
+    const allowOrigin = saasMode ? (origin || '*') : (allowed.includes(origin) ? origin : allowed[0] ?? '*');
     const corsHeaders: HeadersInit = {
       'Access-Control-Allow-Origin': allowOrigin,
-      'Access-Control-Allow-Headers': 'Content-Type',
+      // SaaS 모드는 사용자 세션별 인증 헤더를 받으므로 Allow-Headers 확장 필요
+      'Access-Control-Allow-Headers': 'Content-Type, X-Bot-GitHub-Repo, X-Bot-GitHub-Token, X-Bot-Anthropic-Key',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Max-Age': '86400',
       Vary: 'Origin',
@@ -171,6 +200,10 @@ export default {
     if (req.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
+
+    // 🔑 SaaS 모드 지원 — 요청 헤더의 값이 있으면 env 오버라이드 (하위 호환 유지)
+    // 이렇게 하면 다중 팀이 같은 Worker 를 공유하되 각자의 GitHub 레포·토큰·API 키로 동작
+    env = scopeEnvFromRequest(env, req);
 
     // C 모드: TUNNEL_URL 설정되어 있으면 모든 요청을 로컬 서버로 proxy.
     // /health 같은 자체 진단 엔드포인트는 예외로 두어 운영 가시성 유지.
