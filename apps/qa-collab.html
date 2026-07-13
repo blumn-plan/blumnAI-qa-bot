@@ -535,8 +535,8 @@
       <div class="toolbar">
         <button id="clear-btn" type="button" class="icon-only" title="새 대화 — 현재 대화를 지우고 새 질문 시작">↻</button>
         <button id="export-btn" type="button" class="icon-only" title="내보내기 — 현재 대화를 markdown 파일로 다운로드">💾</button>
-        <button id="core-idea-btn" type="button" class="icon-only" title="이 봇 자체 개선 아이디어를 GitHub Issue 로 제안 (blumn-plan/blumnAI-qa-bot)">🎁</button>
-        <button id="forward-btn" class="primary" type="button" disabled title="이 답변을 기획자에게 변경 요청으로 전달 — qa/decisions/ 에 자동 저장됨">📤 기획자에게 전달</button>
+        <button id="core-idea-btn" type="button" class="icon-only" title="봇 기능·버그·UI 개선 제안 → GitHub Issue 로 등록">🎁</button>
+        <button id="forward-btn" class="primary" type="button" disabled title="기획자에게 전달 — 이 답변을 변경 요청으로 전달 (qa/decisions/ 에 자동 저장)">📤 기획전달</button>
         <button id="improve-toolbar-btn" class="improve" type="button" title="답변 규칙 추가 — 언제든 가능">📝 답변 규칙</button>
         <span class="info-wrap">
           <span class="info-icon" tabindex="0" aria-describedby="improve-tooltip">?</span>
@@ -635,24 +635,28 @@
 
   <dialog id="core-idea-dialog" class="forward">
     <form method="dialog">
-      <div class="head">🎁 코어 봇 개선 제안 — GitHub Issue 로 등록</div>
+      <div class="head">🎁 봇 기능·버그·UI 개선 제안 — GitHub Issue 로 등록</div>
       <div class="body">
         <p style="font-size:12px;color:var(--muted);margin:0 0 12px;line-height:1.5">
-          이 봇 (<code>blumn-plan/blumnAI-qa-bot</code>) <b>자체의 기능·버그·UI 개선</b> 아이디어를 여기에 적으세요.<br>
+          이 QA봇 화면·챗·팝업·엔드포인트 등 <b>봇 자체</b>에 대한 개선 아이디어·버그·불편함을 여기에 적으세요.<br>
           제출 시 <b>새 탭에서 GitHub Issue 작성 화면</b>이 열리고 아래 값이 자동으로 채워집니다.
           최종 [Submit] 은 GitHub 에서 클릭.
         </p>
         <label for="ci-title">제목 (한 줄 요약)</label>
         <input id="ci-title" required maxlength="120" placeholder="예: 답변 카드에 [공유 링크] 버튼 추가 요청" />
-        <label for="ci-body">내용 (배경·시나리오·기대 동작)</label>
-        <textarea id="ci-body" required placeholder="예:
+        <label for="ci-body">내용 (배경·시나리오·기대 동작 또는 재현 방법)</label>
+        <textarea id="ci-body" required placeholder="[기능 요청 예시]
 · 상황: 답변을 팀원과 공유하고 싶은데 URL 이 없음
 · 제안: 답변 카드 hover 액션에 [🔗 공유] 추가
 · 기대: 클릭 시 세션·질문·답변을 담은 링크 클립보드 복사
-· 대안: 지금은 [💾 내보내기] 로 md 다운로드 후 슬랙에 첨부"></textarea>
+
+[버그 리포트 예시]
+· 재현: 사이드바에서 검색 후 항목 클릭 시 검색어가 사라짐
+· 기대: 검색어 유지되고 필터도 유지
+· 스크린샷 있으면 GitHub Issue 화면에서 이미지 드래그로 첨부"></textarea>
         <p style="font-size:11px;color:var(--muted);margin:8px 0 0;line-height:1.5">
           💡 <b>다른 곳으로 가야 할 요청</b>은 각각의 버튼 사용:<br>
-          · <b>팀 정책 변경</b> → [📤 기획자에게 전달]<br>
+          · <b>팀 정책 변경</b> → [📤 기획전달]<br>
           · <b>봇 답변 톤·형식 조정</b> → [📝 답변 규칙 추가]
         </p>
       </div>
@@ -1267,7 +1271,10 @@
       iframe.src = 'about:blank';
       article.style.display = '';
       article.className = '';
-      article.innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      // 캐시 hit 이면 "로딩 중..." 표시 X — 즉시 렌더 (UX 매끄러움 + 실제 fetch 안 일어남을 시각적으로도 확인)
+      if (!isDocCached(path)) {
+        article.innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      }
       try {
         const content = await fetchDocCached(path);
         article.innerHTML = marked.parse(content);
@@ -1276,6 +1283,11 @@
       } catch (err) {
         article.innerHTML = `<p style="color:var(--error)">문서 로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
       }
+    }
+    /** docContentCache 에 유효한 항목이 있는지 확인 (TTL 안). renderDocBody 로딩 텍스트 skip 판단용. */
+    function isDocCached(path) {
+      const c = docContentCache.get(path);
+      return !!(c && Date.now() - c.at < DOC_CACHE_TTL_MS);
     }
 
     /* 정책 본문 안 [§X-Y](#cite-X-Y) 앵커 클릭 → scrollToCitation 으로 article 안 스크롤
@@ -2628,7 +2640,10 @@
     // 개선건 간소화 뷰 — 일자 + 질문자 + 적용 룰 (개선 요청 사항) 만 노출
     async function renderFeedbackSimplified(path, title) {
       $('#doc-content').className = '';
-      $('#doc-content').innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      // 캐시 hit 이면 로딩 텍스트 skip
+      if (!isDocCached(path)) {
+        $('#doc-content').innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
+      }
       try {
         const md = await fetchDocCached(path);
         const date = (md.match(/^\|\s*일자\s*\|\s*([^|]+?)\s*\|\s*$/m) || [])[1]?.trim() || '';
