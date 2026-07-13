@@ -334,6 +334,34 @@
     aside.chat .msg:hover .msg-actions, aside.chat .msg:focus-within .msg-actions { opacity: 1; }
     aside.chat .msg .msg-actions button.msg-act { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
     aside.chat .msg .msg-actions button.msg-act:hover { background: var(--panel); color: var(--text); border-color: var(--primary); }
+    /* 봇 답변에서 언급된 문서를 사이드바에서 강조 */
+    aside.docs li button.doc-mentioned { background: linear-gradient(90deg, #fef3c7 0%, transparent 100%); border-left: 3px solid #f59e0b; padding-left: 6px; }
+    aside.docs li button.doc-mentioned::after { content: '🔗'; margin-left: 4px; font-size: 10px; opacity: 0.7; }
+
+    /* 📱 모바일 반응형 — 좁은 화면에서는 사이드바 오버레이 + 세로 스택 */
+    #sidebar-toggle { display: none; background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 16px; cursor: pointer; margin-right: 8px; }
+    .sidebar-backdrop { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 900; }
+    @media (max-width: 900px) {
+      /* 사이드바 → 오버레이 drawer */
+      .app { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+      .resizer { display: none; }
+      aside.docs { position: fixed; top: 0; left: 0; bottom: 0; width: 280px; z-index: 1000; transform: translateX(-100%); transition: transform 0.25s ease; box-shadow: 2px 0 12px rgba(0,0,0,0.15); }
+      aside.docs.open { transform: translateX(0); }
+      .sidebar-backdrop.show { display: block; }
+      #sidebar-toggle { display: inline-block; }
+      /* 문서와 챗을 세로로 나눔 (문서 위 · 챗 아래) */
+      main.doc { grid-row: 1; height: 45vh; border-right: none; border-bottom: 1px solid var(--border); }
+      aside.chat { grid-row: 2; height: 55vh; }
+    }
+    @media (max-width: 640px) {
+      /* 매우 좁은 화면: 문서 3.5/10, 챗 6.5/10 */
+      main.doc { height: 35vh; }
+      aside.chat { height: 65vh; }
+      /* 툴바 자동 줄바꿈 */
+      aside.chat .toolbar { flex-wrap: wrap; gap: 4px; }
+      /* 답변 카드 max-width 확대 (모바일에선 공간이 부족) */
+      aside.chat .msg.assistant, aside.chat .msg.user { max-width: 100%; }
+    }
 
     /* 스트리밍 커서 (claude 답변 점진 도착 표시) */
     aside.chat .msg .stream-cursor { display: inline-block; color: var(--muted); animation: cursor-blink 1s steps(2) infinite; margin-left: 1px; }
@@ -457,6 +485,7 @@
 
     <main class="doc">
       <div class="header">
+        <button type="button" id="sidebar-toggle" title="문서 목록 열기·닫기" aria-label="문서 목록 토글">☰</button>
         <span id="doc-title">문서를 선택하세요</span>
         <div class="view-toggle" id="view-toggle">
           <button type="button" data-view="preview" class="active" title="화면설계서 HTML 미리보기 (마커·인터랙션 포함)">🎯 미리보기</button>
@@ -593,6 +622,7 @@
   </dialog>
 
   <div id="toast" class="toast"></div>
+  <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
 
   <script>
     /* ────────── 컨피그 로드 ──────────
@@ -704,6 +734,31 @@
 
     /* ────────── 컬럼 가로 너비 리사이저 (사이드바/문서/채팅 사이) ────────── */
     const COL_KEYS = { sidebar: 'qa-col-sidebar-v1', chat: 'qa-col-chat-v1' };
+    /** 📱 모바일: sidebar 오버레이 토글 로직 */
+    function setupMobileSidebar() {
+      const aside = document.querySelector('aside.docs');
+      const backdrop = $('#sidebar-backdrop');
+      const toggleBtn = $('#sidebar-toggle');
+      if (!aside || !backdrop || !toggleBtn) return;
+      const close = () => { aside.classList.remove('open'); backdrop.classList.remove('show'); };
+      const open = () => { aside.classList.add('open'); backdrop.classList.add('show'); };
+      toggleBtn.addEventListener('click', () => {
+        if (aside.classList.contains('open')) close();
+        else open();
+      });
+      backdrop.addEventListener('click', close);
+      // 문서 클릭 시 자동 닫기 (모바일에선 문서 선택 후 챗으로 이동하는 게 자연스러움)
+      aside.addEventListener('click', (e) => {
+        if (e.target.closest('button[data-path]') && window.matchMedia('(max-width: 900px)').matches) {
+          close();
+        }
+      });
+      // Escape 로 닫기
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && aside.classList.contains('open')) close();
+      });
+    }
+
     function setupColumnResizers() {
       const app = $('.app');
       // 저장된 너비 복원
@@ -760,6 +815,7 @@
         return;
       }
       setupColumnResizers();
+      setupMobileSidebar();
       loadSessions();
       loadCollapsed();
       loadUser();
@@ -1526,6 +1582,39 @@
       if (role === 'assistant' && state.history.filter((m) => m.role === 'assistant').length > 0) {
         $('#forward-btn').disabled = false;
       }
+      // 봇 답변에서 언급된 다른 문서를 사이드바에서 하이라이트
+      if (role === 'assistant') {
+        highlightMentionedDocs(content);
+      }
+    }
+
+    /** 답변 본문에서 사이드바 문서 (제목 or 경로) 언급을 감지 → 해당 항목에
+     *  .doc-mentioned 클래스 추가. 현재 선택된 문서는 이미 [active] 니 제외. */
+    function highlightMentionedDocs(answerText) {
+      if (!answerText || !state.docs || state.docs.length === 0) return;
+      // 기존 하이라이트 초기화 (매 답변마다 새로 계산)
+      $$('.docs li button.doc-mentioned').forEach((b) => b.classList.remove('doc-mentioned'));
+      const currentPath = state.currentDoc?.path;
+      // 짧은 제목 (2자 이하) 은 오탐 방지 위해 스킵
+      for (const d of state.docs) {
+        if (d.path === currentPath) continue;
+        if (!d.title || d.title.length < 3) continue;
+        // 제목 정확 매칭 (경계 포함) 또는 경로 언급
+        const titleRe = new RegExp(`(^|[\\s\`'"“”\\(\\[])${escapeRegex(d.title)}(?=[\\s\\.,\\?!:;'\`"”\\)\\]§_v]|$)`, 'i');
+        const pathRe = new RegExp(`${escapeRegex(d.path)}`, 'i');
+        if (titleRe.test(answerText) || pathRe.test(answerText)) {
+          const btn = document.querySelector(`.docs li button[data-path="${cssEscape(d.path)}"]`);
+          if (btn) btn.classList.add('doc-mentioned');
+        }
+      }
+    }
+    // css.escape 폴리필 (구형 브라우저 대응)
+    function cssEscape(s) {
+      if (window.CSS && window.CSS.escape) return window.CSS.escape(s);
+      return String(s).replace(/[!"#$%&'()*+,./:;<=>?@[\\\]^`{|}~]/g, (c) => `\\${c}`);
+    }
+    function escapeRegex(s) {
+      return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 
     // 답변 본문 HTML 에서 "§N", "§N-M" 같은 인용을 클릭 가능한 a 태그로 변환.
@@ -1632,6 +1721,8 @@
       startNewSession();
       $('#messages').innerHTML = '<div class="msg assistant"><div class="role">제이나미봇</div><div class="body">대화를 다시 시작했어요. 질문해주세요.</div></div>';
       $('#forward-btn').disabled = true;
+      // 봇 답변 하이라이트 초기화
+      $$('.docs li button.doc-mentioned').forEach((b) => b.classList.remove('doc-mentioned'));
       // improve-toolbar-btn 은 항상 활성 (답변 없어도 일반 규칙 추가 가능)
     });
 
