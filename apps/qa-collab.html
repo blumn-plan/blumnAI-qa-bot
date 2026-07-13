@@ -529,7 +529,7 @@
         </div>
       </div>
       <div class="chat-cta" id="chat-cta">
-        👉 이대로 진행: <a data-act="forward">📤 기획자에게 전달</a> · 추가로 물어보기: <a data-act="focus">아래 입력창</a> · 끝났으면: <a data-act="newchat">↻ 새 대화</a>
+        개선 필요 시 <a data-act="forward">📤 기획전달</a> · 추가로 물어보기: <a data-act="focus">아래 입력창</a> · 끝났으면: <a data-act="newchat">↻ 새 대화</a>
       </div>
 
       <div class="toolbar">
@@ -2362,7 +2362,7 @@
       if (div.querySelector('.next-step')) return;
       const cta = document.createElement('div');
       cta.className = 'next-step';
-      cta.innerHTML = `👉 이대로 진행: <a data-act="forward">📤 기획자에게 전달</a> · 추가로 물어보기: <a data-act="focus">아래 입력창</a> · 끝났으면: <a data-act="newchat">↻ 새 대화</a>`;
+      cta.innerHTML = `개선 필요 시 <a data-act="forward">📤 기획전달</a> · 추가로 물어보기: <a data-act="focus">아래 입력창</a> · 끝났으면: <a data-act="newchat">↻ 새 대화</a>`;
       cta.querySelectorAll('a[data-act]').forEach((a) => {
         a.addEventListener('click', (e) => {
           e.preventDefault();
