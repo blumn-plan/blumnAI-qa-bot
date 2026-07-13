@@ -61,6 +61,7 @@
 - 🧹 **wrangler.toml.template 팀 중립화** — `heythere_planer`·`lunasoft-org` 하드코딩 제거하고 `your-org/your-policy-repo` placeholder + `[env.staging]` 스테이징 환경 추가
 - 📄 **docs/08-STAGING.md** 신규 — 3가지 개발자 테스트 방법 (데모 모드 · wrangler dev · Actions staging) 상세 가이드 + 개선 흐름 다이어그램 + FAQ
 - 🩹 **세팅하기 갭 수정** — `.blumnAI-qa-bot/version` 파일 생성 스텝이 누락되어 있었음 (실전 배포 확인 중 발견 · 404). 01-INSTALL §3 파일 복사 목록에 추가 (5개 → 6개), README 세팅하기 프롬프트 스텝 B 에도 명시 추가, 05-UPGRADE 자동 배너 절에 ⚠️ 경고 박스로 강조, `examples/sample-policy-repo/.blumnAI-qa-bot/version` 샘플 파일 신설 (내용 `v0.1.0`)
+- 🎁 **[코어 봇 개선 제안] 버튼 신설** — 툴바에 아이콘-only 버튼 (🎁). 사용자가 이 봇 자체의 기능·버그·UI 개선 아이디어를 즉시 제출 가능. 클릭 시 모달 → 제목·내용 입력 → GitHub Issue 작성 화면이 프리필 상태로 새 탭에서 열림 (팀 브랜드·로컬 코어 버전·페이지 URL·User Agent 자동 첨부). CONTRIBUTING.md 흐름의 UI 진입점. 3가지 피드백 경로 분리 명확화 (📤 팀 정책 · 📝 답변 톤 · 🎁 코어 기능)
 
 ## v0.0.0 — 2026-06-30
 
