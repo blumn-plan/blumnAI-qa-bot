@@ -1127,15 +1127,17 @@
         renderDocList();
         // 0 docs 시 friendly CTA — 정책 md 없거나 경로 안 맞을 때 명확한 안내
         if (state.docs.length === 0) {
-          const projLabel = state.projects.find((p) => p.id === state.currentProject)?.label || state.currentProject;
+          const projLabel = state.projects.find((p) => p.id === state.currentProject)?.label
+            || state.currentProject
+            || '현재 프로젝트';
           $('#policy-list').innerHTML = `
-            <li style="padding:12px;font-size:12px;color:var(--muted);line-height:1.6">
+            <li style="padding:12px;font-size:12px;color:var(--muted);line-height:1.6;overflow-wrap:break-word;word-break:keep-all">
               <div style="font-size:22px;margin-bottom:8px">📭</div>
               <strong>${escapeHtml(projLabel)}</strong> 프로젝트에<br>정책 md 파일이 없습니다.<br><br>
               가능한 원인:<br>
               · 정책 폴더가 비어 있음<br>
-              · <code>policies_dir</code> 설정 경로가 실제와 다름<br>
-              · 파일명이 <code>xxx_v0.1.0.md</code> 형식이 아님<br><br>
+              · <code style="word-break:break-all">policies_dir</code> 설정 경로가 실제와 다름<br>
+              · 파일명이 <code style="word-break:break-all">xxx_v0.1.0.md</code> 형식이 아님<br><br>
               🩺 <a href="${WORKER_URL}/health?detailed=1" target="_blank">서버 진단 결과 열기</a>
             </li>`;
         }
