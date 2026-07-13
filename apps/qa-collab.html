@@ -334,6 +334,15 @@
     aside.chat .msg:hover .msg-actions, aside.chat .msg:focus-within .msg-actions { opacity: 1; }
     aside.chat .msg .msg-actions button.msg-act { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
     aside.chat .msg .msg-actions button.msg-act:hover { background: var(--panel); color: var(--text); border-color: var(--primary); }
+    /* 채팅 안 이미지 hover 시 확대 힌트 */
+    aside.chat .msg img { cursor: zoom-in; transition: transform 0.15s; }
+    aside.chat .msg img:hover { transform: scale(1.02); }
+    /* 🔍 lightbox overlay */
+    #lightbox { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); z-index: 10000; align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; }
+    #lightbox.show { display: flex; }
+    #lightbox img { max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4); border-radius: 4px; }
+    #lightbox .lightbox-close { position: absolute; top: 16px; right: 20px; color: white; background: rgba(0, 0, 0, 0.5); border: none; width: 36px; height: 36px; border-radius: 50%; font-size: 20px; cursor: pointer; }
+    #lightbox .lightbox-hint { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); color: rgba(255, 255, 255, 0.7); font-size: 12px; }
     /* 봇 답변에서 언급된 문서를 사이드바에서 강조 */
     aside.docs li button.doc-mentioned { background: linear-gradient(90deg, #fef3c7 0%, transparent 100%); border-left: 3px solid #f59e0b; padding-left: 6px; }
     aside.docs li button.doc-mentioned::after { content: '🔗'; margin-left: 4px; font-size: 10px; opacity: 0.7; }
@@ -623,6 +632,11 @@
 
   <div id="toast" class="toast"></div>
   <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+  <div id="lightbox" role="dialog" aria-label="이미지 확대보기">
+    <button class="lightbox-close" type="button" aria-label="닫기">×</button>
+    <img id="lightbox-img" src="" alt="" />
+    <div class="lightbox-hint">클릭 · ESC 로 닫기</div>
+  </div>
 
   <script>
     /* ────────── 컨피그 로드 ──────────
@@ -734,6 +748,34 @@
 
     /* ────────── 컬럼 가로 너비 리사이저 (사이드바/문서/채팅 사이) ────────── */
     const COL_KEYS = { sidebar: 'qa-col-sidebar-v1', chat: 'qa-col-chat-v1' };
+    /** 🔍 이미지 lightbox — 채팅 안 img 클릭 시 전체화면 확대 (event delegation) */
+    function setupImageLightbox() {
+      const lb = $('#lightbox');
+      const lbImg = $('#lightbox-img');
+      if (!lb || !lbImg) return;
+      const openLB = (src, alt) => {
+        lbImg.src = src;
+        lbImg.alt = alt || '';
+        lb.classList.add('show');
+      };
+      const closeLB = () => { lb.classList.remove('show'); lbImg.src = ''; };
+      // 채팅 안 이미지만 대상 (사이드바·본문은 별도)
+      $('#messages').addEventListener('click', (e) => {
+        const img = e.target.closest('img');
+        if (!img) return;
+        // planner-memo 안 이미지, 사용자 첨부, 스트림 답변 이미지 모두 대상
+        e.preventDefault();
+        openLB(img.src, img.alt);
+      });
+      // 닫기 트리거들
+      lb.addEventListener('click', (e) => {
+        if (e.target === lb || e.target.classList.contains('lightbox-close')) closeLB();
+      });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && lb.classList.contains('show')) closeLB();
+      });
+    }
+
     /** 📱 모바일: sidebar 오버레이 토글 로직 */
     function setupMobileSidebar() {
       const aside = document.querySelector('aside.docs');
@@ -816,6 +858,7 @@
       }
       setupColumnResizers();
       setupMobileSidebar();
+      setupImageLightbox();
       loadSessions();
       loadCollapsed();
       loadUser();
@@ -1319,28 +1362,62 @@
         const codeMaxSnippets = currentProjectCfg?.code_max_snippets;
         const codeSnippetLines = currentProjectCfg?.code_snippet_lines;
 
-        const res = await fetch(`${WORKER_URL}/qa`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: state.streamAbort.signal,
-          body: JSON.stringify({
-            docPath: state.currentDoc?.path,
-            project: state.currentProject,
-            question,
-            history: state.history.slice(0, -1).map(({ role, content }) => ({ role, content })),
-            attachments: attachmentsForSend.length
-              ? attachmentsForSend.map((a) => ({ mediaType: a.mediaType, data: a.data }))
-              : undefined,
-            codeRepo,
-            codePaths,
-            codeSearchHint,
-            codeMaxSnippets,
-            codeSnippetLines,
-          }),
-        });
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+        // 재시도 정책: 429/502/503/504/네트워크 오류 → 최대 2회 재시도 (총 3회 시도),
+        //   backoff 500ms → 1500ms. 401/403/404/기타 오류는 즉시 실패.
+        //   Abort 발생 시 재시도 X (사용자가 취소).
+        //   ⚠ 스트리밍 시작 후에는 재시도 X — 중간 실패는 부분 답변으로 남김
+        const payload = {
+          docPath: state.currentDoc?.path,
+          project: state.currentProject,
+          question,
+          history: state.history.slice(0, -1).map(({ role, content }) => ({ role, content })),
+          attachments: attachmentsForSend.length
+            ? attachmentsForSend.map((a) => ({ mediaType: a.mediaType, data: a.data }))
+            : undefined,
+          codeRepo,
+          codePaths,
+          codeSearchHint,
+          codeMaxSnippets,
+          codeSnippetLines,
+        };
+        const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+        const MAX_ATTEMPTS = 3;
+        const BACKOFFS = [500, 1500]; // MAX_ATTEMPTS - 1
+        let res;
+        let lastErr = null;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+          try {
+            if (attempt > 1) updateLoadingPlaceholderText(loadingPlaceholder, `재시도 중… (${attempt}/${MAX_ATTEMPTS})`);
+            res = await fetch(`${WORKER_URL}/qa`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: state.streamAbort.signal,
+              body: JSON.stringify(payload),
+            });
+            if (res.ok) break;
+            const errText = await res.text();
+            const errMsg = `HTTP ${res.status}: ${errText.slice(0, 200)}`;
+            if (!RETRYABLE_STATUSES.has(res.status) || attempt === MAX_ATTEMPTS) {
+              throw new Error(errMsg);
+            }
+            console.warn(`[qa-retry] attempt ${attempt} failed (${errMsg}) — retrying`);
+            lastErr = new Error(errMsg);
+          } catch (err) {
+            // AbortError 는 재시도 X
+            if (err?.name === 'AbortError') throw err;
+            // 네트워크 에러 (Failed to fetch 등) 도 재시도 대상
+            const isNet = /Failed to fetch|NetworkError|net::ERR/i.test(err?.message || '');
+            const isRetryable = isNet || (res && RETRYABLE_STATUSES.has(res.status));
+            if (!isRetryable || attempt === MAX_ATTEMPTS) throw err;
+            lastErr = err;
+            console.warn(`[qa-retry] attempt ${attempt} network err (${err.message}) — retrying`);
+          }
+          if (attempt < MAX_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, BACKOFFS[attempt - 1]));
+          }
+        }
+        if (!res || !res.ok) {
+          throw lastErr || new Error('unknown /qa failure');
         }
 
         // NDJSON 스트리밍 읽기 — 메타가 즉시 오고 텍스트 청크가 흘러옴
@@ -1439,6 +1516,13 @@
       if (ph.div && ph.div.parentNode) ph.div.remove();
     }
 
+    /** 로딩 placeholder 텍스트만 갱신 (재시도 상태 표시용). elapsed·spinner 는 유지. */
+    function updateLoadingPlaceholderText(ph, text) {
+      if (!ph || !ph.div) return;
+      const label = ph.div.querySelector('.loading-label');
+      if (label) label.textContent = text;
+    }
+
     // 스트리밍 시작 — 빈 assistant 카드 (커서만) DOM 에 붙이고 ref 반환
     // 피드백 칩("N개 피드백 룰 반영됨")은 노출하지 않음 — 사용자 요청. 룰 적용은 시스템 프롬프트에서 자동 처리.
     function startStreamingMessage(_appliedFeedbacks, regenerated) {
@@ -1529,7 +1613,8 @@
         const imgs = meta.attachments
           .map((a) => {
             const src = a.dataUrl || `data:${a.mediaType};base64,${a.data}`;
-            return `<a href="${src}" target="_blank" rel="noopener" style="display:inline-block"><img src="${src}" alt="첨부" style="max-width:140px;max-height:140px;margin:4px 4px 0 0;border-radius:6px;border:1px solid var(--border);object-fit:cover" /></a>`;
+            // 직접 img 태그로 (lightbox 이벤트 위임이 처리)
+            return `<img src="${src}" alt="첨부" style="max-width:140px;max-height:140px;margin:4px 4px 0 0;border-radius:6px;border:1px solid var(--border);object-fit:cover" />`;
           })
           .join('');
         bodyHtml += `<div class="user-attachments" style="margin-top:6px">${imgs}</div>`;
