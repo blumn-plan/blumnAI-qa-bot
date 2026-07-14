@@ -912,6 +912,7 @@ interface ForwardRequest {
   topic: string; // 짧은 제목 (파일명에 들어감)
   summary: string; // 합의 요약
   qa: { question: string; answer: string }[];
+  user?: string; // 질문자 이름 (협업자 챗의 state.user.name)
 }
 
 interface ForwardResponse {
@@ -934,6 +935,7 @@ async function forwardToDecisions(env: Env, body: ForwardRequest): Promise<Forwa
     topic: body.topic,
     summary: body.summary,
     qa: body.qa,
+    user: body.user,
   });
 
   // GitHub Contents API 로 새 파일 생성
@@ -960,6 +962,7 @@ function renderDecisionMarkdown(p: {
   topic: string;
   summary: string;
   qa: { question: string; answer: string }[];
+  user?: string;
 }): string {
   const qaBlock = p.qa
     .map((t, i) => `### Q${i + 1}\n\n${t.question}\n\n#### A${i + 1}\n\n${t.answer}`)
@@ -970,6 +973,7 @@ function renderDecisionMarkdown(p: {
 | 항목 | 내용 |
 |---|---|
 | 일자 | ${p.today} |
+| 질문자 | ${p.user || '익명'} |
 | 관련 문서 | ${p.docPath ? `\`${p.docPath}\`` : '(미지정)' } |
 | 출처 | 협업자 챗 — \`qa.html\` |
 | 기획자 review | ⏳ 대기 |

@@ -55,7 +55,9 @@
     aside.list li .row1 { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
     aside.list li .row1 .title { font-weight: 500; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     aside.list li .row1 .date { font-size: 10px; color: var(--muted); flex-shrink: 0; }
-    aside.list li .row2 .preview { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    aside.list li .row2 { display: flex; align-items: center; gap: 6px; }
+    aside.list li .row2 .preview { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+    aside.list li .row2 .user { font-size: 10px; color: var(--primary); background: #eef2ff; padding: 1px 6px; border-radius: 8px; white-space: nowrap; flex-shrink: 0; font-weight: 500; }
     aside.list li .status-pill { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 600; }
     aside.list li .status-pill.pending { background: var(--pending-bg); color: var(--pending-fg); }
     aside.list li .status-pill.applied { background: var(--applied-bg); color: var(--applied-fg); }
@@ -463,6 +465,7 @@
         const active = d.path === state.currentPath ? ' active' : '';
         const pillClass = d.status || 'pending';
         const pillText = d.status === 'applied' ? '✅' : d.status === 'rejected' ? '🚫' : '📋';
+        const userTag = d.user ? `<span class="user">👤 ${escapeHtml(d.user)}</span>` : '';
         return `<li>
           <button class="item${active}" data-path="${escapeAttr(d.path)}">
             <div class="row1">
@@ -470,7 +473,7 @@
               <span class="title">${escapeHtml(d.title)}</span>
               <span class="date">${escapeHtml(d.date)}</span>
             </div>
-            <div class="row2"><span class="preview">${escapeHtml(d.preview || d.statusText || '—')}</span></div>
+            <div class="row2"><span class="preview">${escapeHtml(d.preview || d.statusText || '—')}</span>${userTag}</div>
           </button>
         </li>`;
       }).join('');
