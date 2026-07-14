@@ -472,6 +472,8 @@ interface QARequest {
   history?: { role: 'user' | 'assistant'; content: string }[];
   // 현재 대화의 프로젝트 ID — 카탈로그·전체문서 인젝션 스코프. 미지정 시 docPath 에서 추출.
   project?: string;
+  // 🌐 UI 에서 [전체 정책 종합] 모드로 요청 — config include_all_docs 를 이번 요청만 강제 true
+  useAllDocs?: boolean;
   // 사용자가 질문에 첨부한 이미지 (base64). 정책 vs 화면 drift 비교 같은 시각 비교용.
   attachments?: { mediaType: string; data: string }[];
   // (옵션) 코드 검증 — projects[].code_repo 로 설정된 서비스 코드 레포에서
@@ -525,7 +527,8 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
   // 팀 config 에서 bot 옵션 로드 (5분 캐시)
   const teamConfig = await loadTeamConfig(env);
   const injectCatalog = teamConfig?.bot?.inject_doc_catalog !== false; // 기본 true
-  const includeAllDocs = teamConfig?.bot?.include_all_docs === true;   // 기본 false
+  // 우선순위: request body 의 useAllDocs (UI 버튼) → 팀 config include_all_docs → 기본 false
+  const includeAllDocs = body.useAllDocs === true || teamConfig?.bot?.include_all_docs === true;
 
   // 컨텍스트: CLAUDE.md + 선택된 doc + 최근 qa/feedback
   const claudeRules = await fetchTextFileCached(env, 'CLAUDE.md').catch((err) => {

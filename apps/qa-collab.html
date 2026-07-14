@@ -279,6 +279,10 @@
     aside.docs h2.collapsible::before { content: '▾'; font-size: 9px; transition: transform 0.15s; display: inline-block; width: 10px; }
     aside.docs h2.collapsible.collapsed::before { transform: rotate(-90deg); }
     aside.docs h2 .count { color: var(--muted); font-weight: 400; font-size: 10px; margin-left: auto; }
+    aside.docs .all-docs-wrap { padding: 8px 12px 4px; }
+    aside.docs .all-docs-wrap button { width: 100%; padding: 8px 10px; border: 1px dashed var(--border); background: linear-gradient(to bottom, #f0f7ff, #e0edff); color: #1e40af; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; text-align: left; transition: all 0.15s; }
+    aside.docs .all-docs-wrap button:hover { border-color: var(--primary); border-style: solid; background: linear-gradient(to bottom, #dbeafe, #bfdbfe); }
+    aside.docs .all-docs-wrap button.active { background: linear-gradient(to bottom, #6366f1, #4f46e5); color: white; border-color: #4f46e5; border-style: solid; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3); }
     aside.docs .recent-search-wrap, aside.docs .doc-search-wrap { padding: 0 16px 6px; }
     aside.docs .recent-search-wrap input, aside.docs .doc-search-wrap input { width: 100%; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
     aside.docs .recent-search-wrap input:focus, aside.docs .doc-search-wrap input:focus { outline: none; border-color: var(--primary); }
@@ -453,6 +457,7 @@
         </div>
       </div>
       <div class="doc-list-wrap">
+        <div class="all-docs-wrap"><button id="all-docs-btn" type="button" title="특정 문서 대신 프로젝트 전체 정책·화면설계서를 종합해서 답변">🌐 전체 정책 종합해서 답변</button></div>
         <h2 class="collapsible" data-section="policies">정책문서 <span class="count" id="policies-count"></span></h2>
         <div class="doc-search-wrap"><input id="doc-search" type="search" placeholder="정책·화면설계서 이름 검색" autocomplete="off" /></div>
         <ul id="policy-list"><li class="loading"><button disabled>로딩 중...</button></li></ul>
@@ -975,6 +980,7 @@
       currentProject: localStorage.getItem(PROJECT_STORAGE_KEY) || null,
       docs: [],
       currentDoc: null, // {path, title, kind}
+      useAllDocs: false, // 🌐 전체 정책 종합 모드 — currentDoc 무시하고 워커가 프로젝트 전체 참고
       history: [], // [{role, content, appliedFeedbacks?}]
       sending: false,
       streamAbort: null, // 진행 중인 /qa fetch AbortController — [취소] 로 abort
@@ -1129,6 +1135,8 @@
       setupColumnResizers();
       setupMobileSidebar();
       setupImageLightbox();
+      // 처음 진입 시 대화 영역에 사용법 힌트
+      if (state.history.length === 0) renderWelcomeHint();
       loadSessions();
       loadCollapsed();
       loadUser();
@@ -1339,6 +1347,8 @@
       const doc = state.docs.find((d) => d.path === path);
       if (!doc) return;
       state.currentDoc = doc;
+      // 개별 문서 선택 시 전체 종합 모드는 자동 해제
+      if (state.useAllDocs) setAllDocsMode(false);
       $$('.docs li button').forEach((b) => b.classList.toggle('active', b.dataset.path === path));
       $('#doc-title').textContent = doc.title;
       // 화면설계서면 기본 '미리보기' 모드로 진입, 정책이면 마크다운만
@@ -1647,8 +1657,9 @@
         //   Abort 발생 시 재시도 X (사용자가 취소).
         //   ⚠ 스트리밍 시작 후에는 재시도 X — 중간 실패는 부분 답변으로 남김
         const payload = {
-          docPath: state.currentDoc?.path,
+          docPath: state.useAllDocs ? undefined : state.currentDoc?.path,
           project: state.currentProject,
+          useAllDocs: state.useAllDocs || undefined,
           question,
           history: state.history.slice(0, -1).map(({ role, content }) => ({ role, content })),
           attachments: attachmentsForSend.length
@@ -2084,12 +2095,74 @@
     $('#clear-btn').addEventListener('click', () => {
       saveCurrentSession();
       startNewSession();
-      $('#messages').innerHTML = '<div class="msg assistant"><div class="role">제이나미봇</div><div class="body">대화를 다시 시작했어요. 질문해주세요.</div></div>';
+      renderWelcomeHint();
       $('#forward-btn').disabled = true;
       // 봇 답변 하이라이트 초기화
       $$('.docs li button.doc-mentioned').forEach((b) => b.classList.remove('doc-mentioned'));
       // improve-toolbar-btn 은 항상 활성 (답변 없어도 일반 규칙 추가 가능)
     });
+
+    /** 🌐 전체 정책 종합 모드 ON/OFF 전환. 개별 문서 선택 상태와 상호 배타. */
+    function setAllDocsMode(on) {
+      state.useAllDocs = on;
+      const btn = $('#all-docs-btn');
+      if (on) {
+        btn.classList.add('active');
+        btn.innerHTML = '🌐 전체 정책 종합 모드 <span style="font-size:10px;opacity:0.85;font-weight:400">· 클릭해서 해제</span>';
+        // 개별 문서 선택 UI 해제
+        $$('.docs li button').forEach((b) => b.classList.remove('active'));
+        state.currentDoc = null;
+        $('#doc-title').textContent = '🌐 전체 정책 종합 모드';
+        $('#doc-content').className = '';
+        $('#doc-content').innerHTML = `
+          <div style="padding:40px 24px;text-align:center;color:var(--muted);line-height:1.7">
+            <div style="font-size:48px;margin-bottom:12px">🌐</div>
+            <h3 style="margin:0 0 8px;font-size:16px;color:var(--text)">전체 정책 종합 모드</h3>
+            <p style="max-width:400px;margin:0 auto;font-size:13px">
+              특정 문서를 선택하지 않아도 됩니다.<br>
+              프로젝트 안의 <b>모든 정책·화면설계서를 종합해서</b> 답변합니다.<br><br>
+              💬 우측 채팅에 자유롭게 질문하세요.<br>
+              <span style="font-size:11px;opacity:0.85">
+                (개별 문서를 참고하고 싶으면 좌측 목록에서 클릭 → 자동으로 모드 해제)
+              </span>
+            </p>
+          </div>`;
+        $('#doc-iframe').style.display = 'none';
+        $('#question')?.setAttribute('placeholder', '💬 프로젝트 전체 정책 기준으로 질문하세요');
+      } else {
+        btn.classList.remove('active');
+        btn.innerHTML = '🌐 전체 정책 종합해서 답변';
+        $('#question')?.setAttribute('placeholder', '예) 대시보드 필터에 초기화 버튼이 없는 이유가 뭔가요?\n\n💡 이미지 첨부: 텍스트박스에 Ctrl+V 로 붙여넣거나 파일을 드래그\n예: \'정책에는 X 인데 화면은 Y 입니다. 비교해주세요\' + 화면 캡처');
+      }
+    }
+    $('#all-docs-btn').addEventListener('click', () => setAllDocsMode(!state.useAllDocs));
+
+    /** 대화 없을 때 초기 웰컴 힌트 — 어떻게 시작할지 안내 */
+    function renderWelcomeHint() {
+      $('#messages').innerHTML = `
+        <div class="msg assistant" style="max-width:100%">
+          <div class="role">제이나미봇</div>
+          <div class="body">
+            <p style="margin:0 0 12px"><b>👋 안녕하세요! 아래 두 가지 방식으로 질문할 수 있어요.</b></p>
+            <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin:0 0 10px">
+              <div style="font-weight:600;color:#1e40af;margin-bottom:6px">📄 방법 1. 특정 문서에 대해 질문</div>
+              <div style="font-size:12.5px;color:#4b5563;line-height:1.65">
+                ① <b>좌측 목록에서 정책문서·화면설계서 하나를 클릭</b><br>
+                ② 우측 아래 입력창에 그 문서에 대한 질문 입력<br>
+                <span style="color:#6b7280;font-size:11.5px">→ 봇이 그 문서의 §번호를 인용해서 답합니다</span>
+              </div>
+            </div>
+            <div style="background:#f0f7ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 14px">
+              <div style="font-weight:600;color:#1e40af;margin-bottom:6px">🌐 방법 2. 전체 정책 종합해서 질문</div>
+              <div style="font-size:12.5px;color:#4b5563;line-height:1.65">
+                ① 좌측 상단 <b>[🌐 전체 정책 종합해서 답변]</b> 버튼 클릭<br>
+                ② 자유롭게 질문 (특정 문서 선택 불필요)<br>
+                <span style="color:#6b7280;font-size:11.5px">→ 봇이 프로젝트 안 여러 정책을 종합해서 답합니다. 정확한 문서 이름 몰라도 OK.</span>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }
 
     /* 💾 세션 내보내기 — 현재 대화를 markdown 파일로 다운로드 */
     $('#export-btn').addEventListener('click', () => {
