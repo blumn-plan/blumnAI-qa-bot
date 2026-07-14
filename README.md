@@ -147,10 +147,11 @@ blumn-plan/blumnAI-qa-bot   →→→→   blumn/○○-planer
 **한 스텝씩 확인하며 진행**하므로 도중에 이상하면 언제든 멈추고 조정 가능해요.
 
 > [!TIP]
-> 👇 **바로 아래 회색 박스가 마스터 프롬프트예요.** 클릭해서 펼치기 → **회색 코드 박스 전체** 를 복사 → **Claude Code 창에 붙여넣기**.
+> 👇 **바로 아래 회색 박스가 마스터 프롬프트예요.**
+> 박스 우상단 **📋 복사 아이콘** 클릭 → **Claude Code 창에 붙여넣기**. (기본 펼침 상태 — 접고 싶으면 제목 클릭)
 
-<details>
-<summary><b>📋 👇 마스터 프롬프트 열기 — 여기 클릭</b></summary>
+<details open>
+<summary><b>📋 마스터 프롬프트 (클릭하면 접기)</b></summary>
 
 ```
 blumnAI-qa-bot 을 우리 팀에 A 모드 (Anthropic API 사용) 로 설치하려 합니다.
