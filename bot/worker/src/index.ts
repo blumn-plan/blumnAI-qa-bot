@@ -46,6 +46,9 @@ export interface Env {
    *  Google AI Studio 에서 발급 (https://aistudio.google.com/app/apikey).
    *  미설정 시 /gen-image 엔드포인트만 비활성 — 다른 기능은 영향 X. */
   GEMINI_API_KEY?: string;
+  /** Gemini 이미지 모델 이름 override (미설정 시 gemini-2.5-flash-image 기본).
+   *  Google 이 모델 이름 변경 시 코드 재배포 없이 wrangler secret put GEMINI_MODEL 로 대응. */
+  GEMINI_MODEL?: string;
 }
 
 /** 요청 헤더에 SaaS 모드용 인증 값이 있으면 env 를 override 해서 반환.
@@ -1596,7 +1599,7 @@ async function generateImage(env: Env, body: GenImageRequest, signal?: AbortSign
     parts.push({ inline_data: { mime_type: mime, data: raw } });
   }
 
-  const model = 'gemini-2.5-flash-image-preview';
+  const model = env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash-image';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
 
   const res = await fetch(url, {
