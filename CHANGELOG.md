@@ -4,7 +4,9 @@
 
 ## v0.2.1 — 2026-07-15
 
-**Highlights** — 기획자 모드 질문자 정보 복구 (A 모드 버그 수정) · 사용자 이름 필수화 · 🌐 전체 정책 종합 모드 · README/셋업 문서 대폭 개선 · 실제 팀 셋업에서 반복되던 두 걸림돌 (Cloudflare API Token 폼 · 기존 Pages 충돌) 가이드 신설.
+**Highlights** — 기획자 모드 질문자 정보 복구 (A 모드 버그 수정) · 사용자 이름 필수화 · 🎨 이미지 생성/수정 (Nano Banana · 옵션) · 🌐 전체 정책 종합 모드 · README/셋업 문서 대폭 개선 · 실제 팀 셋업에서 반복되던 두 걸림돌 (Cloudflare API Token 폼 · 기존 Pages 충돌) 가이드 신설.
+
+- 🎨 **이미지 생성·수정 (Nano Banana = Gemini 2.5 Flash Image · 옵션 기능)** — 툴바 [🎨 이미지] 버튼 → 다이얼로그: 프롬프트 + 참고 이미지 (파일·Ctrl+V·드래그) → Worker `/gen-image` → 채팅에 결과 표시. 질문자가 "이 화면을 이렇게 바꿔줘" 요청 시 수정 mockup 을 즉시 확인해서 기획자 전달 설득력 강화. Worker 에 `GEMINI_API_KEY` 시크릿 필요 (Google AI Studio 무료 발급, 하루 100장 무료 tier). 미설정 시 다른 기능 영향 X. 상세 셋업: [docs/10-GEN-IMAGE.md](docs/10-GEN-IMAGE.md). 한글 텍스트·정밀 UI 편집은 여전히 부정확 — 참고 mockup 용도로 활용 권장. `X-Bot-Gemini-Key` 헤더로 SaaS 모드도 지원. 데모 모드 (`?demo=1`) 는 SVG placeholder 로 UI 흐름 확인 가능
 
 - 🐛 **기획자 모드 질문자 정보 복구 (A 모드)** — Worker `/forward` 가 body.user 를 받았지만 `renderDecisionMarkdown` 에 전달하지 않아 `qa/decisions/*.md` 에 `| 질문자 |` 행이 저장 안 되던 버그. `listDecisions` 는 이미 그 행을 파싱하도록 되어 있어 지금까지 항상 빈 값이 돌아오고 기획자 리스트에 누가 요청했는지 안 보이던 문제. `ForwardRequest.user`, `forwardToDecisions`, `renderDecisionMarkdown` 3곳 수정 + 기획자 리스트 row2 에 `👤 이름` 배지 렌더 (C 모드 `local-server` 는 이미 정상)
 - ⚠ **사용자 이름 필수화** (`qa-collab.html`) — 이름 미설정 → `익명` fallback 이 위 질문자 배지 복구 취지를 무력화하므로, 이름 설정을 명시적 필수 게이트로 승격. 초기 진입 시 dialog 자동 오픈 + [취소] 버튼 숨김 + ESC 로도 못 닫음. 어떻게든 닫아도 이름 없으면 즉시 재오픈. [전송] / [📤 기획전달] / [📝 답변 규칙] 3개 액션 모두 진입 시 이름 게이트 (없으면 dialog 재오픈). 상단 표시 '(이름 미설정)' → '이름 설정 필요'
