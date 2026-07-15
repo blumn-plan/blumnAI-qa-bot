@@ -80,6 +80,55 @@ npx wrangler secret list
 
 ---
 
+## 5-옵션. `wrangler login` 이 안 될 때 — API Token 수동 발급 (👤 본인이 직접)
+
+`npx wrangler login` 이 브라우저 인증 실패·회사 방화벽·SSO 정책 등으로 안 되는 경우, **API Token 을 수동 발급해서 환경변수로 붙이면** 동일하게 동작합니다.
+
+### 5-옵션-1. Cloudflare API Token 발급
+
+1. 브라우저에서 https://dash.cloudflare.com/profile/api-tokens
+2. **[Create Token]** 클릭
+3. 템플릿 리스트에서 **"Edit Cloudflare Workers"** 옆 **[Use template]** 클릭
+4. 아래 폼이 뜨는데, **딱 두 필드만 채우면 됨** (템플릿이 요구하는 최소 세팅):
+
+   | 섹션 | 왼쪽 | 가운데 | 오른쪽 |
+   |---|---|---|---|
+   | **Account Resources** (필수) | `Include` 그대로 | — | 클릭 → **본인 계정 선택** (본인 이메일/계정명이 뜸) |
+   | **Zone Resources** (필수 — 우린 Workers 만 쓰지만 템플릿이 요구) | `Include` 그대로 | **`Specific zone` → `All zones` 로 변경** | 자동으로 사라짐 (`All zones` 선택 시 필요 없음) |
+   | Client IP Address Filtering | 비워둠 | 비워둠 | 비워둠 |
+   | TTL | 비워둠 | 비워둠 | 비워둠 |
+
+   > ⚠️ **Zone Resources 의 가운데 드롭다운에 `All zones` 옵션이 안 보이면**
+   > → `Include All zones from an account` 로 바꾸고 → 오른쪽에서 본인 계정 선택
+
+5. 스크롤 맨 아래 **[Continue to summary]** → **[Create Token]**
+6. 화면에 뜨는 토큰 (길고 랜덤 문자열) **즉시 메모장 복사** — 이 창을 닫으면 다시 못 봄
+
+### 5-옵션-2. 터미널에 환경변수 세팅 + 배포
+
+**PowerShell** (Windows):
+```powershell
+$env:CLOUDFLARE_API_TOKEN = "여기에_토큰_붙여넣기"
+cd .blumnAI-qa-bot/worker
+npx wrangler deploy
+```
+
+**bash / zsh** (macOS · Linux · WSL):
+```bash
+export CLOUDFLARE_API_TOKEN="여기에_토큰_붙여넣기"
+cd .blumnAI-qa-bot/worker
+npx wrangler deploy
+```
+
+`npx wrangler secret put` 같은 명령도 이 환경변수만 세팅되어 있으면 login 없이 동작합니다.
+
+> ⚠️ **주의**: 환경변수는 **터미널 세션이 닫히면 사라집니다**. 새 터미널을 열 때마다 다시 `export`/`$env:` 해야 함. 상시 자동 적용하려면:
+> - Windows: 시스템 환경변수에 등록 (제어판 → 시스템 → 환경 변수)
+> - macOS/Linux: `~/.zshrc` 또는 `~/.bashrc` 에 `export CLOUDFLARE_API_TOKEN=...` 추가
+> - **⚠️ 시크릿이므로 코드 레포에 커밋 금지** — `.env` 를 쓰면 반드시 `.gitignore` 에 추가
+
+---
+
 ## 🩺 원격 진단 — `/health?detailed=1`
 
 셋업 중 뭔가 안 되면 **브라우저를 F5 새로고침** 하세요. qa-collab.html / qa-planner.html 이 자동으로 Worker 의 `/health?detailed=1` 을 호출해서 원인을 체크리스트로 보여줍니다:
@@ -106,8 +155,8 @@ curl "https://<your-worker>.workers.dev/health?detailed=1" | jq
 | qa.html 진단 화면에 ❌ Anthropic API key | IT기획팀에 재발급 요청 → `wrangler secret put ANTHROPIC_API_KEY` |
 | qa.html 진단 화면에 ❌ GitHub PAT | Classic PAT (`repo` scope) 재발급 → `wrangler secret put GITHUB_TOKEN` |
 | qa.html 진단 화면에 ❌ config.yml 파싱 | 팀 레포 루트에 `blumnAI-qa-bot.config.yml` 이 있고 YAML 문법 유효한지 확인 |
-| `wrangler login` 브라우저 인증 실패 | 회사 방화벽. 개인 핫스팟으로 재시도 |
-| `wrangler secret put` 권한 에러 | `wrangler login` 다시 |
+| `wrangler login` 브라우저 인증 실패 | 회사 방화벽·SSO 정책. 개인 핫스팟으로 재시도, 또는 **[§5-옵션 API Token 수동 발급](#5-옵션-wrangler-login-이-안-될-때--api-token-수동-발급--본인이-직접)** 로 우회 |
+| `wrangler secret put` 권한 에러 | `wrangler login` 다시, 또는 [§5-옵션](#5-옵션-wrangler-login-이-안-될-때--api-token-수동-발급--본인이-직접) 대로 `CLOUDFLARE_API_TOKEN` 환경변수 세팅 후 재시도 |
 | 답변 매번 실패 (401 · invalid_api_key) | API key 만료. `/health?detailed=1` 확인 후 재등록 |
 | 답변 매번 실패 (429 · rate_limit) | 호출 한도 초과. https://console.anthropic.com Usage/Billing 확인 |
 | CORS 차단 | wrangler.toml 의 `ALLOWED_ORIGINS` 에 페이지 URL 추가 후 재배포 |

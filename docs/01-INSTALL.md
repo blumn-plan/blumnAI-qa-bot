@@ -317,6 +317,8 @@ Claude Code 에게:
 
 AI 가 실행하면 브라우저에서 Cloudflare 인증 창이 뜹니다. 👤 본인이 "Allow" 클릭.
 
+> ⚠️ **`wrangler login` 이 회사 방화벽·SSO 로 안 될 때** → [03-CONNECT-BOT.md §5-옵션 API Token 수동 발급](03-CONNECT-BOT.md#5-옵션-wrangler-login-이-안-될-때--api-token-수동-발급--본인이-직접) 대로 우회. Token 발급 폼 (Account/Zone Resources) 세팅까지 스텝별 정리되어 있어요.
+
 ### 5-3. wrangler.toml 편집 — 🤖 AI 에게 위임
 
 Claude Code 에게:
@@ -366,6 +368,8 @@ AI 가 배포 실행 후 URL 을 컨피그에 자동 반영. 성공 시 출력:
 
 협업자·기획자가 브라우저로 접근할 화면(qa-collab.html / qa-planner.html) 호스팅.
 
+> ⚠️ **본인 레포가 이미 Pages/Cloudflare Pages 로 뭔가 배포 중이면** (예: Vite mock demo, Next.js 프로젝트, Docusaurus 등) → 아래 §6-1 을 그대로 켜면 기존 배포와 충돌할 수 있어요. **[§6-variant. 이미 배포 중인 레포](#6-variant-이미-pages-배포-중인-레포--봇-파일-함께-배포)** 로 건너뛰세요.
+
 ### 6-1. Pages 설정 활성화 — 👤 본인이 직접
 
 1. 브라우저에서 본인 GitHub 레포 페이지 → **Settings** → **Pages** (좌측 메뉴)
@@ -390,6 +394,46 @@ Claude Code 에게:
 Pages URL 이 이제 활성화됐어. blumnAI-qa-bot.config.yml 의 pages_url 에
 그 URL 채우고, wrangler.toml 의 ALLOWED_ORIGINS 도 이 URL 로 갱신 후
 wrangler deploy 다시 실행해줘.
+```
+
+---
+
+### 6-variant. 이미 Pages 배포 중인 레포 — 봇 파일 함께 배포
+
+본인 정책 레포가 이미 Vite/Next.js/Docusaurus 등으로 빌드해서 Pages (GitHub Pages 또는 Cloudflare Pages) 로 배포 중이면, §6-1 방식 (Deploy from a branch) 을 그대로 켜면 기존 배포와 충돌합니다. 세 가지 우회 방식:
+
+**대안 A. 기존 배포 스크립트에 봇 파일 복사 스텝 추가 (Recommended — 사이드이펙트 없음)**
+
+이미 있는 `scripts/deploy-pages.sh` (또는 배포 GitHub Action) 안에 봇 파일 복사 스텝만 5줄 추가:
+
+```bash
+# 기존 Vite build 후
+npm run build
+cp -r .blumnAI-qa-bot/apps dist/.blumnAI-qa-bot/apps
+cp blumnAI-qa-bot.config.yml dist/blumnAI-qa-bot.config.yml
+# 기존 gh-pages/wrangler pages deploy 그대로
+```
+
+결과 URL: `https://<기존-Pages-URL>/.blumnAI-qa-bot/apps/qa-collab.html`
+
+- ✅ mock demo/본 프로젝트와 봇이 같은 Pages 사이트에 공존
+- ✅ 사이드이펙트 없음 (기존 build 는 그대로)
+- ⚠️ 봇 파일 변경 시마다 (업그레이드 등) 기존 배포 명령 (`npm run deploy` 등) 재실행 필요
+
+**대안 B. 봇 전용 별도 브랜치·서브사이트**
+
+`.blumnAI-qa-bot/` 만 별도 `bot-pages` 브랜치로 push → 봇 URL 은 별도 서브패스로 노출. 배포 파이프라인 분리되지만 브랜치 관리 필요.
+
+**대안 C. 별도 레포**
+
+봇 파일을 다른 (더 조용한) 레포에 두고 그 레포만 Pages 활성화. 정책 레포와 봇 UI 레포가 나눠지는 게 단점.
+
+**어느 것을 고를까?** 대다수 팀은 **대안 A** — 5줄 추가로 끝나고 팀에게 새 URL 알릴 필요도 없어요. AI 에게 위임할 때 프롬프트 예시:
+
+```
+우리 레포는 이미 scripts/deploy-pages.sh 로 Vite build → Cloudflare Pages 배포 중이야.
+그 스크립트 안에 .blumnAI-qa-bot/apps/ + blumnAI-qa-bot.config.yml 을 dist/ 로
+복사하는 스텝 5줄만 추가해줘. 기존 로직은 건드리지 마.
 ```
 
 ---
@@ -433,6 +477,7 @@ https://your-org.github.io/ad-team-policies/.blumnAI-qa-bot/apps/qa-collab.html
 | qa.html 에서 ⚙️ "설정이 필요합니다" 화면 | `blumnAI-qa-bot.config.yml` 가 레포 루트에 없거나 `worker_url` 미입력. 4-5단계 재확인 |
 | "Failed to fetch" | Worker URL 오타 또는 CORS. `security.allowed_origins` 가 Pages URL 정확한지 확인 |
 | Pages 에서 404 | `.nojekyll` 파일 누락 또는 빌드 대기. 6-1~6-3 재확인, 2-3분 대기 |
-| `npx wrangler login` 브라우저 인증 안 됨 | 회사 방화벽 가능성. 개인 핫스팟으로 재시도 |
+| 이미 Vite/Next.js mock demo 가 배포 중 → 봇 URL 어디로? | §6 를 켜지 말고 [§6-variant](#6-variant-이미-pages-배포-중인-레포--봇-파일-함께-배포) 참고. 기존 build 스크립트에 5줄 추가 방식 (대안 A) 이 대다수 팀에 최적 |
+| `npx wrangler login` 브라우저 인증 안 됨 | 회사 방화벽·SSO. [03-CONNECT-BOT.md §5-옵션 API Token 수동 발급](03-CONNECT-BOT.md#5-옵션-wrangler-login-이-안-될-때--api-token-수동-발급--본인이-직접) 으로 우회 (Account/Zone Resources 폼 세팅 포함) |
 | 답변 매번 실패 (Anthropic 에러) | API key 만료 또는 한도 초과. https://console.anthropic.com Usage/Billing 확인 |
 | C 모드 관련 이슈 | 이 가이드는 A 모드 기준. C 모드는 [03-CONNECT-BOT §부록](03-CONNECT-BOT.md#부록--c-모드-pc-max-우회-특수-상황용) |
