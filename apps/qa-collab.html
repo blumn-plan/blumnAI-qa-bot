@@ -1606,6 +1606,12 @@
     });
 
     async function sendQuestion(question, opts = {}) {
+      // 이름 미설정이면 우선 사용자 설정부터 강제 — 질문자 식별 없이는 전달·개선 기록이 무의미
+      if (!state.user.name) {
+        toast('먼저 이름을 설정해주세요', 'error');
+        openUserDialog();
+        return;
+      }
       state.sending = true;
       // 이전 진행 중이던 stream 이 남아 있으면 abort (사용자 입장에선 늦은 응답 무의미)
       if (state.streamAbort) { try { state.streamAbort.abort(); } catch (_) {} }
@@ -2222,6 +2228,7 @@
     /* 툴바 [📝 답변 규칙 추가] — 답변 없어도 항상 사용 가능 (일반 규칙 누적 학습)
        답변이 있으면 그 답변 컨텍스트로, 없으면 일반 규칙으로 저장 */
     $('#improve-toolbar-btn').addEventListener('click', () => {
+      if (!state.user.name) { toast('먼저 이름을 설정해주세요', 'error'); openUserDialog(); return; }
       const lastAssistant = [...state.history].reverse().find((m) => m.role === 'assistant');
       openFeedbackDialog(lastAssistant ? lastAssistant.content : '', $('#improve-toolbar-btn'));
     });
@@ -2349,6 +2356,7 @@
     }
 
     $('#forward-btn').addEventListener('click', () => {
+      if (!state.user.name) { toast('먼저 이름을 설정해주세요', 'error'); openUserDialog(); return; }
       if (state.history.length === 0) { toast('아직 대화가 없어요', 'error'); return; }
       const lastAssistant = [...state.history].reverse().find((m) => m.role === 'assistant');
       const docTitle = state.currentDoc?.title || '';
@@ -2984,28 +2992,40 @@
     function renderUserDisplay() {
       const span = $('#user-display');
       if (!span) return;
-      span.textContent = state.user.name ? `👤 ${state.user.name}` : '👤 (이름 미설정)';
+      span.textContent = state.user.name ? `👤 ${state.user.name}` : '👤 이름 설정 필요';
     }
     function openUserDialog(firstVisit = false) {
       $('#user-name-input').value = state.user.name || '';
-      $('#user-cancel').textContent = firstVisit ? '나중에' : '취소';
+      // 이름이 아직 없으면 취소 버튼 자체를 숨김 → 이름 저장이 필수 액션
+      $('#user-cancel').style.display = state.user.name ? 'inline-block' : 'none';
+      $('#user-cancel').textContent = '취소';
       $('#user-dialog').showModal();
       $('#user-name-input').focus();
     }
     function setupUserUi() {
       renderUserDisplay();
       $('#change-user-link').addEventListener('click', (e) => { e.preventDefault(); openUserDialog(false); });
+      // ESC 키로 dialog 닫는 것도 이름 없으면 차단
+      $('#user-dialog').addEventListener('cancel', (e) => {
+        if (!state.user.name) e.preventDefault();
+      });
       $('#user-dialog').addEventListener('close', () => {
         const dlg = $('#user-dialog');
-        if (dlg.returnValue !== 'default') return;
-        const name = $('#user-name-input').value.trim();
-        if (!name) { toast('이름을 입력해주세요', 'error'); return; }
-        state.user.name = name;
-        saveUser();
-        renderUserDisplay();
-        // 본인 식별 가능해졌으니 전달이력 다시 그려서 mineOnly 가 의미 있게 동작
-        renderDecisionsList();
-        toast(`사용자 설정 저장됨: ${name}`);
+        if (dlg.returnValue === 'default') {
+          const name = $('#user-name-input').value.trim();
+          if (!name) { toast('이름을 입력해주세요', 'error'); openUserDialog(); return; }
+          state.user.name = name;
+          saveUser();
+          renderUserDisplay();
+          // 본인 식별 가능해졌으니 전달이력 다시 그려서 mineOnly 가 의미 있게 동작
+          renderDecisionsList();
+          toast(`사용자 설정 저장됨: ${name}`);
+          return;
+        }
+        // 취소 (또는 ESC) — 이름이 여전히 비어 있으면 즉시 재오픈 (필수 설정)
+        if (!state.user.name) {
+          setTimeout(() => openUserDialog(), 0);
+        }
       });
       // 글로벌 보기 범위 토글 — 전달이력·개선건 공통
       const radios = $$('input[name="view-mode"]');
