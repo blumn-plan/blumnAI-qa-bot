@@ -236,6 +236,63 @@
        비번 값 우선순위: config.yml 의 ui.planner_password → 하드코딩 default. */
     const DEFAULT_PLANNER_PASSWORD = 'wjdtkdalswpdl';
     const AUTH_KEY = 'qa-planner-auth-v1';
+
+    /* ────────── 🎬 데모 모드 — ?demo=1 로 mock decisions 미리보기 ──────────
+     *  Worker 없이도 planner UI (리스트·질문자 배지·상세·apply/reject 등) 를 즉시 확인.
+     *  실제 배포에선 URL 에서 ?demo=1 제거. */
+    const IS_DEMO = new URLSearchParams(location.search).get('demo') === '1';
+    if (IS_DEMO) {
+      console.log('🎬 데모 모드 활성 — 모든 Worker 요청이 mock 응답으로 대체됩니다.');
+      document.title = '🎬 DEMO · ' + document.title;
+      sessionStorage.setItem(AUTH_KEY, 'ok'); // 비밀번호 게이트 우회
+      document.addEventListener('DOMContentLoaded', () => {
+        const banner = document.createElement('div');
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#6366f1;color:white;padding:6px 12px;font-size:12px;text-align:center;z-index:9999';
+        banner.innerHTML = '🎬 데모 모드 — Worker 없이 mock 데이터. 실제 배포에선 ?demo=1 을 URL 에서 제거';
+        document.body.appendChild(banner);
+        document.body.style.paddingTop = '30px';
+      });
+      const DEMO_WORKER = 'https://demo.local';
+      const DEMO_CONFIG_YAML = `deployment:\n  worker_url: ${DEMO_WORKER}\nui:\n  brand_name: 데모팀\n  planner_password: demo\n`;
+      const originalFetch = window.fetch;
+      window.fetch = async function (url, opts = {}) {
+        const u = String(url);
+        if (/blumnAI-qa-bot\.config\.yml$/.test(u)) {
+          return new Response(DEMO_CONFIG_YAML, { status: 200, headers: { 'Content-Type': 'text/yaml' } });
+        }
+        if (u.startsWith(DEMO_WORKER)) {
+          const path = u.substring(DEMO_WORKER.length).split('?')[0];
+          return plannerDemoRoute(path, u, opts);
+        }
+        return originalFetch(url, opts);
+      };
+    }
+
+    async function plannerDemoRoute(path, fullUrl, opts) {
+      const jsonRes = (obj, s = 200) => new Response(JSON.stringify(obj), { status: s, headers: { 'Content-Type': 'application/json' } });
+      if (path === '/list-decisions') {
+        return jsonRes({ items: [
+          { path: 'qa/decisions/2026-07-14-캠페인_삭제_확인_모달.md', title: '캠페인 삭제 확인 모달', date: '2026-07-14', status: 'pending', statusText: '📋 대기', preview: '§3-2 · 실수 방지', user: '홍길동' },
+          { path: 'qa/decisions/2026-07-13-대시보드_알림_배너_색상.md', title: '대시보드 알림 배너 색상', date: '2026-07-13', status: 'pending', statusText: '📋 대기', preview: '§2-1 · 배너 색상 규칙', user: 'QA-김민지' },
+          { path: 'qa/decisions/2026-07-12-결제_환불_기한_확장.md', title: '결제 환불 기한 확장', date: '2026-07-12', status: 'applied', statusText: '✅ 반영 완료', preview: '§3-1 · 24h → 48h', user: 'QA-김민지' },
+          { path: 'qa/decisions/2026-07-11-알림설정_슬랙_삭제.md', title: '알림설정 슬랙 채널 제거', date: '2026-07-11', status: 'rejected', statusText: '🚫 보류', preview: '§1 · 우선순위 낮음', user: '' },
+        ]});
+      }
+      if (path === '/doc') {
+        const p = new URL(fullUrl).searchParams.get('path') || '';
+        const user = p.includes('캠페인_삭제') ? '홍길동' : p.includes('대시보드_알림') ? 'QA-김민지' : p.includes('결제_환불') ? 'QA-김민지' : '익명';
+        const reviewLine = p.includes('결제_환불') ? '✅ 반영 완료' : p.includes('알림설정_슬랙') ? '🚫 보류 (우선순위 낮음)' : '⏳ 대기';
+        const title = p.split('/').pop().replace(/^\d{4}-\d{2}-\d{2}-/, '').replace(/\.md$/, '').replace(/_/g, ' ');
+        const content = `# ${title}\n\n| 항목 | 내용 |\n|---|---|\n| 일자 | 2026-07-14 |\n| 질문자 | ${user} |\n| 관련 문서 | \`projects/sample/docs/policies/캠페인_관리_v0.1.2.md\` |\n| 출처 | 협업자 챗 — \`qa.html\` |\n| 기획자 review | ${reviewLine} |\n\n## 합의 요약\n\n(데모용 샘플 합의 요약 텍스트입니다.)\n\n### 📋 변경 제안\n\n- 📌 요청 제목: ${title}\n- 📄 대상 파일: \`캠페인_관리_v0.1.2.md\`\n- 📍 위치: §3-2\n- ✏️ 변경 전: (정책 미정의)\n- ✅ 변경 후: 삭제 클릭 시 확인 모달 필수\n- 💡 근거: 사용자 실수 방지\n\n## 대화 내역\n\n### Q1\n\n(데모 질문 예시)\n\n#### A1\n\n(데모 답변 예시)\n`;
+        return jsonRes({ path: p, content });
+      }
+      if (path === '/list-feedbacks') return jsonRes({ items: [] });
+      if (path === '/save-decision-image') return jsonRes({ saved: true, path: 'demo/img.png', markdownRef: '![demo](demo/img.png)', bytes: 100 });
+      if (path === '/update-decision-status') return jsonRes({ ok: true, commitSha: 'demo' });
+      if (path === '/health') return jsonRes({ status: 'demo', service: 'mock-planner' });
+      return jsonRes({ error: `demo mock 미대응 endpoint: ${path}` }, 501);
+    }
+
     async function runGate() {
       if (sessionStorage.getItem(AUTH_KEY) === 'ok') return;
       // config.yml 을 gate 전에 fetch — 팀별 비번 사용
@@ -910,7 +967,7 @@
       banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#fef3c7;border-bottom:1px solid #f59e0b;padding:10px 16px;font-size:13px;color:#78350f;display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,sans-serif';
       banner.innerHTML =
         '<span>🔔</span>' +
-        `<span style="flex:1"><strong>blumnAI-qa-bot 새 버전 v${remoteVersion}</strong> 나왔습니다 (현재 v${localVersion}). Claude Code 에 <strong>"🟠 업데이트하기"</strong> 프롬프트를 붙여넣으면 30초 안에 갱신됩니다.</span>` +
+        `<span style="flex:1"><strong>blumnAI-qa-bot 새 버전 v${remoteVersion}</strong> 나왔습니다 (현재 v${localVersion}). <strong>봇 관리 담당자 (기획팀)</strong> 가 Claude Code 에 <strong>"🟠 업데이트하기"</strong> 프롬프트를 실행하면 30초 안에 갱신됩니다.</span>` +
         `<a href="https://github.com/${coreRepo}/blob/main/CHANGELOG.md" target="_blank" rel="noopener" style="color:#78350f;text-decoration:underline;font-weight:600">변경사항 보기</a>` +
         '<button type="button" style="background:transparent;border:1px solid #f59e0b;color:#78350f;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">나중에</button>';
       banner.querySelector('button').addEventListener('click', () => {
