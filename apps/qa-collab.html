@@ -2358,7 +2358,10 @@
         setGenImagePreview(null);
       } catch (err) {
         holder.querySelector('.role').textContent = '🎨 이미지 생성 실패';
-        holder.querySelector('.body').innerHTML = `<p style="color:var(--error);margin:0">${escapeHtml(friendlyError(err))}</p>`;
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        holder.querySelector('.body').innerHTML =
+          `<p style="color:var(--error);margin:0 0 6px">${escapeHtml(friendlyError(err))}</p>` +
+          `<details style="margin:6px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:6px 0 0;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">${escapeHtml(rawMsg)}</pre></details>`;
       }
     });
 
@@ -3252,6 +3255,16 @@
       // 흔한 시크릿 만료·오류 패턴
       if (/401|authentication_error|invalid_api_key|invalid api key|sk-ant/i.test(msg)) {
         return 'Anthropic API key 가 만료·잘못됐어요. IT기획팀에 재발급 요청 후 wrangler secret put ANTHROPIC_API_KEY 로 갱신하세요.';
+      }
+      // Gemini (이미지 생성) 에러를 Anthropic 과 구분 — Worker 가 던지는 메시지에 "Gemini" 접두어 있음
+      if (/Gemini.*40[13]|Gemini.*429|Gemini.*rate|Gemini.*quota|Gemini.*RESOURCE_EXHAUSTED/i.test(msg)) {
+        return 'Gemini 이미지 생성 한도 초과 (무료 tier 분당 or 일일 제한). 잠시 후 재시도하거나 https://aistudio.google.com/app/usage 확인.';
+      }
+      if (/Gemini.*40[04]|models\/.*not found|is not supported for generateContent/i.test(msg)) {
+        return 'Gemini 모델 이름 문제. GEMINI_MODEL env 로 다른 모델 지정 필요할 수 있음.';
+      }
+      if (/Gemini.*IP address restriction/i.test(msg)) {
+        return 'Gemini API key 에 IP 제한 걸려있음. Google AI Studio 에서 제한 없이 재발급 필요.';
       }
       if (/403.*rate|429|rate_limit|too many requests/i.test(msg)) {
         return 'Anthropic 호출 한도 초과. 잠시 후 다시 시도하거나 월 spending limit 확인하세요.';
