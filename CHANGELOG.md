@@ -2,7 +2,26 @@
 
 이 레포는 [SemVer](https://semver.org/lang/ko/) 를 따릅니다. 코어 변경 시 사용자 레포에 영향을 주는 항목은 ⚠ 표시.
 
-## v0.2.0 — 2026-07-13 (in progress)
+## v0.2.1 — 2026-07-15
+
+**Highlights** — 기획자 모드 질문자 정보 복구 (A 모드 버그 수정) · 🌐 전체 정책 종합 모드 · README/셋업 문서 대폭 개선 · 실제 팀 셋업에서 반복되던 두 걸림돌 (Cloudflare API Token 폼 · 기존 Pages 충돌) 가이드 신설.
+
+- 🐛 **기획자 모드 질문자 정보 복구 (A 모드)** — Worker `/forward` 가 body.user 를 받았지만 `renderDecisionMarkdown` 에 전달하지 않아 `qa/decisions/*.md` 에 `| 질문자 |` 행이 저장 안 되던 버그. `listDecisions` 는 이미 그 행을 파싱하도록 되어 있어 지금까지 항상 빈 값이 돌아오고 기획자 리스트에 누가 요청했는지 안 보이던 문제. `ForwardRequest.user`, `forwardToDecisions`, `renderDecisionMarkdown` 3곳 수정 + 기획자 리스트 row2 에 `👤 이름` 배지 렌더 (C 모드 `local-server` 는 이미 정상)
+- 🆕 **🌐 전체 정책 종합 모드 (사이드바 버튼)** — 특정 문서 선택 없이 프로젝트 안 모든 정책·화면설계서를 종합해서 답변. 좌측 상단 [🌐 전체 정책 종합해서 답변] 클릭 → 개별 문서 클릭 시 자동 해제. 첫 진입/리셋 시 웰컴 힌트 2박스로 개별/종합 방식 안내. Worker `QARequest.useAllDocs` 우선 → config `bot.include_all_docs` fallback
+- 🆕 **planner 데모 모드 (`?demo=1`)** — Worker 없이 4개 샘플 decision (대기 2 · 반영 1 · 보류 1) 으로 planner UI 검증 가능. mock `/list-decisions`, `/doc`, `/save-decision-image`, `/update-decision-status` 등. 상단 보라색 데모 배너 + 비번 게이트 자동 우회. 개발자 로컬 미리보기용
+- 📝 **업데이트 배너 문구 명확화** — "Claude Code 에 [🟠 업데이트하기] 붙여넣으면 30초" 가 누구 작업인지 불분명해서 → "**봇 관리 담당자 (기획팀)** 가 Claude Code 에 [🟠 업데이트하기] 프롬프트를 실행하면 30초" 로 통일 (qa-collab · qa-planner 양쪽)
+- 📄 **README 상단 흐름 재편** — 설득 → 이해 → 세팅 → 활용 흐름으로 재정렬: 30초 요약 → 🚀 왜 필요한가 (장점 4가지, 상단 승격) → 🏛 이 레포는 뭐고 → 🟢 세팅하기 → 💡 활용 시나리오 8가지 (세팅 뒤로 이동 — 첫 진입 마찰 감소)
+- 📄 **§1 미리 준비 4가지 + [!IMPORTANT] callout** — 기존 3가지 (API key · Cloudflare · Node.js) 에 **정책·화면설계서 GitHub 레포 (봇 얹을 홈)** 추가. 없으면 세팅 도중 막히니 사전 필수 항목으로 승격. API key 대기 시간 강조
+- 📄 **§2 리프레이밍** — "팀 정보 정리" 가 마치 사전 준비처럼 오해되던 성격을 → "§3 프롬프트에 채워야 할 값들 안내" 로 명확화 + [세팅하기 마스터 프롬프트] 앵커 링크 실제 연결
+- 📄 **§3 마스터 프롬프트 접힘 → 기본 펼침** — `<details open>` + 상단 [!TIP] callout 으로 "박스 우상단 📋 복사 아이콘 클릭" 유도. 드래그 없이 GitHub 자동 복사 버튼으로 원클릭 복사 가능
+- 📄 **README 한 줄 소개 갱신** — "정책·화면설계서에 대해 물어보면 답해주고" → "정책·화면설계서·**서비스 코드** 기반으로 AI 가 자동응답을 해주고, **개선 필요하면** 기획자에게 자동으로 전달" (능동태 · 서비스 코드 통합 · 에스컬레이션 목적 명시)
+- 📄 **`docs/03-CONNECT-BOT.md` §5-옵션 신설** — `wrangler login` 이 회사 방화벽·SSO 로 안 될 때 대안. `dash.cloudflare.com/profile/api-tokens` 의 **"Edit Cloudflare Workers" 템플릿 발급 폼** (Account Resources · Zone Resources) 세팅을 표로 정리. Zone Resources 에 "All zones" 옵션이 없으면 "Include All zones from an account" 로 대체하는 fallback 도 명시. PowerShell/bash 각각 `CLOUDFLARE_API_TOKEN` 환경변수 세팅 예시. 실전 팀에서 반복 발생한 걸림돌 해소
+- 📄 **`docs/01-INSTALL.md` §6-variant 신설** — 이미 Vite/Next.js mock demo 등이 Pages 배포 중인 레포에서 §6-1 (Deploy from a branch) 를 그대로 켜면 기존 배포와 충돌하는 문제. 대안 A (기존 deploy 스크립트 5줄 추가 · Recommended) / B (별도 브랜치) / C (별도 레포) 비교 + AI 위임 프롬프트 예시. 트러블슈팅 표에 pointer 추가
+- 🎨 **답변 아래 CTA 문구 개선** — "👉 이대로 진행: 📤 기획자에게 전달" 이 다음 액션이 뭔지 불분명 → "개선 필요 시 📤 기획전달 · 추가 질문: 아래 입력창 · 끝났으면: ↻ 새 대화" 로 세 갈래 선택지 명시
+- 🩹 **cache flicker 재발 방지** — 개선건/문서 재선택 시 캐시가 있으면 즉시 렌더 (일부 경로에서 여전히 "로딩 중..." 잠깐 노출되던 지점 정리)
+- 📄 **README 개선 다수** — 🏛 섹션 3단 그룹핑 (이해/활용/원칙) · 코어 용어 정의 박스 · 관계도 다이어그램 오해 방지 문구 · fork 금지 불릿 강화 · 세팅 프롬프트 앞 "왜/어떻게" 안내 · 업데이트 빈도 현실화 (6개월-1년 → 1주-1달 초기) 등
+
+## v0.2.0 — 2026-07-13
 
 **Highlights** — SaaS 모드 Phase 1 MVP: 팀별 셋업 없이 하나의 URL 에서 wizard 로 3분 셋업 후 즉시 사용.
 
