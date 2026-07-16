@@ -2509,15 +2509,13 @@
       const prompt = $('#gh-prompt').value.trim();
       if (!prompt) { toast('어떤 화면 만들지 적어주세요', 'error'); return; }
 
-      const placeholderId = 'gen-html-loading-' + Date.now();
-      const msgs = $('#messages');
-      const holder = document.createElement('div');
-      holder.id = placeholderId;
-      holder.className = 'msg assistant';
-      holder.style.maxWidth = '100%';
-      holder.innerHTML = `<div class="role">📄 HTML 목업 생성 중</div><div class="body"><p style="color:var(--muted);margin:0"><span class="btn-spinner" style="display:inline-block;vertical-align:middle;margin-right:6px"></span>Claude 가 정책·코드 근거로 HTML 을 만들고 있어요… (보통 10-30초)</p></div>`;
-      msgs.appendChild(holder);
-      msgs.scrollTop = msgs.scrollHeight;
+      // 답변 로딩 placeholder 재사용 — 스피너·경과시간 자동 갱신
+      const loadingPh = startLoadingPlaceholder(false);
+      const holder = loadingPh.div;
+      const roleEl = holder.querySelector('.role');
+      const labelEl = holder.querySelector('.loading-label');
+      if (roleEl) roleEl.textContent = '📄 HTML 목업 생성 중';
+      if (labelEl) labelEl.textContent = 'Claude 가 정책·코드 근거로 HTML 을 만들고 있어요…';
 
       try {
         // 현재 프로젝트의 코드 연결 컨텍스트 함께 전달 (매칭 확률 상승)
@@ -2556,8 +2554,13 @@
         const pagesRoot = rootMatch ? rootMatch[1] : '';
         const absoluteUrl = `${location.origin}${pagesRoot}/${data.savedPath}`;
         const sizeKb = (data.bytes / 1024).toFixed(1);
+        // 로딩 상태 정리 — 타이머 stop + 로딩 클래스 제거 + body 를 완료 컨텐츠로 교체
+        clearInterval(loadingPh.timer);
+        holder.classList.remove('streaming', 'loading-placeholder');
         holder.querySelector('.role').textContent = '📄 HTML 목업 완료';
-        holder.querySelector('.body').innerHTML =
+        const bodyEl = holder.querySelector('.body');
+        bodyEl.classList.remove('loading-body');
+        bodyEl.innerHTML =
           `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
           `<div style="padding:14px 16px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;margin:8px 0">` +
             `<div style="font-size:14px;font-weight:600;color:#047857;margin-bottom:6px">✅ 목업 파일 생성 완료</div>` +
@@ -2567,9 +2570,13 @@
           `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">💡 마음에 안 들면 [📄 HTML] 다시 눌러서 프롬프트 더 구체적으로 재시도. 이 파일은 <code>qa/mockups/</code> 폴더에 커밋됨.</p>`;
         setGenHtmlPreview(null, null);
       } catch (err) {
+        clearInterval(loadingPh.timer);
+        holder.classList.remove('streaming', 'loading-placeholder');
         holder.querySelector('.role').textContent = '📄 HTML 목업 실패';
+        const bodyEl = holder.querySelector('.body');
+        bodyEl.classList.remove('loading-body');
         const rawMsg = err instanceof Error ? err.message : String(err);
-        holder.querySelector('.body').innerHTML =
+        bodyEl.innerHTML =
           `<p style="color:var(--error);margin:0 0 6px">${escapeHtml(friendlyError(err))}</p>` +
           `<details style="margin:6px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:6px 0 0;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">${escapeHtml(rawMsg)}</pre></details>`;
       }
@@ -3482,6 +3489,9 @@
       }
       if (/GitHub.*401|bad credentials|401.*github/i.test(msg)) {
         return 'GitHub PAT (ghp_...) 만료 또는 오류. Classic PAT 재발급 후 wrangler secret put GITHUB_TOKEN 로 갱신하세요.';
+      }
+      if (/IP allow list/i.test(msg)) {
+        return '조직 IP allow list 로 인한 간헐적 실패입니다 (Cloudflare Edge IP 는 매번 달라짐). Worker 가 3회 자동 재시도했지만 모두 미허용 IP 로 나갔어요. 잠시 후 다시 시도해주세요.';
       }
       if (/GitHub.*404|not found.*repository/i.test(msg)) {
         return 'GitHub 레포·경로 못 찾음. GITHUB_REPO 시크릿 또는 config.yml 의 policies_dir 확인하세요.';

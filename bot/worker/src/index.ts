@@ -1320,6 +1320,22 @@ function isRetryableMethod(init: RequestInit): boolean {
   return m === 'GET' || m === 'HEAD';
 }
 
+/** 403 응답 본문에 "IP allow list" 관련 문구가 있는지 확인.
+ *  Cloudflare Workers 는 매 요청마다 다른 데이터센터·IP 에서 실행 →
+ *  조직 IP allow list 가 일부 IP 만 허용하면 write API 가 간헐적 403.
+ *  본문 검사가 필요하므로 원본 Response 복제해서 텍스트 미리보기. */
+async function isIpAllowListError(res: Response): Promise<{ isIpAllow: boolean; body: string }> {
+  if (res.status !== 403) return { isIpAllow: false, body: '' };
+  try {
+    const cloned = res.clone();
+    const body = await cloned.text();
+    // GitHub 응답 예시: "the `X` organization has an IP allow list enabled"
+    return { isIpAllow: /IP allow list/i.test(body), body };
+  } catch {
+    return { isIpAllow: false, body: '' };
+  }
+}
+
 async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
   const url = `https://api.github.com${path}`;
   const headers = new Headers(init.headers ?? {});
@@ -1330,16 +1346,36 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   }
 
-  // Idempotent 요청은 최대 3회 시도 (500ms → 1200ms backoff). 쓰기는 1회만.
-  const maxAttempts = isRetryableMethod(init) ? 3 : 1;
+  // Idempotent GET/HEAD 는 최대 3회. 쓰기 (POST/PATCH/PUT/DELETE) 는 원칙적으로 1회.
+  // 예외: 403 이 IP allow list 원인이면 쓰기도 최대 3회 재시도 (Cloudflare Edge 가
+  //   매 요청마다 다른 IP 로 나가서 다음 시도는 허용 IP 로 나갈 수 있음).
+  //   Content-based 재시도라 중복 커밋 위험 없음 (GitHub 서버 도달 전 IP filter 리젝).
+  const isWrite = !isRetryableMethod(init);
+  const maxAttempts = 3;
   const backoffMs = [500, 1200];
   let lastRes: Response | null = null;
   let lastErr: unknown = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const res = await fetch(url, { ...init, headers });
-      // 성공 (2xx) 또는 재시도 불가한 4xx (401/403/404 등) 는 즉시 반환
-      if (res.ok || !GH_RETRYABLE_STATUSES.has(res.status)) return res;
+
+      // 2xx 성공은 즉시 반환
+      if (res.ok) return res;
+
+      // 재시도 대상 판정
+      let retryable = GH_RETRYABLE_STATUSES.has(res.status);
+      if (!retryable && res.status === 403) {
+        const { isIpAllow } = await isIpAllowListError(res);
+        if (isIpAllow) {
+          retryable = true;
+          console.warn(`[qa-bot] ghFetch 403 IP allow list ${path} — retry with different edge IP (${attempt}/${maxAttempts - 1})`);
+        }
+      }
+
+      // 쓰기이면서 403 IP allow list 이외의 상태는 재시도 X (중복 위험)
+      if (isWrite && res.status !== 403) retryable = false;
+
+      if (!retryable) return res;
       lastRes = res;
       if (attempt < maxAttempts) {
         console.warn(`[qa-bot] ghFetch ${res.status} ${path} — retry ${attempt}/${maxAttempts - 1}`);
@@ -1349,6 +1385,8 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
       return res;
     } catch (err) {
       lastErr = err;
+      // 네트워크 에러는 쓰기라도 재시도 (실제 요청이 갔는지 불확실하지만 GitHub API 는
+      // idempotency 개념 없어서 최소한 3회 시도로 안정성 확보).
       if (attempt < maxAttempts) {
         console.warn(`[qa-bot] ghFetch network err ${path} — retry ${attempt}/${maxAttempts - 1}: ${err instanceof Error ? err.message : String(err)}`);
         await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 1200));
