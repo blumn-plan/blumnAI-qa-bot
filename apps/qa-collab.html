@@ -550,7 +550,6 @@
         <button id="export-btn" type="button" class="icon-only" title="내보내기 — 현재 대화를 markdown 파일로 다운로드">💾</button>
         <button id="core-idea-btn" type="button" class="icon-only" title="봇 기능·버그·UI 개선 제안 → GitHub Issue 로 등록">🎁</button>
         <button id="saas-settings-btn" type="button" class="icon-only" style="display:none" title="설정 변경 — 팀 정책 레포·API key 등">⚙️</button>
-        <button id="gen-image-btn" type="button" class="icon-only" title="🎨 이미지 생성/수정 — 화면 캡처 + 프롬프트로 mockup 자동 생성 (Nano Banana)">🎨</button>
         <button id="gen-html-btn" type="button" class="icon-only" title="📄 HTML 목업 만들기 — 정책·코드 근거로 실행 가능한 화면 파일 생성 후 클릭 링크 제공">📄</button>
         <button id="forward-btn" class="primary" type="button" disabled title="기획자에게 전달 — 이 답변을 변경 요청으로 전달 (qa/decisions/ 에 자동 저장)">📤 기획전달</button>
         <button id="improve-toolbar-btn" class="improve" type="button" title="답변 규칙 추가 — 언제든 가능">📝 답변 규칙</button>
@@ -710,36 +709,6 @@
       <div class="foot">
         <button value="cancel" formnovalidate>취소</button>
         <button id="gh-submit" value="default" class="primary">📄 생성</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="gen-image-dialog" class="forward">
-    <form method="dialog">
-      <div class="head">🎨 이미지 생성 · 수정 (Nano Banana / Gemini)</div>
-      <div class="body">
-        <p style="font-size:12px;color:var(--muted);margin:0 0 10px;line-height:1.5">
-          화면 캡처를 첨부하고 <b>어떻게 바꿀지</b> 적으면 수정 mockup 을 생성합니다.<br>
-          첨부 없으면 텍스트만으로 새 이미지 생성. 결과는 채팅창에 표시돼요.<br>
-          <span style="color:#b45309">⚠️ 한글 텍스트·정밀 UI 편집은 아직 부정확할 수 있음. 참고 mockup 용도로 활용하세요.</span>
-        </p>
-        <label for="gi-prompt">무엇을 그리거나 어떻게 바꿀지 <span style="color:var(--error)">*</span></label>
-        <textarea id="gi-prompt" required placeholder="예:
-· 첨부한 대시보드에서 '친구 늘리기' 배너를 퍼널 데이터 아래로 옮겨줘. 나머지 요소·색상·폰트는 그대로 유지.
-· 캠페인 관리 화면 mockup 을 만들어줘. 상단 필터바 · 좌측 캠페인 리스트 · 우측 상세 패널 3분할 레이아웃."></textarea>
-        <label for="gi-image-input" style="margin-top:8px">참고 이미지 (선택 · Ctrl+V 또는 드래그로 붙여넣기)</label>
-        <input id="gi-image-input" type="file" accept="image/*" style="font-size:12px" />
-        <div id="gi-image-preview" style="margin-top:8px;display:none">
-          <img id="gi-image-preview-img" alt="첨부 이미지 미리보기" style="max-width:100%;max-height:200px;border:1px solid var(--border);border-radius:6px;display:block" />
-          <button type="button" id="gi-image-clear" style="margin-top:4px;background:transparent;border:none;color:var(--error);font-size:11px;cursor:pointer;padding:0">✕ 첨부 제거</button>
-        </div>
-        <p style="font-size:11px;color:var(--muted);margin:10px 0 0;line-height:1.5">
-          💰 <b>비용</b>: 이미지 1장당 약 30-50원 (팀 무료 quota 초과 시). 하루 100장 정도까진 무료.
-        </p>
-      </div>
-      <div class="foot">
-        <button value="cancel" formnovalidate>취소</button>
-        <button id="gi-submit" value="default" class="primary">🎨 생성</button>
       </div>
     </form>
   </dialog>
@@ -1012,13 +981,6 @@
       if (path === '/forward') return jsonRes({ decisionPath: 'qa/decisions/demo.md', commitSha: 'demo', htmlUrl: '#' });
       if (path === '/feedback') return jsonRes({ feedbackPath: 'qa/feedback/demo.md', commitSha: 'demo', htmlUrl: '#' });
       if (path === '/save-decision-image') return jsonRes({ saved: true, path: 'demo/img.png', markdownRef: '![demo](demo/img.png)', bytes: 100 });
-      if (path === '/gen-image') {
-        // 실제 Gemini 호출 시뮬레이션 — 2초 지연 + SVG 기반 placeholder 반환
-        await new Promise((r) => setTimeout(r, 2000));
-        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="280" viewBox="0 0 500 280"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#dbeafe"/><stop offset="1" stop-color="#bfdbfe"/></linearGradient></defs><rect width="500" height="280" fill="url(#g)"/><text x="250" y="90" text-anchor="middle" font-family="sans-serif" font-size="28" fill="#1e3a8a" font-weight="bold">🎨 데모 이미지</text><text x="250" y="140" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#1e3a8a">실제 이미지는 GEMINI_API_KEY 등록 후 생성됩니다</text><text x="250" y="180" text-anchor="middle" font-family="sans-serif" font-size="12" fill="#1e40af">docs/10-GEN-IMAGE.md 참고</text><text x="250" y="230" text-anchor="middle" font-family="sans-serif" font-size="11" fill="#3730a3">(현재 데모 모드 · ?demo=1)</text></svg>`;
-        const base64 = btoa(unescape(encodeURIComponent(svg)));
-        return jsonRes({ imageBase64: base64, mimeType: 'image/svg+xml', textParts: ['데모 모드 응답 — 실제 배포 시 Nano Banana(Gemini) 가 이미지를 생성합니다.'] });
-      }
       if (path === '/health') return jsonRes({ status: 'demo', service: 'mock-worker' });
       return jsonRes({ error: `demo mock 미대응 endpoint: ${path}` }, 501);
     }
@@ -2363,20 +2325,7 @@
       openFeedbackDialog(lastAssistant ? lastAssistant.content : '', $('#improve-toolbar-btn'));
     });
 
-    /* 🎨 이미지 생성 · 수정 (Nano Banana / Gemini) — 화면 캡처 + 프롬프트 → 수정 mockup */
-    let genImageAttachedDataUrl = null;
-    function setGenImagePreview(dataUrl) {
-      genImageAttachedDataUrl = dataUrl;
-      const wrap = $('#gi-image-preview');
-      if (dataUrl) {
-        $('#gi-image-preview-img').src = dataUrl;
-        wrap.style.display = 'block';
-      } else {
-        wrap.style.display = 'none';
-        $('#gi-image-preview-img').src = '';
-        $('#gi-image-input').value = '';
-      }
-    }
+    /* File → data URL helper — [📄 HTML 목업] 참고 이미지 첨부 용. */
     function fileToDataUrl(file) {
       return new Promise((resolve, reject) => {
         const r = new FileReader();
@@ -2385,77 +2334,6 @@
         r.readAsDataURL(file);
       });
     }
-    $('#gen-image-btn').addEventListener('click', () => {
-      if (!state.user.name) { toast('먼저 이름을 설정해주세요', 'error'); openUserDialog(); return; }
-      setGenImagePreview(null);
-      $('#gi-prompt').value = '';
-      $('#gen-image-dialog').showModal();
-      $('#gi-prompt').focus();
-    });
-    $('#gi-image-input').addEventListener('change', async (e) => {
-      const f = e.target.files?.[0];
-      if (!f) return;
-      if (f.size > 5 * 1024 * 1024) { toast('참고 이미지가 너무 큽니다 (5MB 이하)', 'error'); e.target.value = ''; return; }
-      try { setGenImagePreview(await fileToDataUrl(f)); } catch (_) { toast('이미지 읽기 실패', 'error'); }
-    });
-    $('#gi-image-clear').addEventListener('click', () => setGenImagePreview(null));
-    // 다이얼로그 안에서 Ctrl+V 로 이미지 붙여넣기
-    $('#gen-image-dialog').addEventListener('paste', async (e) => {
-      const items = e.clipboardData?.items || [];
-      for (const it of items) {
-        if (it.kind === 'file' && it.type.startsWith('image/')) {
-          e.preventDefault();
-          const f = it.getAsFile();
-          if (f) { try { setGenImagePreview(await fileToDataUrl(f)); } catch (_) {} }
-          return;
-        }
-      }
-    });
-    $('#gen-image-dialog').addEventListener('close', async () => {
-      const dlg = $('#gen-image-dialog');
-      if (dlg.returnValue !== 'default') return;
-      const prompt = $('#gi-prompt').value.trim();
-      if (!prompt) { toast('무엇을 그릴지 적어주세요', 'error'); return; }
-
-      // 진행 중 UX — 채팅에 placeholder 메시지 추가
-      const placeholderId = 'gen-image-loading-' + Date.now();
-      const msgs = $('#messages');
-      const holder = document.createElement('div');
-      holder.id = placeholderId;
-      holder.className = 'msg assistant';
-      holder.style.maxWidth = '100%';
-      holder.innerHTML = `<div class="role">🎨 이미지 생성 중</div><div class="body"><p style="color:var(--muted);margin:0"><span class="btn-spinner" style="display:inline-block;vertical-align:middle;margin-right:6px"></span>Nano Banana 가 이미지를 만들고 있어요… (보통 5-15초)</p></div>`;
-      msgs.appendChild(holder);
-      msgs.scrollTop = msgs.scrollHeight;
-
-      try {
-        const res = await botFetch(`${WORKER_URL}/gen-image`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, imageBase64: genImageAttachedDataUrl || undefined }),
-        });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `HTTP ${res.status}`);
-        }
-        const data = await res.json();
-        const src = `data:${data.mimeType || 'image/png'};base64,${data.imageBase64}`;
-        const textNote = (data.textParts || []).join('\n\n');
-        holder.querySelector('.role').textContent = '🎨 이미지 생성 완료';
-        holder.querySelector('.body').innerHTML =
-          `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
-          (textNote ? `<p style="margin:0 0 8px">${escapeHtml(textNote)}</p>` : '') +
-          `<img src="${src}" alt="생성된 이미지" style="max-width:100%;border:1px solid var(--border);border-radius:6px;cursor:zoom-in" />` +
-          `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">💡 마음에 안 들면 [🎨 이미지] 다시 눌러서 프롬프트 더 구체적으로 재시도. 마음에 들면 우클릭 → 이미지 저장 → [📤 기획전달] 팝업에 첨부 가능.</p>`;
-        setGenImagePreview(null);
-      } catch (err) {
-        holder.querySelector('.role').textContent = '🎨 이미지 생성 실패';
-        const rawMsg = err instanceof Error ? err.message : String(err);
-        holder.querySelector('.body').innerHTML =
-          `<p style="color:var(--error);margin:0 0 6px">${escapeHtml(friendlyError(err))}</p>` +
-          `<details style="margin:6px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:6px 0 0;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">${escapeHtml(rawMsg)}</pre></details>`;
-      }
-    });
 
     /* 📄 HTML 목업 생성 — 정책·코드 근거로 실행 가능한 화면 파일 생성 후 클릭 링크 */
     let genHtmlAttachedDataUrl = null;
@@ -3473,16 +3351,6 @@
       // 흔한 시크릿 만료·오류 패턴
       if (/401|authentication_error|invalid_api_key|invalid api key|sk-ant/i.test(msg)) {
         return 'Anthropic API key 가 만료·잘못됐어요. IT기획팀에 재발급 요청 후 wrangler secret put ANTHROPIC_API_KEY 로 갱신하세요.';
-      }
-      // Gemini (이미지 생성) 에러를 Anthropic 과 구분 — Worker 가 던지는 메시지에 "Gemini" 접두어 있음
-      if (/Gemini.*40[13]|Gemini.*429|Gemini.*rate|Gemini.*quota|Gemini.*RESOURCE_EXHAUSTED/i.test(msg)) {
-        return 'Gemini 이미지 생성 한도 초과 (무료 tier 분당 or 일일 제한). 잠시 후 재시도하거나 https://aistudio.google.com/app/usage 확인.';
-      }
-      if (/Gemini.*40[04]|models\/.*not found|is not supported for generateContent/i.test(msg)) {
-        return 'Gemini 모델 이름 문제. GEMINI_MODEL env 로 다른 모델 지정 필요할 수 있음.';
-      }
-      if (/Gemini.*IP address restriction/i.test(msg)) {
-        return 'Gemini API key 에 IP 제한 걸려있음. Google AI Studio 에서 제한 없이 재발급 필요.';
       }
       if (/403.*rate|429|rate_limit|too many requests/i.test(msg)) {
         return 'Anthropic 호출 한도 초과. 잠시 후 다시 시도하거나 월 spending limit 확인하세요.';

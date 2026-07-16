@@ -44,13 +44,6 @@ export interface Env {
    *  - 요청 헤더 X-Bot-{GitHub-Repo|GitHub-Token|Anthropic-Key} 를 env 값 대신 사용
    *  다중 팀이 같은 Worker 를 공유하되 각자의 시크릿·레포로 동작. */
   SAAS_MODE?: string;
-  /** 🎨 이미지 생성 (Nano Banana = Gemini 2.5 Flash Image) 활성화용.
-   *  Google AI Studio 에서 발급 (https://aistudio.google.com/app/apikey).
-   *  미설정 시 /gen-image 엔드포인트만 비활성 — 다른 기능은 영향 X. */
-  GEMINI_API_KEY?: string;
-  /** Gemini 이미지 모델 이름 override (미설정 시 gemini-2.5-flash-image 기본).
-   *  Google 이 모델 이름 변경 시 코드 재배포 없이 wrangler secret put GEMINI_MODEL 로 대응. */
-  GEMINI_MODEL?: string;
 }
 
 /** 요청 헤더에 SaaS 모드용 인증 값이 있으면 env 를 override 해서 반환.
@@ -62,14 +55,12 @@ function scopeEnvFromRequest(env: Env, req: Request): Env {
   const reqRepo = req.headers.get('X-Bot-GitHub-Repo');
   const reqToken = req.headers.get('X-Bot-GitHub-Token');
   const reqAnthropic = req.headers.get('X-Bot-Anthropic-Key');
-  const reqGemini = req.headers.get('X-Bot-Gemini-Key');
-  if (!reqRepo && !reqToken && !reqAnthropic && !reqGemini) return env;
+  if (!reqRepo && !reqToken && !reqAnthropic) return env;
   return {
     ...env,
     GITHUB_REPO: reqRepo || env.GITHUB_REPO,
     GITHUB_TOKEN: reqToken || env.GITHUB_TOKEN,
     ANTHROPIC_API_KEY: reqAnthropic || env.ANTHROPIC_API_KEY,
-    GEMINI_API_KEY: reqGemini || env.GEMINI_API_KEY,
   };
 }
 
@@ -242,7 +233,6 @@ export default {
           const secrets = {
             ANTHROPIC_API_KEY: !!env.ANTHROPIC_API_KEY,
             GITHUB_TOKEN: !!env.GITHUB_TOKEN,
-            GEMINI_API_KEY: !!env.GEMINI_API_KEY, // 🎨 이미지 생성용 (선택)
             GITHUB_REPO: env.GITHUB_REPO || null,
             ALLOWED_ORIGINS: env.ALLOWED_ORIGINS?.split(',').map((s) => s.trim()).filter(Boolean) || [],
             CLAUDE_MODEL: env.CLAUDE_MODEL || '(default)',
@@ -325,10 +315,6 @@ export default {
         case '/save-decision-image':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
           result = await saveDecisionImage(env, await req.json());
-          break;
-        case '/gen-image':
-          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          result = await generateImage(env, await req.json(), req.signal);
           break;
         case '/gen-html':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
@@ -1892,78 +1878,6 @@ async function saveDecisionImage(
   return { saved: true, path: targetPath, markdownRef, bytes };
 }
 
-/* ────────── /gen-image — 🎨 Gemini (Nano Banana) 이미지 생성/편집 ──────────
- *  질문자가 "화면 캡처 + 이렇게 바꿔줘" 요청 시 수정된 mockup 을 즉시 생성해서
- *  본인 의도 시각적 확인 → 기획자 전달 시 설득력 강화. GEMINI_API_KEY 필요.
- *  UI/한글 텍스트 편집 정밀도는 아직 낮은 편이라 참고 mockup 용으로 사용 권장.
- */
-interface GenImageRequest {
-  prompt: string;
-  imageBase64?: string; // 참고 이미지 (data:image/png;base64,... 또는 raw base64)
-  imageMimeType?: string; // 명시 안 하면 data URL 에서 추출 or image/png
-}
-interface GenImageResponse {
-  imageBase64: string; // 결과 이미지 raw base64
-  mimeType: string;
-  textParts?: string[]; // Gemini 가 함께 준 설명 텍스트 (있으면)
-}
-
-async function generateImage(env: Env, body: GenImageRequest, signal?: AbortSignal): Promise<GenImageResponse> {
-  if (!env.GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY 미설정 — Google AI Studio (https://aistudio.google.com/app/apikey) 에서 발급 후 `npx wrangler secret put GEMINI_API_KEY` 로 등록 필요');
-  }
-  if (!body.prompt?.trim()) throw new Error('prompt required');
-
-  const parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> = [{ text: body.prompt }];
-
-  if (body.imageBase64) {
-    let raw = body.imageBase64;
-    let mime = body.imageMimeType || 'image/png';
-    const m = raw.match(/^data:([^;]+);base64,(.*)$/);
-    if (m) {
-      mime = m[1];
-      raw = m[2];
-    }
-    // 5MB 상한 (base64 length 기준 대략)
-    if (raw.length > 7_000_000) throw new Error('참고 이미지가 너무 큽니다 (5MB 이하 권장)');
-    parts.push({ inline_data: { mime_type: mime, data: raw } });
-  }
-
-  const model = env.GEMINI_MODEL?.trim() || 'gemini-2.5-flash-image';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts }] }),
-    signal,
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gemini image API ${res.status}: ${text.slice(0, 500)}`);
-  }
-
-  const data = (await res.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string; inline_data?: { mime_type?: string; data?: string }; inlineData?: { mimeType?: string; data?: string } }> } }>;
-  };
-  const cand = data.candidates?.[0];
-  if (!cand) throw new Error('Gemini 응답에 candidates 가 없음');
-  const respParts = cand.content?.parts || [];
-  const imagePart = respParts.find((p) => p.inline_data?.data || p.inlineData?.data);
-  if (!imagePart) {
-    const textOnly = respParts.filter((p) => p.text).map((p) => p.text).join('\n');
-    throw new Error(`Gemini 가 이미지를 반환하지 않음 (텍스트만 응답). 프롬프트를 더 구체적으로 작성해보세요. Gemini 응답: ${textOnly.slice(0, 200)}`);
-  }
-  const inline = imagePart.inline_data || imagePart.inlineData!;
-  const textParts = respParts.filter((p) => p.text).map((p) => p.text!);
-
-  return {
-    imageBase64: inline.data!,
-    mimeType: (inline as { mime_type?: string; mimeType?: string }).mime_type || (inline as { mimeType?: string }).mimeType || 'image/png',
-    textParts: textParts.length ? textParts : undefined,
-  };
-}
 
 /* ────────── /gen-html — 📄 HTML 목업 생성 ──────────
  *  질문자가 "OO 화면 목업 만들어줘 + 이러이러한 요소 포함" 요청 시 정책 md · 코드

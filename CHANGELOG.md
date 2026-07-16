@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 🧹 **🎨 이미지 생성 (Nano Banana) 기능 제거** — 툴바 [🎨] 버튼 · 다이얼로그 · 프론트 핸들러 · Worker `/gen-image` 엔드포인트 · `generateImage` 함수 · `GEMINI_API_KEY`/`GEMINI_MODEL` env 필드 · `X-Bot-Gemini-Key` 헤더 · `docs/10-GEN-IMAGE.md` 전부 삭제. Gemini 이미지 편집이 한글 텍스트·정밀 UI 편집 정밀도 낮아 실전 활용성 부족 → 새로 도입한 [📄 HTML 목업 생성] 이 정책·코드 기반 실행 가능 화면을 정확히 만들어 상위 대체. `friendlyError` 의 Gemini 관련 패턴 · 데모 모드의 `/gen-image` mock 도 함께 정리. GEMINI_API_KEY 시크릿은 wrangler 에 남아있어도 무해 (참조 없음).
 - 📄 **HTML 목업 생성 (`/gen-html`) — 실행 가능한 화면 파일 즉시 생성** (`qa-collab.html` · Worker) — 툴바 [📄] 버튼 → 다이얼로그: 프롬프트 + 참고 이미지 (파일·Ctrl+V·드래그) → Worker `/gen-html` 이 Claude Sonnet 4.6 으로 완결된 HTML 문서를 생성해 `qa/mockups/YYYY-MM-DD-<slug>.html` 로 자동 커밋 → 채팅에 "🔗 새 탭에서 열기" 클릭 링크 표시. 기존 문제 (챗에서 HTML 코드 붙여넣기 → 메모장 저장 → 렌더 실패) 를 정면 해소:
   · **max_tokens 16384** 로 대용량 목업도 잘림 방지 (기존 챗 2048 대비 8배)
   · 시스템 프롬프트로 `<!DOCTYPE html>` 로 시작하는 완결 문서만 강제 · markdown fence 자동 stripping
