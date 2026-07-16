@@ -963,11 +963,11 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   //   2) 한글 UI 용어 → 영문 매핑 (대시보드→Dashboard, 초기화→reset 등)
   //   3) 열려있는 정책 md 안 인라인 영문 심볼 (백틱·PascalCase·camelCase)
   // 우선 순위: 심볼 > 영문 매핑 > 한글 키워드 (매치 잘 되는 것부터)
-  const baseKeywords = extractSearchKeywords(opts.question, opts.searchHint);
+  const baseKeywords = extractSearchKeywords(opts.question, '');    // hint 는 별도 처리
   const koreanExpanded = expandKoreanUiTerms(opts.question);
   const docSymbols = extractCodeSymbols(opts.focusedDoc ?? '').slice(0, 6);
 
-  // 통합 검색어 — 심볼·영문매핑·한글 순서로 최대 8개 토큰
+  // 통합 토큰 — 심볼·영문매핑·한글 순서로 최대 8개
   const merged: string[] = [];
   const pushUnique = (arr: string[]) => {
     for (const t of arr) if (t && !merged.includes(t) && merged.length < 8) merged.push(t);
@@ -975,7 +975,14 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   pushUnique(docSymbols);
   pushUnique(koreanExpanded);
   pushUnique(baseKeywords ? baseKeywords.split(/\s+/) : []);
-  const primaryKeywords = merged.join(' ');
+
+  // ⚠️ 핵심: GitHub /search/code 는 공백 = AND. 8개 토큰을 공백으로 이으면
+  //   "파일 하나에 8개 심볼이 모두 있어야 매칭" = 사실상 불가능.
+  //   → OR 로 묶어서 "이 중 아무거나 있는 파일" 을 찾도록. 노이즈 감수하고
+  //   실제 매칭 확률 확보. 그 뒤 top-N 슬라이스가 관련도순으로 뽑아줌.
+  const orGroup = merged.length > 0 ? `(${merged.join(' OR ')})` : '';
+  const hintExpr = opts.searchHint?.trim() ? `(${opts.searchHint.trim()})` : '';
+  const primaryKeywords = [orGroup, hintExpr].filter(Boolean).join(' OR ');
 
   if (!primaryKeywords) {
     return emptyResult(
