@@ -1012,7 +1012,12 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const docs = data.docs || [];
-      listDocsCache.set(project, { at: Date.now(), docs });
+      // 🩹 transient 실패가 빈 배열로 오면 5분 캐시에 눌러붙는 문제 방지 —
+      //   빈 결과는 저장하지 않고 다음 호출에서 재시도. 진짜로 빈 프로젝트도
+      //   이 정책이면 매번 재fetch (드문 경우이니 오버헤드 감수).
+      if (docs.length > 0) {
+        listDocsCache.set(project, { at: Date.now(), docs });
+      }
       return docs;
     }
 

@@ -408,11 +408,29 @@ interface DocEntry {
   screen?: string; // storyboard 의 경우 화면명
 }
 
+/** GitHub 디렉토리 listing 시 404 는 "폴더 없음" (정상 · 빈 배열),
+ *  그 외 (rate limit · 5xx 등) 는 transient 로 간주하고 throw.
+ *  기존 코드는 모든 에러를 조용히 삼켜 프론트 "정책 없음" 오해를 유발했음. */
+async function safeDirListing(env: Env, path: string, warnLabel: string): Promise<ContentEntry[]> {
+  try {
+    return await fetchDirListingCached(env, path);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // "fetch dir X: 404" 형식 (fetchDirListing 이 던짐) — 정말 폴더 없음
+    if (/:\s*404\b/.test(msg)) {
+      return [];
+    }
+    // rate limit / 5xx / 네트워크 — transient · 상위로 전파해서 /list-docs 가 500 응답
+    console.warn(`[qa-bot] ${warnLabel} transient failure: ${msg}`);
+    throw err;
+  }
+}
+
 async function listDocs(env: Env, project: string): Promise<{ project: string; docs: DocEntry[] }> {
   const polDir = await policiesDir(env, project);
   const storyDir = await storyboardsDir(env, project);
 
-  const policyEntries = await fetchDirListingCached(env, polDir).catch(() => [] as ContentEntry[]);
+  const policyEntries = await safeDirListing(env, polDir, `policies dir (${polDir})`);
   const policies: DocEntry[] = policyEntries
     .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_'))
     .map((e) => ({
@@ -424,7 +442,7 @@ async function listDocs(env: Env, project: string): Promise<{ project: string; d
   // storyboards — 두 레이아웃 모두 지원:
   //   nested: storyboards/<screen>/<screen>_storyboard_v0.1.0.md  (admin_v1 스타일)
   //   flat:   storyboards/<screen>_storyboard_v0.1.0.md           (backoffice_v2 스타일)
-  const storyboardEntries = await fetchDirListingCached(env, storyDir).catch(() => [] as ContentEntry[]);
+  const storyboardEntries = await safeDirListing(env, storyDir, `storyboards dir (${storyDir})`);
   const storyboards: DocEntry[] = [];
   for (const e of storyboardEntries) {
     if (e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && e.name.toLowerCase() !== 'readme.md') {
@@ -437,7 +455,7 @@ async function listDocs(env: Env, project: string): Promise<{ project: string; d
         screen,
       });
     } else if (e.type === 'dir') {
-      // nested 케이스
+      // nested 케이스 — 개별 폴더 fetch 실패는 관대하게 (그 화면만 빠짐)
       const inner = await fetchDirListingCached(env, e.path).catch(() => [] as ContentEntry[]);
       const md = inner.find((f) => f.type === 'file' && f.name.endsWith('.md'));
       if (md) {
