@@ -999,10 +999,11 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   pushUnique(baseKeywords ? baseKeywords.split(/\s+/) : []);
   pushUnique(hintTokens);
 
-  // ⚠️ 핵심: GitHub /search/code 는 공백 = AND. 여러 토큰을 그대로 잇으면
-  //   "파일 하나에 모두 있어야" 매칭 불가능. → 단일 OR 그룹으로 묶어서
-  //   "이 중 아무거나 있는 파일" 을 찾도록. 중첩 OR 그룹은 파싱 실패 (422) 이력.
-  const primaryKeywords = merged.length > 0 ? `(${merged.join(' OR ')})` : '';
+  // ⚠️ GitHub /search/code (legacy) 는:
+  //   · 공백 = AND
+  //   · OR 키워드는 지원하지만 **괄호 그룹 미지원** → () 넣으면 422
+  // → `A OR B OR C` 형태로만 사용. repo: qualifier 는 항상 AND 로 붙음.
+  const primaryKeywords = merged.length > 0 ? merged.join(' OR ') : '';
 
   if (!primaryKeywords) {
     return emptyResult(
