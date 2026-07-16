@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- 📄 **HTML 목업 생성 (`/gen-html`) — 실행 가능한 화면 파일 즉시 생성** (`qa-collab.html` · Worker) — 툴바 [📄] 버튼 → 다이얼로그: 프롬프트 + 참고 이미지 (파일·Ctrl+V·드래그) → Worker `/gen-html` 이 Claude Sonnet 4.6 으로 완결된 HTML 문서를 생성해 `qa/mockups/YYYY-MM-DD-<slug>.html` 로 자동 커밋 → 채팅에 "🔗 새 탭에서 열기" 클릭 링크 표시. 기존 문제 (챗에서 HTML 코드 붙여넣기 → 메모장 저장 → 렌더 실패) 를 정면 해소:
+  · **max_tokens 16384** 로 대용량 목업도 잘림 방지 (기존 챗 2048 대비 8배)
+  · 시스템 프롬프트로 `<!DOCTYPE html>` 로 시작하는 완결 문서만 강제 · markdown fence 자동 stripping
+  · Tailwind CSS CDN 기반 (외부 라이브러리 안전성 확보)
+  · 정책 md + 코드 스니펫 + 참고 이미지 3중 컨텍스트 인젝션 (`/qa` 파이프라인 재사용)
+  · GitHub Pages 가 정적 서빙하므로 클릭 즉시 새 탭에서 화면 확인 (파일 저장·복붙 X)
+  · 저장 슬러그 자동 생성 + 충돌 시 -1, -2 suffix
 - 🌏 **검색어 우선순위 조정 · 한글 질문 토큰을 상위로** (`bot/worker/src/index.ts`) — 팀이 코드 파일 맨 위에 `// 화면: 메시지 통계` 같은 한글 주석 한 줄만 넣으면 한글 질문이 그대로 코드 매치되는 강력한 패턴이 열림. 워커가 이 흐름을 지원하도록 검색어 통합 순서를 (docSymbols → koreanExpanded → baseKeywords → hint) 에서 (**baseKeywords → docSymbols → koreanExpanded → hint**) 로 변경 — 한글 질문 토큰이 top-4 실제 검색에 반드시 포함됨. 06-CONNECT-CODE.md 에 이 팁 (⭐ 매칭 확률 확 올리는 방법 · 15분 세팅) 정식 문서화
 - 📄 **06-CONNECT-CODE.md 실전 노하우 반영** — 상단에 "안 되면 배지 툴팁부터 확인" 강조 배너 · config 예시의 `code_paths` 주석을 "1개만" 로 정정 (GitHub Search 다중 path AND 붕괴 이슈). 헤이데어 실전 세팅에서 축적된 6가지 원인 (path AND · 다중 토큰 AND · 중첩 괄호 422 · OR repo scope 누출 등) 을 한 번에 학습해 타팀 세팅 시 반복 안 하도록 정리
 - 🌏 **한글 질문 → 코드 매칭 강화** (`bot/worker/src/helpers.ts` · `index.ts`) — GitHub Search Code API 는 리터럴 매칭이라 한글 질문 (예: "대시보드 필터 초기화 버튼") 이 영문 코드 (`Dashboard`, `Filter`, `reset`, `Button`) 와 매치 안 되던 문제 해결. 3층 검색 파이프라인 도입:

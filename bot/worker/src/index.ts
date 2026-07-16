@@ -330,6 +330,10 @@ export default {
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
           result = await generateImage(env, await req.json(), req.signal);
           break;
+        case '/gen-html':
+          if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
+          result = await generateHtmlMockup(env, await req.json(), req.signal);
+          break;
         case '/list-storyboard-images':
           result = await listStoryboardImages(env, url.searchParams.get('dir') ?? '', url.searchParams.get('prefix') ?? '');
           break;
@@ -1920,6 +1924,194 @@ async function generateImage(env: Env, body: GenImageRequest, signal?: AbortSign
     imageBase64: inline.data!,
     mimeType: (inline as { mime_type?: string; mimeType?: string }).mime_type || (inline as { mimeType?: string }).mimeType || 'image/png',
     textParts: textParts.length ? textParts : undefined,
+  };
+}
+
+/* ────────── /gen-html — 📄 HTML 목업 생성 ──────────
+ *  질문자가 "OO 화면 목업 만들어줘 + 이러이러한 요소 포함" 요청 시 정책 md · 코드
+ *  스니펫 · (선택) 참고 이미지를 근거로 완결된 static HTML 을 생성하고 GitHub Pages
+ *  가 서빙 가능한 위치 (qa/mockups/) 에 저장. 사용자는 반환된 URL 클릭 즉시 화면 확인.
+ *
+ *  기존 챗 창에 HTML 코드 붙여넣는 방식의 문제 (스트리밍 잘림 · 복붙 실수 · 렌더 X)
+ *  를 정면 해소.
+ *
+ *  주요 특징:
+ *   · max_tokens 16384 로 대용량 HTML 도 안 잘림
+ *   · Claude 는 <!DOCTYPE html>...</html> 만 응답하도록 시스템 프롬프트 강제
+ *   · 마크다운 fence (```html ... ```) 응답이면 자동 stripping
+ *   · 저장 슬러그는 사용자 요청·오늘 날짜 조합 (충돌 시 자동 -1, -2 suffix)
+ *   · 스크립트 실행은 sandboxed — 로컬 정책 md/코드 참조만, 외부 fetch 는 CDN 링크만
+ */
+interface GenHtmlRequest {
+  prompt: string;                          // 사용자 요청 ("메시지 통계 화면 목업, KPI 카드 3개...")
+  focusedDocPath?: string;                 // (선택) 열려있는 정책 md 경로 — 시각 명세 근거
+  project?: string;                        // (선택) 프로젝트 ID — code_repo scope
+  codeRepo?: string;                       // (선택) 코드 레포. 있으면 관련 스니펫 인젝션
+  codePaths?: string[];                    // (선택)
+  codeSearchHint?: string;                 // (선택)
+  codeMaxSnippets?: number;                // (선택)
+  codeSnippetLines?: number;               // (선택)
+  attachments?: { mediaType: string; data: string }[]; // (선택) 참고 화면 캡처 이미지
+  title?: string;                          // (선택) 파일명 힌트 (미지정 시 프롬프트 앞 30자)
+}
+
+interface GenHtmlResponse {
+  savedPath: string;                       // qa/mockups/YYYY-MM-DD-<slug>.html
+  url: string;                             // pages 절대 URL 힌트 (프론트가 origin 기준으로 재구성)
+  bytes: number;
+  modelUsed: string;
+}
+
+async function generateHtmlMockup(env: Env, body: GenHtmlRequest, signal?: AbortSignal): Promise<GenHtmlResponse> {
+  if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY 미설정 — /gen-html 사용 불가');
+  if (!body.prompt?.trim()) throw new Error('prompt required');
+
+  const model = env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
+
+  // 컨텍스트 로드 — /qa 와 동일 재사용
+  const focusedDoc = body.focusedDocPath
+    ? await fetchTextFileCached(env, body.focusedDocPath).catch(() => '')
+    : '';
+  const codeResult: CodeSnippetResult = body.codeRepo
+    ? await fetchCodeSnippets(env, {
+        repo: body.codeRepo,
+        question: body.prompt,
+        pathHints: body.codePaths ?? [],
+        searchHint: body.codeSearchHint ?? '',
+        maxSnippets: body.codeMaxSnippets ?? 3,
+        snippetLines: body.codeSnippetLines ?? 120,
+        focusedDoc: focusedDoc || undefined,
+      }).catch(() => ({
+        snippets: '',
+        diagnostic: { status: 'fetch-error' as CodeInjectionStatus, repo: body.codeRepo ?? '', count: 0, keywords: '', files: [] },
+      }))
+    : { snippets: '', diagnostic: { status: 'no-repo' as CodeInjectionStatus, repo: '', count: 0, keywords: '', files: [] } };
+
+  // 시스템 프롬프트 — HTML 만 반환, 완결된 문서, TailwindCDN 사용 권장
+  const systemLines: string[] = [
+    '당신은 서비스 화면 HTML 목업을 생성하는 UI 엔지니어입니다.',
+    '',
+    '[출력 규칙 — 반드시 준수]',
+    '- 응답은 오직 `<!DOCTYPE html>` 로 시작하는 완결된 단일 HTML 문서.',
+    '- 마크다운 fence (```html … ```) · 설명 문장 · 코드 앞뒤 텍스트 절대 금지.',
+    '- 응답 첫 글자는 `<`, 마지막 글자는 `>` 여야 함.',
+    '- 외부 CSS 는 반드시 Tailwind CDN (`https://cdn.tailwindcss.com`) 만 사용. 다른 CSS/JS 라이브러리 링크 금지.',
+    '- 폰트는 -apple-system, "Noto Sans KR", sans-serif 스택 기본.',
+    '- 한글 콘텐츠는 정책 md · 참고 이미지 그대로 반영 (임의 번역·의역 X).',
+    '- 스크립트는 최소한만 (인라인 <script>), 외부 API 호출 X.',
+    '- <head> 에 <meta charset="utf-8"> · <meta name="viewport" content="width=device-width,initial-scale=1"> 필수.',
+    '',
+    '[근거 활용]',
+    '- 아래 [정책 문서] 의 시각 명세 (색·문구·레이아웃) 를 최우선 근거로.',
+    '- [관련 코드 스니펫] 이 있으면 클래스명·컴포넌트 구조 참고 (100% 재현 아니라 유사한 형태로).',
+    '- [참고 이미지] 가 있으면 배치·색감 mimic.',
+    '- 근거 부족한 부분은 자연스러운 관행적 UI 로 채움 (임의 문구는 회색으로 표시).',
+  ];
+
+  const parts: string[] = [...systemLines, ''];
+  if (focusedDoc) {
+    parts.push('[정책 문서]', body.focusedDocPath ? `경로: ${body.focusedDocPath}` : '', '', focusedDoc, '');
+  }
+  if (codeResult.snippets) {
+    parts.push(`[관련 코드 스니펫 — ${body.codeRepo}]`, codeResult.snippets, '');
+  }
+  const systemPrompt = parts.join('\n');
+
+  type ContentBlock =
+    | { type: 'text'; text: string }
+    | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+  const userContent: string | ContentBlock[] = body.attachments?.length
+    ? [
+        ...body.attachments.map<ContentBlock>((a) => ({
+          type: 'image',
+          source: { type: 'base64', media_type: a.mediaType, data: a.data },
+        })),
+        { type: 'text', text: body.prompt },
+      ]
+    : body.prompt;
+
+  const upstream = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 16384,     // HTML 잘림 방지 — 목업은 길어질 수 있음
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userContent }],
+    }),
+    signal,
+  });
+
+  if (!upstream.ok) {
+    const errText = await upstream.text();
+    throw new Error(`Claude API ${upstream.status}: ${errText.slice(0, 500)}`);
+  }
+
+  const data = (await upstream.json()) as {
+    content?: Array<{ type: string; text?: string }>;
+    stop_reason?: string;
+  };
+  const textBlocks = (data.content ?? []).filter((b) => b.type === 'text' && b.text);
+  const rawHtml = textBlocks.map((b) => b.text!).join('\n').trim();
+  if (!rawHtml) throw new Error('Claude 응답에 HTML 없음');
+
+  // 응답에 markdown fence 가 섞였다면 stripping (규칙 위반이지만 안전망)
+  let html = rawHtml;
+  const fenceMatch = html.match(/```(?:html)?\s*\n([\s\S]*?)```/);
+  if (fenceMatch) html = fenceMatch[1].trim();
+  if (!html.startsWith('<!DOCTYPE') && !html.startsWith('<html')) {
+    // <html 이 중간에 있으면 그 지점부터 사용
+    const idx = html.indexOf('<!DOCTYPE');
+    const idx2 = html.indexOf('<html');
+    const start = idx >= 0 ? idx : idx2;
+    if (start > 0) html = html.slice(start);
+  }
+  if (!html.startsWith('<!DOCTYPE') && !html.startsWith('<html')) {
+    throw new Error('Claude 가 완결된 HTML 문서를 반환하지 않음. 프롬프트를 더 구체적으로 (구체적 화면·요소 명시) 재시도.');
+  }
+
+  // 저장 — qa/mockups/YYYY-MM-DD-<slug>.html
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const baseSlug = (body.title || body.prompt)
+    .slice(0, 30)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '') || 'mockup';
+  let filename = `${dateStr}-${baseSlug}.html`;
+  let targetPath = `qa/mockups/${filename}`;
+  let suffix = 1;
+  while ((await fileExists(env, targetPath)) && suffix < 100) {
+    filename = `${dateStr}-${baseSlug}-${suffix}.html`;
+    targetPath = `qa/mockups/${filename}`;
+    suffix++;
+  }
+  if (suffix >= 100) throw new Error('너무 많은 동명 목업이 있습니다');
+
+  // base64 인코딩해서 GitHub Contents API 로 커밋
+  const base64Content = btoa(unescape(encodeURIComponent(html)));
+  const putRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(targetPath)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `mockup: ${filename}`,
+      content: base64Content,
+    }),
+  });
+  if (!putRes.ok) {
+    const errText = await putRes.text();
+    throw new Error(`GitHub mockup upload ${putRes.status}: ${errText.slice(0, 500)}`);
+  }
+
+  return {
+    savedPath: targetPath,
+    url: `/${targetPath}`,               // 프론트가 origin 기준으로 절대 URL 완성
+    bytes: html.length,
+    modelUsed: model,
   };
 }
 
