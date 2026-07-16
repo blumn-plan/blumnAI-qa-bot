@@ -986,11 +986,13 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
     );
   }
 
-  const pathQualifier = opts.pathHints
-    .map((p) => extPathToQualifier(p))
-    .filter(Boolean)
-    .slice(0, 4)
-    .join(' ');
+  // Path qualifier — 주의: GitHub /search/code 는 다중 `path:` / `extension:` 를 AND 로 처리.
+  //   `path:src/pages path:src/components` = "동시에 두 경로에 있는 파일" = 매칭 불가능.
+  // → pathHints 가 1개면 그대로 사용, 여러 개면 path 필터 skip (repo scope 만으로 검색).
+  //   너무 좁혀서 0건 나오느니 넓게 훑는 게 실용상 더 나음.
+  const pathQualifier = opts.pathHints.length === 1
+    ? extPathToQualifier(opts.pathHints[0])
+    : '';
   const buildQuery = (kws: string): string =>
     `${kws} repo:${opts.repo}${pathQualifier ? ' ' + pathQualifier : ''}`;
   const query = buildQuery(primaryKeywords);
