@@ -134,7 +134,8 @@ const LIST_TTL_MS = 30 * 1000;
 const CODE_TTL_MS = 60 * 1000;
 const textCache = new Map<string, CacheEntry<string>>();
 const listCache = new Map<string, CacheEntry<ContentEntry[]>>();
-const codeCache = new Map<string, CacheEntry<string>>();
+// codeCache 값 타입은 CodeSnippetResult (아래에 정의). 순환 참조 회피 위해 unknown 으로 두고 캐스팅.
+const codeCache = new Map<string, CacheEntry<unknown>>();
 
 function cacheKey(env: Env, path: string): string {
   return `${env.GITHUB_REPO}::${path}`;
@@ -560,7 +561,8 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
   const allDocsBundle = includeAllDocs ? await buildAllDocsBundle(env, project, body.docPath).catch(() => '') : '';
 
   // 코드 스니펫 (옵션) — codeRepo 있으면 GitHub Search 로 관련 파일 top-N 인젝션
-  const codeSnippets = body.codeRepo
+  // 진단 정보는 응답 meta 로 프론트에 전달돼 답변 상단 배지로 표시됨.
+  const codeResult: CodeSnippetResult = body.codeRepo
     ? await fetchCodeSnippets(env, {
         repo: body.codeRepo,
         question: body.question,
@@ -570,9 +572,28 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
         snippetLines: body.codeSnippetLines ?? 120,
       }).catch((err) => {
         console.warn('[qa-bot] code snippet fetch failed:', err instanceof Error ? err.message : String(err));
-        return '';
+        return {
+          snippets: '',
+          diagnostic: {
+            status: 'fetch-error' as CodeInjectionStatus,
+            repo: body.codeRepo ?? '',
+            count: 0,
+            keywords: '',
+            files: [],
+            errorHint: `코드 스니펫 fetch 중 예외: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        };
       })
-    : '';
+    : {
+        snippets: '',
+        diagnostic: {
+          status: 'no-repo' as CodeInjectionStatus,
+          repo: '',
+          count: 0,
+          keywords: '',
+          files: [],
+        },
+      };
 
   // Anthropic prompt caching 활용을 위해 system 을 텍스트 블록 배열로 구성.
   // 안정적인 부분 (rules · 카탈로그 · 전체 문서) 만 cache_control 마킹 → 5분 캐시.
@@ -583,7 +604,7 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
     focusedDoc,
     focusedDocPath: body.docPath ?? '',
     recentFeedback,
-    codeSnippets,
+    codeSnippets: codeResult.snippets,
     codeRepo: body.codeRepo ?? '',
     hasAttachments: !!body.attachments?.length,
   });
@@ -637,7 +658,12 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(JSON.stringify({ type: 'meta', appliedFeedbacks: [], via: 'anthropic-api' }) + '\n'));
+      controller.enqueue(encoder.encode(JSON.stringify({
+        type: 'meta',
+        appliedFeedbacks: [],
+        via: 'anthropic-api',
+        codeInjection: codeResult.diagnostic,
+      }) + '\n'));
     },
     transform(chunk, controller) {
       buffer += decoder.decode(chunk, { stream: true });
@@ -858,11 +884,43 @@ interface CodeSnippetOpts {
   snippetLines: number;
 }
 
-async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<string> {
-  if (!opts.repo || !/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) return '';
+/** 진단 정보 — /qa NDJSON meta 로 프론트에 전달돼 답변 상단 배지로 표시. */
+export type CodeInjectionStatus =
+  | 'ok'              // 스니펫 N 개 인용 성공
+  | 'no-repo'         // config 에 code_repo 미설정 (기능 꺼짐)
+  | 'no-keywords'     // 질문에서 검색 키워드 추출 실패 (너무 짧거나 불용어만)
+  | 'search-error'    // GitHub Search API HTTP 에러 (PAT scope 부족 등)
+  | 'empty'           // Search 는 성공했으나 매칭 파일 0 건
+  | 'fetch-error';    // Search 매칭은 있으나 개별 파일 fetch 모두 실패
+
+export interface CodeInjectionDiagnostic {
+  status: CodeInjectionStatus;
+  repo: string;
+  count: number;
+  keywords: string;
+  files: string[];      // 인용된 파일 경로 (repo prefix 없이)
+  errorHint?: string;   // 사용자 액션 힌트 (한글). PAT scope, 검색 실패 등.
+}
+
+interface CodeSnippetResult {
+  snippets: string;
+  diagnostic: CodeInjectionDiagnostic;
+}
+
+async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeSnippetResult> {
+  const emptyResult = (status: CodeInjectionStatus, keywords: string, errorHint?: string): CodeSnippetResult => ({
+    snippets: '',
+    diagnostic: { status, repo: opts.repo, count: 0, keywords, files: [], errorHint },
+  });
+
+  if (!opts.repo || !/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) {
+    return emptyResult('no-repo', '');
+  }
 
   const keywords = extractSearchKeywords(opts.question, opts.searchHint);
-  if (!keywords) return '';
+  if (!keywords) {
+    return emptyResult('no-keywords', '', '질문에서 검색어 추출 실패 — 화면명·컴포넌트명·기능명을 포함해 질문해보세요.');
+  }
 
   const pathQualifier = opts.pathHints
     .map((p) => extPathToQualifier(p))
@@ -874,20 +932,33 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<strin
   // 같은 질문·키워드로 60초 내에 다시 오면 캐시 사용 → 대화 반복 시 GitHub Search rate 절약
   const cacheK = `search::${query}::${opts.maxSnippets}::${opts.snippetLines}`;
   const cached = codeCache.get(cacheK);
-  if (cached && Date.now() - cached.at < CODE_TTL_MS) return cached.data;
+  if (cached && Date.now() - cached.at < CODE_TTL_MS) {
+    return cached.data as CodeSnippetResult;
+  }
 
   const searchRes = await ghFetch(env, `/search/code?q=${encodeURIComponent(query)}&per_page=${opts.maxSnippets}`, {
     headers: { Accept: 'application/vnd.github+json' },
   });
   if (!searchRes.ok) {
-    console.warn(`[qa-bot] code search HTTP ${searchRes.status}`);
-    return '';
+    const hint = searchRes.status === 403 || searchRes.status === 404
+      ? `GITHUB_TOKEN 의 접근권이 ${opts.repo} 에 없거나 rate limit 초과 (HTTP ${searchRes.status}). PAT scope 재확인 필요.`
+      : `GitHub Search API HTTP ${searchRes.status}. 잠시 후 재시도.`;
+    console.warn(`[qa-bot] code search HTTP ${searchRes.status} for ${opts.repo}`);
+    const result = emptyResult('search-error', keywords, hint);
+    codeCache.set(cacheK, { at: Date.now(), data: result });
+    return result;
   }
+
   const search = (await searchRes.json()) as { items?: Array<{ path: string; repository?: { full_name?: string } }> };
   const items = (search.items ?? []).slice(0, opts.maxSnippets);
-  if (items.length === 0) return '';
+  if (items.length === 0) {
+    const result = emptyResult('empty', keywords, `"${keywords}" 로 ${opts.repo} 에서 매칭 파일 0 건. 더 구체적인 심볼명·화면명으로 질문해보세요.`);
+    codeCache.set(cacheK, { at: Date.now(), data: result });
+    return result;
+  }
 
   const snippets: string[] = [];
+  const files: string[] = [];
   for (const it of items) {
     const fullName = it.repository?.full_name ?? opts.repo;
     try {
@@ -895,13 +966,25 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<strin
       const truncated = raw.split('\n').slice(0, opts.snippetLines).join('\n');
       const ext = it.path.split('.').pop() ?? '';
       snippets.push(`--- ${fullName}/${it.path} (첫 ${opts.snippetLines}줄) ---\n\`\`\`${ext}\n${truncated}\n\`\`\``);
+      files.push(it.path);
     } catch (err) {
       console.warn(`[qa-bot] fetch code file failed: ${it.path}`, err);
     }
   }
+
+  if (snippets.length === 0) {
+    const result = emptyResult('fetch-error', keywords, `Search 매칭 ${items.length} 건 발견했으나 파일 본문 fetch 모두 실패. PAT scope 확인 필요.`);
+    codeCache.set(cacheK, { at: Date.now(), data: result });
+    return result;
+  }
+
   const combined = snippets.join('\n\n');
-  codeCache.set(cacheK, { at: Date.now(), data: combined });
-  return combined;
+  const result: CodeSnippetResult = {
+    snippets: combined,
+    diagnostic: { status: 'ok', repo: opts.repo, count: snippets.length, keywords, files },
+  };
+  codeCache.set(cacheK, { at: Date.now(), data: result });
+  return result;
 }
 
 // extractSearchKeywords, extPathToQualifier 는 helpers.ts 에서 import

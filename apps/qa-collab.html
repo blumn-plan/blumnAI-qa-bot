@@ -336,6 +336,14 @@
     aside.chat .msg .feedback-list a:hover { text-decoration: underline; }
     aside.chat .msg.regenerated { border-left: 3px solid var(--success); padding-left: 9px; }
     aside.chat .msg .regen-tag { display: inline-block; background: var(--success); color: white; padding: 1px 6px; border-radius: 10px; font-size: 10px; margin-bottom: 4px; }
+    /* 코드 참고 진단 배지 — 답변마다 상단에 표시 (성공 시 초록, 실패 시 주황) */
+    aside.chat .msg .code-inject-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-bottom: 6px; margin-right: 4px; border: 1px solid transparent; }
+    aside.chat .msg .code-inject-tag.ok { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+    aside.chat .msg .code-inject-tag.warn { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+    aside.chat .msg .code-inject-tag.muted { background: #f3f4f6; color: #6b7280; border-color: #e5e7eb; }
+    aside.chat .msg .code-inject-tag[title] { cursor: help; }
+    aside.chat .msg .code-inject-files { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+    aside.chat .msg .code-inject-files code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
     aside.chat .msg .msg-actions { display: flex; gap: 6px; margin-top: 8px; opacity: 0; transition: opacity 0.2s; }
     aside.chat .msg:hover .msg-actions, aside.chat .msg:focus-within .msg-actions { opacity: 1; }
     aside.chat .msg .msg-actions button.msg-act { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
@@ -1682,6 +1690,7 @@
       let placeholder = null;
       let accumulated = '';
       let appliedFeedbacks = [];
+      let codeInjection = null;   // { status, repo, count, keywords, files, errorHint } — 워커에서 meta 로 전달
       let streamErr = null;
 
       try {
@@ -1773,8 +1782,9 @@
 
             if (msg.type === 'meta') {
               appliedFeedbacks = msg.appliedFeedbacks || [];
+              codeInjection = msg.codeInjection || null;
               stopLoadingPlaceholder(loadingPlaceholder);
-              placeholder = startStreamingMessage(appliedFeedbacks, !!opts.regenerated);
+              placeholder = startStreamingMessage(appliedFeedbacks, !!opts.regenerated, codeInjection);
             } else if (msg.type === 'text') {
               accumulated += msg.content;
               if (placeholder) appendStreamingText(placeholder, msg.content);
@@ -1789,9 +1799,9 @@
 
         // 마무리: plain text 본문을 마크다운 + 인용 링크화로 정식 렌더, history 저장
         if (placeholder) {
-          finalizeStreamingMessage(placeholder, accumulated, appliedFeedbacks, !!opts.regenerated);
+          finalizeStreamingMessage(placeholder, accumulated, appliedFeedbacks, !!opts.regenerated, codeInjection);
         } else if (accumulated) {
-          addMessage('assistant', accumulated, { appliedFeedbacks, regenerated: !!opts.regenerated });
+          addMessage('assistant', accumulated, { appliedFeedbacks, regenerated: !!opts.regenerated, codeInjection });
         }
 
         $('#forward-btn').disabled = false;
@@ -1858,15 +1868,45 @@
       if (label) label.textContent = text;
     }
 
+    // 코드 인젝션 진단 배지 HTML — 답변 상단에 표시. status 별 문구·색상 분기.
+    // 사용자·기획자·QA 모두 봇 답변이 실제 코드를 참고했는지 즉시 확인 가능.
+    function renderCodeInjectionBadge(codeInjection) {
+      if (!codeInjection) return '';
+      const { status, repo, count, keywords, files, errorHint } = codeInjection;
+      const repoShort = repo ? repo.split('/').pop() : '';
+      if (status === 'ok') {
+        const filesHtml = (files || []).length
+          ? `<span class="code-inject-files">${(files || []).map((f) => `<code>${escapeHtml(f)}</code>`).join(' · ')}</span>`
+          : '';
+        const title = `키워드: ${keywords}\n레포: ${repo}`;
+        return `<span class="code-inject-tag ok" title="${escapeHtml(title)}">🔍 ${escapeHtml(repoShort)} 코드 ${count}건 참고</span>${filesHtml}`;
+      }
+      if (status === 'no-repo') {
+        // 조용히 표시 — 코드 검증 기능을 안 켠 팀이 매번 배지 보고 싶진 않을 수 있음
+        return `<span class="code-inject-tag muted" title="이 프로젝트는 코드 참고 기능 미설정 (config.yml 의 code_repo)">📄 정책 문서만 참고</span>`;
+      }
+      // 실패 케이스 — 원인을 툴팁으로, 배지 문구로 요약
+      const shortMsg =
+        status === 'search-error' ? '검색 실패' :
+        status === 'empty'        ? '매칭 0건' :
+        status === 'no-keywords'  ? '검색어 부족' :
+        status === 'fetch-error'  ? 'fetch 실패' : '알 수 없는 오류';
+      const title = errorHint
+        ? `${errorHint}\n(키워드: ${keywords || '(없음)'} · 레포: ${repo || '(없음)'})`
+        : `키워드: ${keywords || '(없음)'} · 레포: ${repo || '(없음)'}`;
+      return `<span class="code-inject-tag warn" title="${escapeHtml(title)}">⚠️ 코드 참고 ${shortMsg}${repoShort ? ` (${escapeHtml(repoShort)})` : ''}</span>`;
+    }
+
     // 스트리밍 시작 — 빈 assistant 카드 (커서만) DOM 에 붙이고 ref 반환
     // 피드백 칩("N개 피드백 룰 반영됨")은 노출하지 않음 — 사용자 요청. 룰 적용은 시스템 프롬프트에서 자동 처리.
-    function startStreamingMessage(_appliedFeedbacks, regenerated) {
+    function startStreamingMessage(_appliedFeedbacks, regenerated, codeInjection) {
       const div = document.createElement('div');
       const classes = ['msg', 'assistant', 'streaming'];
       if (regenerated) classes.push('regenerated');
       div.className = classes.join(' ');
       const regenTagHtml = regenerated ? `<span class="regen-tag">🔁 답변 규칙 반영하여 재생성</span>` : '';
-      div.innerHTML = `<div class="role">제이나미봇</div>${regenTagHtml}<div class="body"><span class="stream-cursor">▍</span></div>`;
+      const codeTagHtml = renderCodeInjectionBadge(codeInjection);
+      div.innerHTML = `<div class="role">제이나미봇</div>${regenTagHtml}${codeTagHtml}<div class="body"><span class="stream-cursor">▍</span></div>`;
       $('#messages').appendChild(div);
       $('#messages').scrollTop = $('#messages').scrollHeight;
       return div;
@@ -1881,7 +1921,7 @@
     }
 
     // 스트리밍 종료 — plain text 를 마크다운으로 재렌더 + 인용 링크 + 액션 버튼 + history 저장
-    function finalizeStreamingMessage(div, fullText, appliedFeedbacks, regenerated) {
+    function finalizeStreamingMessage(div, fullText, appliedFeedbacks, regenerated, codeInjection) {
       const body = div.querySelector('.body');
       let bodyHtml = marked.parse(fullText);
       bodyHtml = linkifyCitations(bodyHtml);
@@ -1903,6 +1943,7 @@
       const entry = { role: 'assistant', content: fullText };
       if (appliedFeedbacks.length > 0) entry.appliedFeedbacks = appliedFeedbacks;
       if (regenerated) entry.regenerated = true;
+      if (codeInjection) entry.codeInjection = codeInjection;
       state.history.push(entry);
 
       $('#messages').scrollTop = $('#messages').scrollHeight;
@@ -1966,6 +2007,9 @@
       let regenTagHtml = '';
       if (meta.regenerated) regenTagHtml = `<span class="regen-tag">🔁 답변 규칙 반영하여 재생성</span>`;
 
+      // 코드 참고 진단 배지 — assistant 답변에만 (세션 복원 시에도 살아있음)
+      const codeInjectTagHtml = role === 'assistant' ? renderCodeInjectionBadge(meta.codeInjection) : '';
+
       // 역할 라벨: 사용자 → '나' / AI → '제이나미봇'
       const roleLabel = role === 'assistant' ? '제이나미봇' : (role === 'user' ? '나' : role);
 
@@ -1975,7 +2019,7 @@
           <button type="button" class="msg-act" data-act="regen" title="같은 질문으로 다시 답변받기">🔄 재답변</button>
           <button type="button" class="msg-act" data-act="copy" title="답변 본문 복사">📋 복사</button>
         </div>` : '';
-      div.innerHTML = `<div class="role">${roleLabel}</div>${regenTagHtml}<div class="body">${bodyHtml}</div>${cardActions}`;
+      div.innerHTML = `<div class="role">${roleLabel}</div>${regenTagHtml}${codeInjectTagHtml}<div class="body">${bodyHtml}</div>${cardActions}`;
 
       // §N 인용 클릭
       div.querySelectorAll('a.cite').forEach((a) => {
@@ -1996,6 +2040,7 @@
         const entry = { role: role === 'user' ? 'user' : 'assistant', content };
         if (fb.length > 0) entry.appliedFeedbacks = fb;
         if (meta.regenerated) entry.regenerated = true;
+        if (meta.codeInjection) entry.codeInjection = meta.codeInjection;
         state.history.push(entry);
       }
       // 툴바 forward 활성화 — assistant 답변이 들어왔을 때 (improve 는 항상 활성)
@@ -2668,6 +2713,7 @@
         addMessage(m.role, m.content, {
           appliedFeedbacks: m.appliedFeedbacks || [],
           regenerated: !!m.regenerated,
+          codeInjection: m.codeInjection || null,
         });
       }
       $('#forward-btn').disabled = state.history.length === 0;
