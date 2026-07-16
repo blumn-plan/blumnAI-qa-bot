@@ -999,13 +999,7 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   pushUnique(baseKeywords ? baseKeywords.split(/\s+/) : []);
   pushUnique(hintTokens);
 
-  // ⚠️ GitHub /search/code (legacy) 는:
-  //   · 공백 = AND
-  //   · OR 키워드는 지원하지만 **괄호 그룹 미지원** → () 넣으면 422
-  // → `A OR B OR C` 형태로만 사용. repo: qualifier 는 항상 AND 로 붙음.
-  const primaryKeywords = merged.length > 0 ? merged.join(' OR ') : '';
-
-  if (!primaryKeywords) {
+  if (merged.length === 0) {
     return emptyResult(
       'no-keywords',
       '',
@@ -1014,70 +1008,73 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
     );
   }
 
-  // Path qualifier — 주의: GitHub /search/code 는 다중 `path:` / `extension:` 를 AND 로 처리.
-  //   `path:src/pages path:src/components` = "동시에 두 경로에 있는 파일" = 매칭 불가능.
-  // → pathHints 가 1개면 그대로 사용, 여러 개면 path 필터 skip (repo scope 만으로 검색).
-  //   너무 좁혀서 0건 나오느니 넓게 훑는 게 실용상 더 나음.
+  // Path qualifier — 다중 pathHint 는 AND 로 붕괴되므로 1개일 때만 사용.
   const pathQualifier = opts.pathHints.length === 1
     ? extPathToQualifier(opts.pathHints[0])
     : '';
-  const buildQuery = (kws: string): string =>
-    `${kws} repo:${opts.repo}${pathQualifier ? ' ' + pathQualifier : ''}`;
-  const query = buildQuery(primaryKeywords);
 
-  // 같은 질문·키워드로 60초 내에 다시 오면 캐시 사용 → 대화 반복 시 GitHub Search rate 절약
-  const cacheK = `search::${query}::${opts.maxSnippets}::${opts.snippetLines}`;
+  // ⚠️ GitHub /search/code 는 `A OR B OR C repo:X` 로 넣으면 repo: 가
+  //   마지막 OR term 에만 적용되어 앞 토큰들이 전체 GitHub 검색됨 (확인됨).
+  //   → 각 토큰별로 개별 API 호출 후 결과 병합. 각 호출은 `TOKEN repo:X` 형태로
+  //   반드시 repo scope 유지. 상위 4 토큰만 병렬 호출.
+  //   Rate limit (30 req/min authenticated) ÷ 4 = 7.5 QA/분 여유.
+  const searchTokens = merged.slice(0, 4);
+  const buildQuery = (kw: string): string =>
+    `${kw} repo:${opts.repo}${pathQualifier ? ' ' + pathQualifier : ''}`;
+  const perTokenQueries = searchTokens.map(buildQuery);
+  const usedQuery = perTokenQueries.join(' | ');   // 진단 표시용
+  const usedKeywords = searchTokens.join(', ');
+
+  // 같은 질문·키워드로 60초 내에 다시 오면 캐시 사용
+  const cacheK = `search::${usedQuery}::${opts.maxSnippets}::${opts.snippetLines}`;
   const cached = codeCache.get(cacheK);
   if (cached && Date.now() - cached.at < CODE_TTL_MS) {
     return cached.data as CodeSnippetResult;
   }
 
-  // 1차 시도 — 통합 검색어
-  let attempts = 1;
-  let attempt = await runCodeSearch(env, query, opts.maxSnippets);
-  let usedQuery = query;
-  let usedKeywords = primaryKeywords;
+  // 병렬 호출 — 각 토큰별 top-N 결과
+  const attempts = searchTokens.length;
+  const results = await Promise.all(
+    perTokenQueries.map((q) => runCodeSearch(env, q, opts.maxSnippets)),
+  );
 
-  if (!attempt.ok) {
-    const hint = attempt.status === 403 || attempt.status === 404
-      ? `GITHUB_TOKEN 의 접근권이 ${opts.repo} 에 없거나 rate limit 초과 (HTTP ${attempt.status}). PAT scope 재확인 필요.`
-      : `GitHub Search API HTTP ${attempt.status}. 잠시 후 재시도.`;
-    console.warn(`[qa-bot] code search HTTP ${attempt.status} for ${opts.repo}`);
-    const result = emptyResult('search-error', primaryKeywords, hint, { query, attempts });
+  // 전부 non-2xx 면 search-error. 하나라도 성공했으면 그것만으로 진행.
+  if (results.every((r) => !r.ok)) {
+    const first = results[0];
+    const hint = first.status === 403 || first.status === 404
+      ? `GITHUB_TOKEN 의 접근권이 ${opts.repo} 에 없거나 rate limit 초과 (HTTP ${first.status}). PAT scope 재확인 필요.`
+      : `GitHub Search API HTTP ${first.status}. 잠시 후 재시도.`;
+    console.warn(`[qa-bot] all code search failed HTTP ${first.status} for ${opts.repo}`);
+    const result = emptyResult('search-error', usedKeywords, hint, { query: usedQuery, attempts });
     codeCache.set(cacheK, { at: Date.now(), data: result });
     return result;
   }
 
-  // 2차 시도 (fallback) — 1차 매칭 0건이고, docSymbols·koreanExpanded 있으면
-  //  → 그것만으로 좁혀서 재검색 (한글 노이즈 제거해 매치 확률 상승)
-  if (attempt.totalCount === 0 && (docSymbols.length > 0 || koreanExpanded.length > 0)) {
-    const fallbackTokens: string[] = [];
-    for (const t of [...docSymbols, ...koreanExpanded]) {
-      if (!fallbackTokens.includes(t) && fallbackTokens.length < 6) fallbackTokens.push(t);
-    }
-    if (fallbackTokens.length > 0) {
-      const fallbackKeywords = fallbackTokens.join(' ');
-      const fallbackQuery = buildQuery(fallbackKeywords);
-      if (fallbackQuery !== query) {
-        attempts = 2;
-        const retry = await runCodeSearch(env, fallbackQuery, opts.maxSnippets);
-        if (retry.ok && retry.totalCount > 0) {
-          attempt = retry;
-          usedQuery = fallbackQuery;
-          usedKeywords = fallbackKeywords;
-        }
+  // 성공한 것들의 items 병합 · path 로 dedup · totalCount 합산
+  const seenPaths = new Set<string>();
+  const mergedItems: Array<{ path: string; repository?: { full_name?: string } }> = [];
+  let sumTotalCount = 0;
+  for (const r of results) {
+    if (!r.ok) continue;
+    sumTotalCount += r.totalCount;
+    for (const it of r.items) {
+      if (!seenPaths.has(it.path)) {
+        seenPaths.add(it.path);
+        mergedItems.push(it);
+        if (mergedItems.length >= opts.maxSnippets) break;
       }
     }
+    if (mergedItems.length >= opts.maxSnippets) break;
   }
 
-  const items = attempt.items.slice(0, opts.maxSnippets);
+  const items = mergedItems.slice(0, opts.maxSnippets);
   if (items.length === 0) {
-    const searchUrl = `https://github.com/${opts.repo}/search?q=${encodeURIComponent(usedKeywords)}&type=code`;
+    const searchUrl = `https://github.com/${opts.repo}/search?q=${encodeURIComponent(searchTokens[0])}&type=code`;
     const result = emptyResult(
       'empty',
       usedKeywords,
-      `매칭 파일 0 건. 총 매칭 total_count=${attempt.totalCount}. GitHub UI 로 직접 검색해서 인덱싱 상태 확인: ${searchUrl}`,
-      { query: usedQuery, totalCount: attempt.totalCount, attempts },
+      `매칭 파일 0 건 (토큰 ${attempts}개 개별 검색 · 총 total_count=${sumTotalCount}). GitHub UI 로 확인: ${searchUrl}`,
+      { query: usedQuery, totalCount: sumTotalCount, attempts },
     );
     codeCache.set(cacheK, { at: Date.now(), data: result });
     return result;
@@ -1103,7 +1100,7 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
       'fetch-error',
       usedKeywords,
       `Search 매칭 ${items.length} 건 발견했으나 파일 본문 fetch 모두 실패. PAT scope 확인 필요.`,
-      { query: usedQuery, totalCount: attempt.totalCount, attempts },
+      { query: usedQuery, totalCount: sumTotalCount, attempts },
     );
     codeCache.set(cacheK, { at: Date.now(), data: result });
     return result;
@@ -1119,7 +1116,7 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
       keywords: usedKeywords,
       files,
       query: usedQuery,
-      totalCount: attempt.totalCount,
+      totalCount: sumTotalCount,
       attempts,
     },
   };
