@@ -570,7 +570,18 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
     console.warn('[qa-bot] CLAUDE.md fetch failed:', err instanceof Error ? err.message : String(err));
     return '';
   });
-  const rawFocusedDoc = body.docPath ? await fetchTextFileCached(env, body.docPath).catch(() => '') : '';
+  // focusedDoc 로드 — 조용히 실패해서 Claude 가 "문서 내용 없음" 오해하던 문제 방지.
+  //   실패 시: 로그 남기고 fetchFailed 플래그로 표시 → 시스템 프롬프트에 명시적 안내
+  let focusedDocFetchFailed = false;
+  let focusedDocFetchError = '';
+  const rawFocusedDoc = body.docPath
+    ? await fetchTextFileCached(env, body.docPath).catch((err) => {
+        focusedDocFetchFailed = true;
+        focusedDocFetchError = err instanceof Error ? err.message : String(err);
+        console.warn(`[qa-bot] focusedDoc fetch failed: ${body.docPath} — ${focusedDocFetchError}`);
+        return '';
+      })
+    : '';
   const focusedDoc = body.docPath ? transformImageUrls(body.docPath, rawFocusedDoc) : rawFocusedDoc;
   const recentFeedback = await fetchRecentFeedback(env);
 
@@ -625,6 +636,8 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
     allDocsBundle,
     focusedDoc,
     focusedDocPath: body.docPath ?? '',
+    focusedDocFetchFailed,
+    focusedDocFetchError,
     recentFeedback,
     codeSnippets: codeResult.snippets,
     codeRepo: body.codeRepo ?? '',
@@ -731,6 +744,8 @@ interface SystemPromptParts {
   allDocsBundle: string;   // Approach B — 프로젝트 전체 문서 본문
   focusedDoc: string;
   focusedDocPath: string;
+  focusedDocFetchFailed?: boolean;   // 문서 GitHub fetch 실패 (transient) 여부
+  focusedDocFetchError?: string;     // 실패 시 오류 메시지
   recentFeedback: string;
   codeSnippets: string;
   codeRepo: string;
@@ -828,12 +843,21 @@ function buildVolatileBlock(p: SystemPromptParts): string {
   if (p.codeSnippets) {
     parts.push('**관련 코드 스니펫이 함께 제공됩니다** — 정책 vs 코드 drift 판정에 활용. 파일 경로·라인 번호 반드시 표기.');
   }
+  // 문서 표시 — GitHub fetch 성공 여부에 따라 문구 분기.
+  //   · 성공 (내용 있음)         → 문서 본문 그대로 제공
+  //   · 성공 (진짜 빈 문서)      → "(문서 내용 없음 — 일반 질문)" 안내
+  //   · fetch 실패 (transient)    → "**⚠️ 문서 로드 실패**" 명시 → Claude 가
+  //                                   "문서를 못 봤으니 다시 시도 필요" 라고 답하게 유도.
+  //                                   빈 문서로 오해해 엉뚱한 답 하는 것 방지.
+  const docBody = p.focusedDocFetchFailed
+    ? `**⚠️ 문서 GitHub fetch 실패 (transient error${p.focusedDocFetchError ? `: ${p.focusedDocFetchError}` : ''}).**\n답변 대신 "문서 로드 실패로 정확한 답변이 어렵습니다. 잠시 후 다시 질문해주세요" 라고 안내하세요. 문서 내용을 추측하지 마세요.`
+    : (p.focusedDoc || '(문서 내용 없음 — 일반 질문)');
   parts.push(
     '',
     '[현재 협업자가 보고 있는 문서]',
     p.focusedDocPath ? `경로: ${p.focusedDocPath}` : '(선택된 문서 없음)',
     '',
-    p.focusedDoc || '(문서 내용 없음 — 일반 질문)',
+    docBody,
   );
   if (p.codeSnippets) {
     parts.push('', `[관련 코드 스니펫 — ${p.codeRepo}]`, p.codeSnippets);
@@ -1277,6 +1301,19 @@ function encodeContentPath(p: string): string {
   return p.split('/').map(encodeURIComponent).join('/');
 }
 
+/** GitHub API 재시도 대상 HTTP 상태 — transient 성격.
+ *   · 429 Too Many Requests (secondary rate limit)
+ *   · 502 / 503 / 504 (GitHub proxy 일시 오류)
+ *   · 500 (드물게 발생) */
+const GH_RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+/** GET/HEAD 등 idempotent 요청만 재시도. 쓰기 (POST/PATCH/PUT/DELETE) 는 재시도 시
+ *  중복 커밋·삭제 위험이 있어 그대로 반환. */
+function isRetryableMethod(init: RequestInit): boolean {
+  const m = (init.method ?? 'GET').toUpperCase();
+  return m === 'GET' || m === 'HEAD';
+}
+
 async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
   const url = `https://api.github.com${path}`;
   const headers = new Headers(init.headers ?? {});
@@ -1286,7 +1323,36 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
   if (init.method === 'POST' || init.method === 'PATCH' || init.method === 'PUT') {
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   }
-  return await fetch(url, { ...init, headers });
+
+  // Idempotent 요청은 최대 3회 시도 (500ms → 1200ms backoff). 쓰기는 1회만.
+  const maxAttempts = isRetryableMethod(init) ? 3 : 1;
+  const backoffMs = [500, 1200];
+  let lastRes: Response | null = null;
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, { ...init, headers });
+      // 성공 (2xx) 또는 재시도 불가한 4xx (401/403/404 등) 는 즉시 반환
+      if (res.ok || !GH_RETRYABLE_STATUSES.has(res.status)) return res;
+      lastRes = res;
+      if (attempt < maxAttempts) {
+        console.warn(`[qa-bot] ghFetch ${res.status} ${path} — retry ${attempt}/${maxAttempts - 1}`);
+        await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 1200));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        console.warn(`[qa-bot] ghFetch network err ${path} — retry ${attempt}/${maxAttempts - 1}: ${err instanceof Error ? err.message : String(err)}`);
+        await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 1200));
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (lastRes) return lastRes;
+  throw lastErr;
 }
 
 /* ────────── /list-projects ────────── */
