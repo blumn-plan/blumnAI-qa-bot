@@ -1001,9 +1001,9 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   }
 
   // ── 검색어 파이프라인 ── 여러 후보를 조합해 매칭 확률 최대화
-  //   1) 정책 md 안 인라인 영문 심볼 (최우선 · 백틱·PascalCase·camelCase)
-  //   2) 한글 UI 용어 → 영문 매핑 (대시보드→Dashboard, 초기화→reset 등)
-  //   3) 기본 질문 키워드 (한글 위주 · fallback)
+  //   1) 질문 원문 한글 토큰 — 최우선 (팀이 코드에 한글 주석 넣어둘 때 직접 매치)
+  //   2) 정책 md 안 인라인 영문 심볼 (백틱·PascalCase·camelCase)
+  //   3) 한글 UI 용어 → 영문 매핑 (대시보드→Dashboard, 초기화→reset 등)
   //   4) code_search_hint 힌트 토큰 (팀 config 에서 자유 형식)
   const baseKeywords = extractSearchKeywords(opts.question, '');    // hint 는 별도 처리
   const koreanExpanded = expandKoreanUiTerms(opts.question);
@@ -1013,14 +1013,16 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // 하나의 OR 그룹으로 통합 · 최대 6 토큰 (GitHub Search 쿼리 길이·복잡도 억제)
+  // 최대 6 토큰. 한글 질문 토큰을 앞에 두어 top-4 (실제 검색) 에 반드시 포함되게 함.
+  //   근거: 팀이 "화면: 메시지 통계" 같은 한글 주석을 코드에 심어두면 한글 토큰이
+  //   그대로 매치. 영문 심볼 위주로만 채우면 한글 매치 기회를 잃음.
   const merged: string[] = [];
   const pushUnique = (arr: string[]) => {
     for (const t of arr) if (t && !merged.includes(t) && merged.length < 6) merged.push(t);
   };
+  pushUnique(baseKeywords ? baseKeywords.split(/\s+/) : []);
   pushUnique(docSymbols);
   pushUnique(koreanExpanded);
-  pushUnique(baseKeywords ? baseKeywords.split(/\s+/) : []);
   pushUnique(hintTokens);
 
   if (merged.length === 0) {

@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 🌏 **검색어 우선순위 조정 · 한글 질문 토큰을 상위로** (`bot/worker/src/index.ts`) — 팀이 코드 파일 맨 위에 `// 화면: 메시지 통계` 같은 한글 주석 한 줄만 넣으면 한글 질문이 그대로 코드 매치되는 강력한 패턴이 열림. 워커가 이 흐름을 지원하도록 검색어 통합 순서를 (docSymbols → koreanExpanded → baseKeywords → hint) 에서 (**baseKeywords → docSymbols → koreanExpanded → hint**) 로 변경 — 한글 질문 토큰이 top-4 실제 검색에 반드시 포함됨. 06-CONNECT-CODE.md 에 이 팁 (⭐ 매칭 확률 확 올리는 방법 · 15분 세팅) 정식 문서화
 - 📄 **06-CONNECT-CODE.md 실전 노하우 반영** — 상단에 "안 되면 배지 툴팁부터 확인" 강조 배너 · config 예시의 `code_paths` 주석을 "1개만" 로 정정 (GitHub Search 다중 path AND 붕괴 이슈). 헤이데어 실전 세팅에서 축적된 6가지 원인 (path AND · 다중 토큰 AND · 중첩 괄호 422 · OR repo scope 누출 등) 을 한 번에 학습해 타팀 세팅 시 반복 안 하도록 정리
 - 🌏 **한글 질문 → 코드 매칭 강화** (`bot/worker/src/helpers.ts` · `index.ts`) — GitHub Search Code API 는 리터럴 매칭이라 한글 질문 (예: "대시보드 필터 초기화 버튼") 이 영문 코드 (`Dashboard`, `Filter`, `reset`, `Button`) 와 매치 안 되던 문제 해결. 3층 검색 파이프라인 도입:
   ① 기본 키워드 (기존 방식) + ② `expandKoreanUiTerms` — 한글 UI 용어 → 영문 심볼 mini 사전 (대시보드→Dashboard, 초기화→reset 등 40+개) + ③ `extractCodeSymbols` — 현재 열린 정책 md 안 인라인 영문 심볼 (백틱 `` `DashboardFilter` ``, PascalCase, camelCase, CONSTANT_CASE) 추출. 매칭 0건이면 자동 fallback 재검색 (심볼·영문만으로 재시도). 배지 진단에 `query` (실제 GitHub Search 쿼리), `totalCount` (Search API total), `attempts` 필드 추가 → 매칭 0건 시 배지 옆에 "GitHub 에서 직접 검색해보기 ↗" 클릭 링크로 인덱싱 여부 즉시 확인 가능
