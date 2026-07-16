@@ -977,30 +977,32 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   }
 
   // ── 검색어 파이프라인 ── 여러 후보를 조합해 매칭 확률 최대화
-  //   1) 기본 질문 키워드 (기존 방식 · 한글 위주)
+  //   1) 정책 md 안 인라인 영문 심볼 (최우선 · 백틱·PascalCase·camelCase)
   //   2) 한글 UI 용어 → 영문 매핑 (대시보드→Dashboard, 초기화→reset 등)
-  //   3) 열려있는 정책 md 안 인라인 영문 심볼 (백틱·PascalCase·camelCase)
-  // 우선 순위: 심볼 > 영문 매핑 > 한글 키워드 (매치 잘 되는 것부터)
+  //   3) 기본 질문 키워드 (한글 위주 · fallback)
+  //   4) code_search_hint 힌트 토큰 (팀 config 에서 자유 형식)
   const baseKeywords = extractSearchKeywords(opts.question, '');    // hint 는 별도 처리
   const koreanExpanded = expandKoreanUiTerms(opts.question);
   const docSymbols = extractCodeSymbols(opts.focusedDoc ?? '').slice(0, 6);
+  const hintTokens = (opts.searchHint ?? '')
+    .split(/\s+OR\s+|,|\s+/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  // 통합 토큰 — 심볼·영문매핑·한글 순서로 최대 8개
+  // 하나의 OR 그룹으로 통합 · 최대 6 토큰 (GitHub Search 쿼리 길이·복잡도 억제)
   const merged: string[] = [];
   const pushUnique = (arr: string[]) => {
-    for (const t of arr) if (t && !merged.includes(t) && merged.length < 8) merged.push(t);
+    for (const t of arr) if (t && !merged.includes(t) && merged.length < 6) merged.push(t);
   };
   pushUnique(docSymbols);
   pushUnique(koreanExpanded);
   pushUnique(baseKeywords ? baseKeywords.split(/\s+/) : []);
+  pushUnique(hintTokens);
 
-  // ⚠️ 핵심: GitHub /search/code 는 공백 = AND. 8개 토큰을 공백으로 이으면
-  //   "파일 하나에 8개 심볼이 모두 있어야 매칭" = 사실상 불가능.
-  //   → OR 로 묶어서 "이 중 아무거나 있는 파일" 을 찾도록. 노이즈 감수하고
-  //   실제 매칭 확률 확보. 그 뒤 top-N 슬라이스가 관련도순으로 뽑아줌.
-  const orGroup = merged.length > 0 ? `(${merged.join(' OR ')})` : '';
-  const hintExpr = opts.searchHint?.trim() ? `(${opts.searchHint.trim()})` : '';
-  const primaryKeywords = [orGroup, hintExpr].filter(Boolean).join(' OR ');
+  // ⚠️ 핵심: GitHub /search/code 는 공백 = AND. 여러 토큰을 그대로 잇으면
+  //   "파일 하나에 모두 있어야" 매칭 불가능. → 단일 OR 그룹으로 묶어서
+  //   "이 중 아무거나 있는 파일" 을 찾도록. 중첩 OR 그룹은 파싱 실패 (422) 이력.
+  const primaryKeywords = merged.length > 0 ? `(${merged.join(' OR ')})` : '';
 
   if (!primaryKeywords) {
     return emptyResult(
