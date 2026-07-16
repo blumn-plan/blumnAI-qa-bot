@@ -23,6 +23,8 @@ import {
   extractProjectFromPath,
   extractSearchKeywords,
   extPathToQualifier,
+  extractCodeSymbols,
+  expandKoreanUiTerms,
   escapeRegex,
   escapeHtml,
   renderNoteBodyHtml,
@@ -570,6 +572,8 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
         searchHint: body.codeSearchHint ?? '',
         maxSnippets: body.codeMaxSnippets ?? 3,
         snippetLines: body.codeSnippetLines ?? 120,
+        // 열린 정책 md 본문에서 인라인 영문 심볼 (백틱·PascalCase 등) 추출해 검색어 보강
+        focusedDoc: focusedDoc || undefined,
       }).catch((err) => {
         console.warn('[qa-bot] code snippet fetch failed:', err instanceof Error ? err.message : String(err));
         return {
@@ -882,6 +886,9 @@ interface CodeSnippetOpts {
   searchHint: string;
   maxSnippets: number;
   snippetLines: number;
+  /** 현재 협업자가 열어둔 정책 md 본문 — 인라인 영문 심볼 (백틱·PascalCase 등) 추출용.
+   *  한글 질문에서 뽑히지 않는 컴포넌트명·훅명을 여기서 보강해 검색 매치 확률 상승. */
+  focusedDoc?: string;
 }
 
 /** 진단 정보 — /qa NDJSON meta 로 프론트에 전달돼 답변 상단 배지로 표시. */
@@ -900,6 +907,9 @@ export interface CodeInjectionDiagnostic {
   keywords: string;
   files: string[];      // 인용된 파일 경로 (repo prefix 없이)
   errorHint?: string;   // 사용자 액션 힌트 (한글). PAT scope, 검색 실패 등.
+  query?: string;       // 실제 GitHub Search API 로 보낸 쿼리 문자열 — 트러블슈팅용
+  totalCount?: number;  // Search API 응답의 total_count — repo 인덱싱 여부 판단
+  attempts?: number;    // 재시도 포함 총 검색 시도 횟수 (기본 1, fallback 있으면 2)
 }
 
 interface CodeSnippetResult {
@@ -907,19 +917,73 @@ interface CodeSnippetResult {
   diagnostic: CodeInjectionDiagnostic;
 }
 
+/** GitHub Search Code API 한 번 호출 — items + total_count 반환. */
+interface SearchAttemptResult {
+  ok: boolean;
+  status: number;
+  items: Array<{ path: string; repository?: { full_name?: string } }>;
+  totalCount: number;
+}
+async function runCodeSearch(env: Env, query: string, perPage: number): Promise<SearchAttemptResult> {
+  const res = await ghFetch(env, `/search/code?q=${encodeURIComponent(query)}&per_page=${perPage}`, {
+    headers: { Accept: 'application/vnd.github+json' },
+  });
+  if (!res.ok) {
+    return { ok: false, status: res.status, items: [], totalCount: 0 };
+  }
+  const json = (await res.json()) as {
+    items?: Array<{ path: string; repository?: { full_name?: string } }>;
+    total_count?: number;
+  };
+  return {
+    ok: true,
+    status: res.status,
+    items: json.items ?? [],
+    totalCount: json.total_count ?? 0,
+  };
+}
+
 async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeSnippetResult> {
-  const emptyResult = (status: CodeInjectionStatus, keywords: string, errorHint?: string): CodeSnippetResult => ({
+  const emptyResult = (
+    status: CodeInjectionStatus,
+    keywords: string,
+    errorHint?: string,
+    extra?: Partial<CodeInjectionDiagnostic>,
+  ): CodeSnippetResult => ({
     snippets: '',
-    diagnostic: { status, repo: opts.repo, count: 0, keywords, files: [], errorHint },
+    diagnostic: { status, repo: opts.repo, count: 0, keywords, files: [], errorHint, ...extra },
   });
 
   if (!opts.repo || !/^[\w.-]+\/[\w.-]+$/.test(opts.repo)) {
     return emptyResult('no-repo', '');
   }
 
-  const keywords = extractSearchKeywords(opts.question, opts.searchHint);
-  if (!keywords) {
-    return emptyResult('no-keywords', '', '질문에서 검색어 추출 실패 — 화면명·컴포넌트명·기능명을 포함해 질문해보세요.');
+  // ── 검색어 파이프라인 ── 여러 후보를 조합해 매칭 확률 최대화
+  //   1) 기본 질문 키워드 (기존 방식 · 한글 위주)
+  //   2) 한글 UI 용어 → 영문 매핑 (대시보드→Dashboard, 초기화→reset 등)
+  //   3) 열려있는 정책 md 안 인라인 영문 심볼 (백틱·PascalCase·camelCase)
+  // 우선 순위: 심볼 > 영문 매핑 > 한글 키워드 (매치 잘 되는 것부터)
+  const baseKeywords = extractSearchKeywords(opts.question, opts.searchHint);
+  const koreanExpanded = expandKoreanUiTerms(opts.question);
+  const docSymbols = extractCodeSymbols(opts.focusedDoc ?? '').slice(0, 6);
+
+  // 통합 검색어 — 심볼·영문매핑·한글 순서로 최대 8개 토큰
+  const merged: string[] = [];
+  const pushUnique = (arr: string[]) => {
+    for (const t of arr) if (t && !merged.includes(t) && merged.length < 8) merged.push(t);
+  };
+  pushUnique(docSymbols);
+  pushUnique(koreanExpanded);
+  pushUnique(baseKeywords ? baseKeywords.split(/\s+/) : []);
+  const primaryKeywords = merged.join(' ');
+
+  if (!primaryKeywords) {
+    return emptyResult(
+      'no-keywords',
+      '',
+      '질문에서 검색어 추출 실패 — 화면명·컴포넌트명·기능명을 포함해 질문해보세요.',
+      { attempts: 0 },
+    );
   }
 
   const pathQualifier = opts.pathHints
@@ -927,7 +991,9 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
     .filter(Boolean)
     .slice(0, 4)
     .join(' ');
-  const query = `${keywords} repo:${opts.repo}${pathQualifier ? ' ' + pathQualifier : ''}`;
+  const buildQuery = (kws: string): string =>
+    `${kws} repo:${opts.repo}${pathQualifier ? ' ' + pathQualifier : ''}`;
+  const query = buildQuery(primaryKeywords);
 
   // 같은 질문·키워드로 60초 내에 다시 오면 캐시 사용 → 대화 반복 시 GitHub Search rate 절약
   const cacheK = `search::${query}::${opts.maxSnippets}::${opts.snippetLines}`;
@@ -936,23 +1002,53 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
     return cached.data as CodeSnippetResult;
   }
 
-  const searchRes = await ghFetch(env, `/search/code?q=${encodeURIComponent(query)}&per_page=${opts.maxSnippets}`, {
-    headers: { Accept: 'application/vnd.github+json' },
-  });
-  if (!searchRes.ok) {
-    const hint = searchRes.status === 403 || searchRes.status === 404
-      ? `GITHUB_TOKEN 의 접근권이 ${opts.repo} 에 없거나 rate limit 초과 (HTTP ${searchRes.status}). PAT scope 재확인 필요.`
-      : `GitHub Search API HTTP ${searchRes.status}. 잠시 후 재시도.`;
-    console.warn(`[qa-bot] code search HTTP ${searchRes.status} for ${opts.repo}`);
-    const result = emptyResult('search-error', keywords, hint);
+  // 1차 시도 — 통합 검색어
+  let attempts = 1;
+  let attempt = await runCodeSearch(env, query, opts.maxSnippets);
+  let usedQuery = query;
+  let usedKeywords = primaryKeywords;
+
+  if (!attempt.ok) {
+    const hint = attempt.status === 403 || attempt.status === 404
+      ? `GITHUB_TOKEN 의 접근권이 ${opts.repo} 에 없거나 rate limit 초과 (HTTP ${attempt.status}). PAT scope 재확인 필요.`
+      : `GitHub Search API HTTP ${attempt.status}. 잠시 후 재시도.`;
+    console.warn(`[qa-bot] code search HTTP ${attempt.status} for ${opts.repo}`);
+    const result = emptyResult('search-error', primaryKeywords, hint, { query, attempts });
     codeCache.set(cacheK, { at: Date.now(), data: result });
     return result;
   }
 
-  const search = (await searchRes.json()) as { items?: Array<{ path: string; repository?: { full_name?: string } }> };
-  const items = (search.items ?? []).slice(0, opts.maxSnippets);
+  // 2차 시도 (fallback) — 1차 매칭 0건이고, docSymbols·koreanExpanded 있으면
+  //  → 그것만으로 좁혀서 재검색 (한글 노이즈 제거해 매치 확률 상승)
+  if (attempt.totalCount === 0 && (docSymbols.length > 0 || koreanExpanded.length > 0)) {
+    const fallbackTokens: string[] = [];
+    for (const t of [...docSymbols, ...koreanExpanded]) {
+      if (!fallbackTokens.includes(t) && fallbackTokens.length < 6) fallbackTokens.push(t);
+    }
+    if (fallbackTokens.length > 0) {
+      const fallbackKeywords = fallbackTokens.join(' ');
+      const fallbackQuery = buildQuery(fallbackKeywords);
+      if (fallbackQuery !== query) {
+        attempts = 2;
+        const retry = await runCodeSearch(env, fallbackQuery, opts.maxSnippets);
+        if (retry.ok && retry.totalCount > 0) {
+          attempt = retry;
+          usedQuery = fallbackQuery;
+          usedKeywords = fallbackKeywords;
+        }
+      }
+    }
+  }
+
+  const items = attempt.items.slice(0, opts.maxSnippets);
   if (items.length === 0) {
-    const result = emptyResult('empty', keywords, `"${keywords}" 로 ${opts.repo} 에서 매칭 파일 0 건. 더 구체적인 심볼명·화면명으로 질문해보세요.`);
+    const searchUrl = `https://github.com/${opts.repo}/search?q=${encodeURIComponent(usedKeywords)}&type=code`;
+    const result = emptyResult(
+      'empty',
+      usedKeywords,
+      `매칭 파일 0 건. 총 매칭 total_count=${attempt.totalCount}. GitHub UI 로 직접 검색해서 인덱싱 상태 확인: ${searchUrl}`,
+      { query: usedQuery, totalCount: attempt.totalCount, attempts },
+    );
     codeCache.set(cacheK, { at: Date.now(), data: result });
     return result;
   }
@@ -973,7 +1069,12 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   }
 
   if (snippets.length === 0) {
-    const result = emptyResult('fetch-error', keywords, `Search 매칭 ${items.length} 건 발견했으나 파일 본문 fetch 모두 실패. PAT scope 확인 필요.`);
+    const result = emptyResult(
+      'fetch-error',
+      usedKeywords,
+      `Search 매칭 ${items.length} 건 발견했으나 파일 본문 fetch 모두 실패. PAT scope 확인 필요.`,
+      { query: usedQuery, totalCount: attempt.totalCount, attempts },
+    );
     codeCache.set(cacheK, { at: Date.now(), data: result });
     return result;
   }
@@ -981,7 +1082,16 @@ async function fetchCodeSnippets(env: Env, opts: CodeSnippetOpts): Promise<CodeS
   const combined = snippets.join('\n\n');
   const result: CodeSnippetResult = {
     snippets: combined,
-    diagnostic: { status: 'ok', repo: opts.repo, count: snippets.length, keywords, files },
+    diagnostic: {
+      status: 'ok',
+      repo: opts.repo,
+      count: snippets.length,
+      keywords: usedKeywords,
+      files,
+      query: usedQuery,
+      totalCount: attempt.totalCount,
+      attempts,
+    },
   };
   codeCache.set(cacheK, { at: Date.now(), data: result });
   return result;

@@ -1870,19 +1870,21 @@
 
     // 코드 인젝션 진단 배지 HTML — 답변 상단에 표시. status 별 문구·색상 분기.
     // 사용자·기획자·QA 모두 봇 답변이 실제 코드를 참고했는지 즉시 확인 가능.
+    // 실패 시 GitHub 검색 URL 을 클릭 링크로 노출해서 원인 즉시 확인 가능.
     function renderCodeInjectionBadge(codeInjection) {
       if (!codeInjection) return '';
-      const { status, repo, count, keywords, files, errorHint } = codeInjection;
+      const { status, repo, count, keywords, files, errorHint, query, totalCount, attempts } = codeInjection;
       const repoShort = repo ? repo.split('/').pop() : '';
       if (status === 'ok') {
         const filesHtml = (files || []).length
           ? `<span class="code-inject-files">${(files || []).map((f) => `<code>${escapeHtml(f)}</code>`).join(' · ')}</span>`
           : '';
-        const title = `키워드: ${keywords}\n레포: ${repo}`;
-        return `<span class="code-inject-tag ok" title="${escapeHtml(title)}">🔍 ${escapeHtml(repoShort)} 코드 ${count}건 참고</span>${filesHtml}`;
+        const titleParts = [`키워드: ${keywords}`, `레포: ${repo}`];
+        if (typeof totalCount === 'number') titleParts.push(`GitHub Search total_count: ${totalCount}`);
+        if (attempts && attempts > 1) titleParts.push(`재시도 ${attempts}회 (fallback 성공)`);
+        return `<span class="code-inject-tag ok" title="${escapeHtml(titleParts.join('\n'))}">🔍 ${escapeHtml(repoShort)} 코드 ${count}건 참고</span>${filesHtml}`;
       }
       if (status === 'no-repo') {
-        // 조용히 표시 — 코드 검증 기능을 안 켠 팀이 매번 배지 보고 싶진 않을 수 있음
         return `<span class="code-inject-tag muted" title="이 프로젝트는 코드 참고 기능 미설정 (config.yml 의 code_repo)">📄 정책 문서만 참고</span>`;
       }
       // 실패 케이스 — 원인을 툴팁으로, 배지 문구로 요약
@@ -1891,10 +1893,18 @@
         status === 'empty'        ? '매칭 0건' :
         status === 'no-keywords'  ? '검색어 부족' :
         status === 'fetch-error'  ? 'fetch 실패' : '알 수 없는 오류';
-      const title = errorHint
-        ? `${errorHint}\n(키워드: ${keywords || '(없음)'} · 레포: ${repo || '(없음)'})`
-        : `키워드: ${keywords || '(없음)'} · 레포: ${repo || '(없음)'}`;
-      return `<span class="code-inject-tag warn" title="${escapeHtml(title)}">⚠️ 코드 참고 ${shortMsg}${repoShort ? ` (${escapeHtml(repoShort)})` : ''}</span>`;
+      const titleParts = [];
+      if (errorHint) titleParts.push(errorHint);
+      titleParts.push(`키워드: ${keywords || '(없음)'}`);
+      titleParts.push(`레포: ${repo || '(없음)'}`);
+      if (query) titleParts.push(`실제 쿼리: ${query}`);
+      if (typeof totalCount === 'number') titleParts.push(`GitHub total_count: ${totalCount}`);
+      if (attempts) titleParts.push(`시도 ${attempts}회`);
+      // 매칭 0건일 때 GitHub UI 로 바로 확인 가능한 링크
+      const searchLinkHtml = (status === 'empty' && repo && keywords)
+        ? ` <a href="https://github.com/${escapeHtml(repo)}/search?q=${encodeURIComponent(keywords)}&type=code" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline">GitHub 에서 직접 검색해보기 ↗</a>`
+        : '';
+      return `<span class="code-inject-tag warn" title="${escapeHtml(titleParts.join('\n'))}">⚠️ 코드 참고 ${shortMsg}${repoShort ? ` (${escapeHtml(repoShort)})` : ''}</span>${searchLinkHtml}`;
     }
 
     // 스트리밍 시작 — 빈 assistant 카드 (커서만) DOM 에 붙이고 ref 반환

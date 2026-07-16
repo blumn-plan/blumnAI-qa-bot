@@ -3,6 +3,8 @@ import {
   extractProjectFromPath,
   extractSearchKeywords,
   extPathToQualifier,
+  extractCodeSymbols,
+  expandKoreanUiTerms,
   escapeRegex,
   escapeHtml,
   renderNoteBodyHtml,
@@ -39,6 +41,61 @@ describe('extractSearchKeywords', () => {
   });
   it('중복 토큰 제거', () => {
     expect(extractSearchKeywords('삭제 삭제 삭제', '').split(/\s+/)).toHaveLength(1);
+  });
+});
+
+describe('extractCodeSymbols — 정책 md 안 인라인 영문 심볼 추출', () => {
+  it('백틱 인용 심볼 추출', () => {
+    const result = extractCodeSymbols('컴포넌트는 `DashboardFilter` 를 씁니다.');
+    expect(result).toContain('DashboardFilter');
+  });
+  it('PascalCase 컴포넌트 후보', () => {
+    const result = extractCodeSymbols('Dashboard 화면에서 CampaignList 를 렌더');
+    expect(result).toContain('Dashboard');
+    expect(result).toContain('CampaignList');
+  });
+  it('camelCase 훅·함수 후보', () => {
+    const result = extractCodeSymbols('useFilter 훅으로 초기화 · getUserId 호출');
+    expect(result).toContain('useFilter');
+    expect(result).toContain('getUserId');
+  });
+  it('CONSTANT_CASE 상수 후보', () => {
+    const result = extractCodeSymbols('상수 MODAL_TYPE 을 참조');
+    expect(result).toContain('MODAL_TYPE');
+  });
+  it('흔한 노이즈 (README, API 등) 제외', () => {
+    const result = extractCodeSymbols('README API URL HTML 참고');
+    expect(result).not.toContain('README');
+    expect(result).not.toContain('API');
+    expect(result).not.toContain('URL');
+  });
+  it('빈 입력·한글만 → 빈 배열', () => {
+    expect(extractCodeSymbols('')).toEqual([]);
+    expect(extractCodeSymbols('한글만 있는 문서')).toEqual([]);
+  });
+});
+
+describe('expandKoreanUiTerms — 한글 UI 용어 → 영문 심볼 매핑', () => {
+  it('대시보드·필터·버튼 확장', () => {
+    const result = expandKoreanUiTerms('대시보드 필터에 초기화 버튼');
+    expect(result).toContain('Dashboard');
+    expect(result).toContain('Filter');
+    expect(result).toContain('reset');
+    expect(result).toContain('Button');
+  });
+  it('여러 액션 (삭제·저장·수정) 매핑', () => {
+    const result = expandKoreanUiTerms('캠페인을 삭제하거나 저장하거나 수정');
+    expect(result).toContain('Campaign');
+    expect(result).toContain('delete');
+    expect(result).toContain('save');
+    expect(result).toContain('edit');
+  });
+  it('사전에 없는 한글은 빈 배열', () => {
+    expect(expandKoreanUiTerms('이건 사전에 없는 표현')).toEqual([]);
+  });
+  it('중복 제거', () => {
+    const result = expandKoreanUiTerms('버튼 버튼 버튼');
+    expect(result.filter((t) => t === 'Button')).toHaveLength(1);
   });
 });
 

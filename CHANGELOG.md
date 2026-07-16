@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 🌏 **한글 질문 → 코드 매칭 강화** (`bot/worker/src/helpers.ts` · `index.ts`) — GitHub Search Code API 는 리터럴 매칭이라 한글 질문 (예: "대시보드 필터 초기화 버튼") 이 영문 코드 (`Dashboard`, `Filter`, `reset`, `Button`) 와 매치 안 되던 문제 해결. 3층 검색 파이프라인 도입:
+  ① 기본 키워드 (기존 방식) + ② `expandKoreanUiTerms` — 한글 UI 용어 → 영문 심볼 mini 사전 (대시보드→Dashboard, 초기화→reset 등 40+개) + ③ `extractCodeSymbols` — 현재 열린 정책 md 안 인라인 영문 심볼 (백틱 `` `DashboardFilter` ``, PascalCase, camelCase, CONSTANT_CASE) 추출. 매칭 0건이면 자동 fallback 재검색 (심볼·영문만으로 재시도). 배지 진단에 `query` (실제 GitHub Search 쿼리), `totalCount` (Search API total), `attempts` 필드 추가 → 매칭 0건 시 배지 옆에 "GitHub 에서 직접 검색해보기 ↗" 클릭 링크로 인덱싱 여부 즉시 확인 가능
 - 🔍 **코드 참고 진단 배지** (`qa-collab.html` · Worker) — 답변마다 상단에 봇이 실제 서비스 코드 스니펫을 참고했는지 시각화. `🔍 <레포명> 코드 N건 참고` (성공, 초록) · `⚠️ 코드 참고 <실패사유>` (실패, 주황) · `📄 정책 문서만 참고` (`code_repo` 미설정, 회색). 실패 시 툴팁으로 원인 힌트 (PAT scope 부족, 검색어 부족, 매칭 0건 등) 및 검색 키워드·레포 표기. Worker `fetchCodeSnippets` 가 `{ snippets, diagnostic }` 반환 형태로 리팩터되고 `/qa` NDJSON meta 라인에 `codeInjection` 필드 실려서 프론트에 전달. 세션 복원 시에도 배지 유지. 배경: 정책 vs 코드 drift 답변이 조용히 실패해도 사용자가 알 수 없어서 "정책만 참고한다" 오해가 반복되던 문제를 정면 해소
 - 📄 **06-CONNECT-CODE.md · 07-FIRST-TEST.md 배지 기반 진단으로 개편** — 06 트러블슈팅 표를 "배지 색·문구별" 로 재구조화 (📄 회색 → config 미설정 / ⚠️ 주황 검색실패 → PAT scope / ⚠️ 매칭 0건 → 키워드 / 🔍 초록인데 답에 코드 없음 → answer-rules 강화). 07 시나리오 4 "코드 검증" 정상 답변 형태에 배지 확인 추가. 06 §셋업 검증 신설 + Quick Start 마스터 프롬프트 스텝 7 (배지 확인) 추가. 타부서 셋업 시 성공·실패 판정이 툴팁 하나로 가능해짐
 
