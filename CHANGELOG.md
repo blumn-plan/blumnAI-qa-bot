@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- ↩ **📄 HTML 목업 다이얼로그 참고 이미지 첨부 복구** (`apps/qa-collab.html`) — 직전 커밋(5beac4d) 으로 제거됐던 파일 input · 프리뷰 · 이벤트 핸들러 (paste·drag·change·clear) · state (`genHtmlAttachedDataUrl` / `genHtmlAttachedMime`) · payload `attachments` 필드 · `fileToDataUrl` 유틸 전부 원복. Ctrl+V 붙여넣기 · 드래그 · 파일 선택 세 가지 입력 방식 모두 재가동. Worker `/gen-html` 은 이미 attachments 처리 유지 상태였으므로 백엔드 변경 없음.
 - 🧹 **📄 HTML 목업 다이얼로그의 참고 이미지 첨부 제거** — 다이얼로그 안의 파일 input · 프리뷰 · 관련 이벤트 핸들러 (paste·drag·change·clear) · state (genHtmlAttachedDataUrl / genHtmlAttachedMime) 모두 삭제. 이제 프롬프트 텍스트만으로 목업 생성. 정책 md · 코드 스니펫 컨텍스트 인젝션은 그대로 유지 → 대부분 케이스에서 충분. Worker `/gen-html` 은 attachments 필드 처리 코드 그대로 유지 (하위 호환용). 관련 유틸 `fileToDataUrl` 도 참조 없음 → 함께 제거.
 - 🧹 **🎨 이미지 생성 (Nano Banana) 기능 제거** — 툴바 [🎨] 버튼 · 다이얼로그 · 프론트 핸들러 · Worker `/gen-image` 엔드포인트 · `generateImage` 함수 · `GEMINI_API_KEY`/`GEMINI_MODEL` env 필드 · `X-Bot-Gemini-Key` 헤더 · `docs/10-GEN-IMAGE.md` 전부 삭제. Gemini 이미지 편집이 한글 텍스트·정밀 UI 편집 정밀도 낮아 실전 활용성 부족 → 새로 도입한 [📄 HTML 목업 생성] 이 정책·코드 기반 실행 가능 화면을 정확히 만들어 상위 대체. `friendlyError` 의 Gemini 관련 패턴 · 데모 모드의 `/gen-image` mock 도 함께 정리. GEMINI_API_KEY 시크릿은 wrangler 에 남아있어도 무해 (참조 없음).
 - 📄 **HTML 목업 생성 (`/gen-html`) — 실행 가능한 화면 파일 즉시 생성** (`qa-collab.html` · Worker) — 툴바 [📄] 버튼 → 다이얼로그: 프롬프트 + 참고 이미지 (파일·Ctrl+V·드래그) → Worker `/gen-html` 이 Claude Sonnet 4.6 으로 완결된 HTML 문서를 생성해 `qa/mockups/YYYY-MM-DD-<slug>.html` 로 자동 커밋 → 채팅에 "🔗 새 탭에서 열기" 클릭 링크 표시. 기존 문제 (챗에서 HTML 코드 붙여넣기 → 메모장 저장 → 렌더 실패) 를 정면 해소:
