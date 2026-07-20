@@ -680,6 +680,16 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let buffer = '';
+  // 스트림 진행 중 message_start · message_delta 이벤트에서 usage 를 누적.
+  // message_start.message.usage → input_tokens · cache_read_input_tokens · cache_creation_input_tokens (output_tokens=1 초기값)
+  // message_delta.usage         → 최종 output_tokens (누적치)
+  // flush 때 { type: 'usage', usage } NDJSON 한 줄로 프론트에 전달 → 프론트에서 비용 계산·뱃지 표시.
+  let capturedUsage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  } | null = null;
 
   const transformStream = new TransformStream<Uint8Array, Uint8Array>({
     start(controller) {
@@ -688,6 +698,7 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
         appliedFeedbacks: [],
         via: 'anthropic-api',
         codeInjection: codeResult.diagnostic,
+        model, // 프론트가 요율 테이블 lookup 시 사용
       }) + '\n'));
     },
     transform(chunk, controller) {
@@ -702,15 +713,26 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
         try {
           const evt = JSON.parse(jsonStr) as {
             type: string;
+            message?: { usage?: Record<string, number> };
+            usage?: Record<string, number>;
             delta?: { type: string; text?: string };
             error?: { message?: string };
           };
-          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+          if (evt.type === 'message_start' && evt.message?.usage) {
+            capturedUsage = { ...evt.message.usage };
+          } else if (evt.type === 'message_delta' && evt.usage) {
+            capturedUsage = { ...(capturedUsage ?? {}), ...evt.usage };
+          } else if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
             controller.enqueue(encoder.encode(JSON.stringify({ type: 'text', content: evt.delta.text }) + '\n'));
           } else if (evt.type === 'error') {
             controller.enqueue(encoder.encode(JSON.stringify({ type: 'error', message: evt.error?.message || 'Anthropic API error' }) + '\n'));
           }
         } catch (_) { /* skip parse error */ }
+      }
+    },
+    flush(controller) {
+      if (capturedUsage) {
+        controller.enqueue(encoder.encode(JSON.stringify({ type: 'usage', usage: capturedUsage }) + '\n'));
       }
     },
   });
