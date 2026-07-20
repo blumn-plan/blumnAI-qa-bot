@@ -693,8 +693,14 @@
         </p>
         <label for="gh-prompt">어떤 화면을 만들지 <span style="color:var(--error)">*</span></label>
         <textarea id="gh-prompt" required placeholder="예:
-· 대시보드 화면. 상단 KPI 카드 4개 · 좌측 필터 · 하단 차트 2개 그리드 배치.
+· 첨부한 대시보드 캡처 그대로 목업 만들어줘. KPI 카드 4개 · 하단 차트 2개 배치.
 · 현재 열려있는 메시지 통계 정책 §4-6-3 기준으로 탭 3개 짜리 상세 화면 만들어줘."></textarea>
+        <label for="gh-image-input" style="margin-top:8px">참고 이미지 (선택 · Ctrl+V 또는 드래그)</label>
+        <input id="gh-image-input" type="file" accept="image/*" style="font-size:12px" />
+        <div id="gh-image-preview" style="margin-top:8px;display:none">
+          <img id="gh-image-preview-img" alt="첨부 이미지 미리보기" style="max-width:100%;max-height:200px;border:1px solid var(--border);border-radius:6px;display:block" />
+          <button type="button" id="gh-image-clear" style="margin-top:4px;background:transparent;border:none;color:var(--error);font-size:11px;cursor:pointer;padding:0">✕ 첨부 제거</button>
+        </div>
         <p style="font-size:11px;color:var(--muted);margin:10px 0 0;line-height:1.5">
           💾 <b>저장 위치</b>: <code>qa/mockups/YYYY-MM-DD-슬러그.html</code> · GitHub Pages 자동 서빙<br>
           💰 <b>비용</b>: 1회당 약 5-20원 (Claude Sonnet 4.6 · HTML 길이 따라)
@@ -2319,12 +2325,61 @@
       openFeedbackDialog(lastAssistant ? lastAssistant.content : '', $('#improve-toolbar-btn'));
     });
 
+    /* File → data URL helper — [📄 HTML 목업] 참고 이미지 첨부 용. */
+    function fileToDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(file);
+      });
+    }
+
     /* 📄 HTML 목업 생성 — 정책·코드 근거로 실행 가능한 화면 파일 생성 후 클릭 링크 */
+    let genHtmlAttachedDataUrl = null;
+    let genHtmlAttachedMime = null;
+    function setGenHtmlPreview(dataUrl, mime) {
+      genHtmlAttachedDataUrl = dataUrl;
+      genHtmlAttachedMime = mime;
+      const wrap = $('#gh-image-preview');
+      if (dataUrl) {
+        $('#gh-image-preview-img').src = dataUrl;
+        wrap.style.display = 'block';
+      } else {
+        wrap.style.display = 'none';
+        $('#gh-image-preview-img').src = '';
+        $('#gh-image-input').value = '';
+      }
+    }
     $('#gen-html-btn').addEventListener('click', () => {
       if (!state.user.name) { toast('먼저 이름을 설정해주세요', 'error'); openUserDialog(); return; }
+      setGenHtmlPreview(null, null);
       $('#gh-prompt').value = '';
       $('#gen-html-dialog').showModal();
       $('#gh-prompt').focus();
+    });
+    $('#gh-image-input').addEventListener('change', async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      if (f.size > 5 * 1024 * 1024) { toast('참고 이미지가 너무 큽니다 (5MB 이하)', 'error'); e.target.value = ''; return; }
+      try {
+        const url = await fileToDataUrl(f);
+        setGenHtmlPreview(url, f.type || 'image/png');
+      } catch (_) { toast('이미지 읽기 실패', 'error'); }
+    });
+    $('#gh-image-clear').addEventListener('click', () => setGenHtmlPreview(null, null));
+    $('#gen-html-dialog').addEventListener('paste', async (e) => {
+      const items = e.clipboardData?.items || [];
+      for (const it of items) {
+        if (it.kind === 'file' && it.type.startsWith('image/')) {
+          e.preventDefault();
+          const f = it.getAsFile();
+          if (f) {
+            try { setGenHtmlPreview(await fileToDataUrl(f), f.type || 'image/png'); } catch (_) {}
+          }
+          return;
+        }
+      }
     });
     $('#gen-html-dialog').addEventListener('close', async () => {
       const dlg = $('#gen-html-dialog');
@@ -2343,6 +2398,11 @@
       try {
         // 현재 프로젝트의 코드 연결 컨텍스트 함께 전달 (매칭 확률 상승)
         const currentProjectCfg = (CONFIG?.projects ?? []).find((p) => p.id === state.currentProject);
+        const attachments = [];
+        if (genHtmlAttachedDataUrl) {
+          const m = genHtmlAttachedDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+          if (m) attachments.push({ mediaType: m[1], data: m[2] });
+        }
         const payload = {
           prompt,
           focusedDocPath: state.currentDoc?.path || undefined,
@@ -2352,6 +2412,7 @@
           codeSearchHint: currentProjectCfg?.code_search_hint || undefined,
           codeMaxSnippets: currentProjectCfg?.code_max_snippets,
           codeSnippetLines: currentProjectCfg?.code_snippet_lines,
+          attachments: attachments.length ? attachments : undefined,
         };
         const res = await botFetch(`${WORKER_URL}/gen-html`, {
           method: 'POST',
@@ -2385,6 +2446,7 @@
             `<div style="margin-top:8px;font-size:11px;color:#065f46"><code>${escapeHtml(data.savedPath)}</code> · ${sizeKb} KB · GitHub Pages 재빌드 완료 후 (1-2분) 접속 가능</div>` +
           `</div>` +
           `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">💡 마음에 안 들면 [📄 HTML] 다시 눌러서 프롬프트 더 구체적으로 재시도. 이 파일은 <code>qa/mockups/</code> 폴더에 커밋됨.</p>`;
+        setGenHtmlPreview(null, null);
       } catch (err) {
         clearInterval(loadingPh.timer);
         holder.classList.remove('streaming', 'loading-placeholder');
