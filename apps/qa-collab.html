@@ -344,6 +344,8 @@
     aside.chat .msg .code-inject-tag[title] { cursor: help; }
     aside.chat .msg .code-inject-files { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
     aside.chat .msg .code-inject-files code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+    /* 🪙 토큰·비용 뱃지 — 답변 완료 시 usage NDJSON 이벤트 도착 후 표시. 클릭 도움말 = 툴팁. */
+    aside.chat .msg .usage-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-bottom: 6px; margin-right: 4px; border: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; cursor: help; }
     aside.chat .msg .msg-actions { display: flex; gap: 6px; margin-top: 8px; opacity: 0; transition: opacity 0.2s; }
     aside.chat .msg:hover .msg-actions, aside.chat .msg:focus-within .msg-actions { opacity: 1; }
     aside.chat .msg .msg-actions button.msg-act { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
@@ -1690,6 +1692,8 @@
       let accumulated = '';
       let appliedFeedbacks = [];
       let codeInjection = null;   // { status, repo, count, keywords, files, errorHint } — 워커에서 meta 로 전달
+      let usage = null;           // { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens } — usage NDJSON 이벤트
+      let model = null;           // meta.model — 요율표 lookup 키
       let streamErr = null;
 
       try {
@@ -1782,11 +1786,15 @@
             if (msg.type === 'meta') {
               appliedFeedbacks = msg.appliedFeedbacks || [];
               codeInjection = msg.codeInjection || null;
+              model = msg.model || null;
               stopLoadingPlaceholder(loadingPlaceholder);
               placeholder = startStreamingMessage(appliedFeedbacks, !!opts.regenerated, codeInjection);
             } else if (msg.type === 'text') {
               accumulated += msg.content;
               if (placeholder) appendStreamingText(placeholder, msg.content);
+            } else if (msg.type === 'usage') {
+              // 스트림 flush 시점 도착 — text 청크가 다 끝난 뒤라 finalize 에 전달
+              usage = msg.usage || null;
             } else if (msg.type === 'error') {
               streamErr = msg.message;
             }
@@ -1798,9 +1806,9 @@
 
         // 마무리: plain text 본문을 마크다운 + 인용 링크화로 정식 렌더, history 저장
         if (placeholder) {
-          finalizeStreamingMessage(placeholder, accumulated, appliedFeedbacks, !!opts.regenerated, codeInjection);
+          finalizeStreamingMessage(placeholder, accumulated, appliedFeedbacks, !!opts.regenerated, codeInjection, usage, model);
         } else if (accumulated) {
-          addMessage('assistant', accumulated, { appliedFeedbacks, regenerated: !!opts.regenerated, codeInjection });
+          addMessage('assistant', accumulated, { appliedFeedbacks, regenerated: !!opts.regenerated, codeInjection, usage, model });
         }
 
         $('#forward-btn').disabled = false;
@@ -1867,6 +1875,63 @@
       if (label) label.textContent = text;
     }
 
+    /* 🪙 Claude 모델별 요율 (USD / MTok) — 2026 공식 pricing 기준.
+       캐시 읽기: 입력의 10% (10x 저렴) · 캐시 쓰기 5m TTL: 입력의 125% (+25% 서지).
+       공식 pricing 변경 시 이 표만 수정. 모르는 모델은 sonnet 요율로 fallback. */
+    const CLAUDE_RATES_USD_PER_MTOK = {
+      'claude-opus-4-7':   { input: 15,  output: 75,  cacheRead: 1.5,  cacheWrite: 18.75 },
+      'claude-sonnet-4-6': { input: 3,   output: 15,  cacheRead: 0.3,  cacheWrite: 3.75 },
+      'claude-haiku-4-5':  { input: 1,   output: 5,   cacheRead: 0.1,  cacheWrite: 1.25 },
+    };
+    const KRW_PER_USD = 1400; // 대략치 · 실환율 변동 존재. 사용자 오해 없도록 툴팁에 "예상" 명시.
+    function claudeRate(model) {
+      const key = Object.keys(CLAUDE_RATES_USD_PER_MTOK).find((k) => (model || '').startsWith(k));
+      return CLAUDE_RATES_USD_PER_MTOK[key] || CLAUDE_RATES_USD_PER_MTOK['claude-sonnet-4-6'];
+    }
+    function computeUsageCost(usage, model) {
+      const r = claudeRate(model);
+      const input      = usage.input_tokens ?? 0;                 // 캐시 제외 순수 신규 입력
+      const output     = usage.output_tokens ?? 0;
+      const cacheRead  = usage.cache_read_input_tokens ?? 0;
+      const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+      const usd = (input * r.input + output * r.output + cacheRead * r.cacheRead + cacheWrite * r.cacheWrite) / 1_000_000;
+      return { usd, krw: usd * KRW_PER_USD };
+    }
+    function formatTokens(n) {
+      if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return String(n);
+    }
+    function formatKrw(krw) {
+      if (krw < 1)   return `~₩${krw.toFixed(2)}`;
+      if (krw < 100) return `~₩${krw.toFixed(1)}`;
+      return `~₩${Math.round(krw)}`;
+    }
+    /** 사용 토큰·비용 뱃지 — usage NDJSON 이벤트에서 받은 값을 요율표로 환산해 표시.
+     *  캐시 읽기는 신규 입력 대비 10x 저렴 → 툴팁으로 절감 효과 노출. */
+    function renderUsageBadge(usage, model) {
+      if (!usage) return '';
+      const { usd, krw } = computeUsageCost(usage, model);
+      const input      = usage.input_tokens ?? 0;
+      const output     = usage.output_tokens ?? 0;
+      const cacheRead  = usage.cache_read_input_tokens ?? 0;
+      const cacheWrite = usage.cache_creation_input_tokens ?? 0;
+      const totalInput = input + cacheRead + cacheWrite;
+      const cacheHint  = cacheRead > 0 ? ` (캐시 ${formatTokens(cacheRead)})` : '';
+      const title = [
+        `모델: ${model || '(unknown → sonnet 요율 적용)'}`,
+        `─ 입력 breakdown ─`,
+        `· 신규 입력: ${input.toLocaleString()} tok`,
+        `· 캐시 읽기: ${cacheRead.toLocaleString()} tok (신규 대비 10x 저렴)`,
+        `· 캐시 쓰기: ${cacheWrite.toLocaleString()} tok (신규 대비 25% 서지, 5분 TTL)`,
+        `· 출력: ${output.toLocaleString()} tok`,
+        `─ 비용 ─`,
+        `$${usd.toFixed(6)} = ${formatKrw(krw)} (환율 ${KRW_PER_USD}원/$, 예상치)`,
+        cacheRead > 0 ? `💡 캐시 히트 덕에 실제 비용이 낮게 유지됨` : `💡 같은 대화에서 반복 질문 시 프롬프트 캐시로 다음 질문부터 훨씬 저렴`,
+      ].join('\n');
+      return `<span class="usage-tag" title="${escapeHtml(title)}">🪙 입력 ${formatTokens(totalInput)}${cacheHint} · 출력 ${formatTokens(output)} · ${formatKrw(krw)}</span>`;
+    }
+
     // 코드 인젝션 진단 배지 HTML — 답변 상단에 표시. status 별 문구·색상 분기.
     // 사용자·기획자·QA 모두 봇 답변이 실제 코드를 참고했는지 즉시 확인 가능.
     // 실패 시 GitHub 검색 URL 을 클릭 링크로 노출해서 원인 즉시 확인 가능.
@@ -1930,7 +1995,7 @@
     }
 
     // 스트리밍 종료 — plain text 를 마크다운으로 재렌더 + 인용 링크 + 액션 버튼 + history 저장
-    function finalizeStreamingMessage(div, fullText, appliedFeedbacks, regenerated, codeInjection) {
+    function finalizeStreamingMessage(div, fullText, appliedFeedbacks, regenerated, codeInjection, usage, model) {
       const body = div.querySelector('.body');
       let bodyHtml = marked.parse(fullText);
       bodyHtml = linkifyCitations(bodyHtml);
@@ -1946,6 +2011,17 @@
       // per-message 액션·CTA 제거 — 툴바의 [📤 기획자에게 전달] / [📝 답변 규칙 추가] 가 대체
       div.classList.remove('streaming');
 
+      // 🪙 usage 뱃지 — startStreamingMessage 시점엔 usage 미확정이라 finalize 에서 붙임.
+      // codeInjection 뱃지 뒤에 이어붙여 상단 배지 라인 유지.
+      if (usage) {
+        const usageBadgeHtml = renderUsageBadge(usage, model);
+        if (usageBadgeHtml) {
+          const codeTag = div.querySelector('.code-inject-tag');
+          const anchor = codeTag || div.querySelector('.regen-tag') || div.querySelector('.role');
+          anchor.insertAdjacentHTML('afterend', usageBadgeHtml);
+        }
+      }
+
       // 툴바 forward 활성화 (improve 는 항상 활성)
       $('#forward-btn').disabled = false;
 
@@ -1953,6 +2029,8 @@
       if (appliedFeedbacks.length > 0) entry.appliedFeedbacks = appliedFeedbacks;
       if (regenerated) entry.regenerated = true;
       if (codeInjection) entry.codeInjection = codeInjection;
+      if (usage) entry.usage = usage;
+      if (model) entry.model = model;
       state.history.push(entry);
 
       $('#messages').scrollTop = $('#messages').scrollHeight;
@@ -2019,6 +2097,9 @@
       // 코드 참고 진단 배지 — assistant 답변에만 (세션 복원 시에도 살아있음)
       const codeInjectTagHtml = role === 'assistant' ? renderCodeInjectionBadge(meta.codeInjection) : '';
 
+      // 🪙 사용 토큰·비용 뱃지 — assistant 답변에만 (세션 복원 시에도 살아있음)
+      const usageTagHtml = role === 'assistant' ? renderUsageBadge(meta.usage, meta.model) : '';
+
       // 역할 라벨: 사용자 → '나' / AI → '제이나미봇'
       const roleLabel = role === 'assistant' ? '제이나미봇' : (role === 'user' ? '나' : role);
 
@@ -2028,7 +2109,7 @@
           <button type="button" class="msg-act" data-act="regen" title="같은 질문으로 다시 답변받기">🔄 재답변</button>
           <button type="button" class="msg-act" data-act="copy" title="답변 본문 복사">📋 복사</button>
         </div>` : '';
-      div.innerHTML = `<div class="role">${roleLabel}</div>${regenTagHtml}${codeInjectTagHtml}<div class="body">${bodyHtml}</div>${cardActions}`;
+      div.innerHTML = `<div class="role">${roleLabel}</div>${regenTagHtml}${codeInjectTagHtml}${usageTagHtml}<div class="body">${bodyHtml}</div>${cardActions}`;
 
       // §N 인용 클릭
       div.querySelectorAll('a.cite').forEach((a) => {
@@ -2050,6 +2131,8 @@
         if (fb.length > 0) entry.appliedFeedbacks = fb;
         if (meta.regenerated) entry.regenerated = true;
         if (meta.codeInjection) entry.codeInjection = meta.codeInjection;
+        if (meta.usage) entry.usage = meta.usage;
+        if (meta.model) entry.model = meta.model;
         state.history.push(entry);
       }
       // 툴바 forward 활성화 — assistant 답변이 들어왔을 때 (improve 는 항상 활성)
@@ -2764,6 +2847,8 @@
           appliedFeedbacks: m.appliedFeedbacks || [],
           regenerated: !!m.regenerated,
           codeInjection: m.codeInjection || null,
+          usage: m.usage || null,
+          model: m.model || null,
         });
       }
       $('#forward-btn').disabled = state.history.length === 0;
