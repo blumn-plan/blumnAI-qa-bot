@@ -58,6 +58,8 @@
     aside.list li .row2 { display: flex; align-items: center; gap: 6px; }
     aside.list li .row2 .preview { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
     aside.list li .row2 .user { font-size: 10px; color: var(--primary); background: #eef2ff; padding: 1px 6px; border-radius: 8px; white-space: nowrap; flex-shrink: 0; font-weight: 500; }
+    aside.list li .row2 .jira-tag { font-size: 10px; color: #1d4ed8; background: #dbeafe; padding: 1px 6px; border-radius: 8px; white-space: nowrap; flex-shrink: 0; font-weight: 500; text-decoration: none; margin-left: 4px; }
+    aside.list li .row2 a.jira-tag:hover { text-decoration: underline; }
     aside.list li .status-pill { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 600; }
     aside.list li .status-pill.pending { background: var(--pending-bg); color: var(--pending-fg); }
     aside.list li .status-pill.applied { background: var(--applied-bg); color: var(--applied-fg); }
@@ -523,6 +525,12 @@
         const pillClass = d.status || 'pending';
         const pillText = d.status === 'applied' ? '✅' : d.status === 'rejected' ? '🚫' : '📋';
         const userTag = d.user ? `<span class="user">👤 ${escapeHtml(d.user)}</span>` : '';
+        // 🎫 Jira 티켓 링크 — applied 처리 시 자동 생성돼 마커로 저장된 것 노출
+        const jiraTag = d.jiraKey
+          ? (d.jiraUrl
+              ? `<a class="jira-tag" href="${escapeAttr(d.jiraUrl)}" target="_blank" rel="noopener" title="Jira 이슈 열기" onclick="event.stopPropagation()">🎫 ${escapeHtml(d.jiraKey)} ↗</a>`
+              : `<span class="jira-tag" title="Jira 이슈 등록됨 (base URL 미설정 → 링크 생략)">🎫 ${escapeHtml(d.jiraKey)}</span>`)
+          : '';
         return `<li>
           <button class="item${active}" data-path="${escapeAttr(d.path)}">
             <div class="row1">
@@ -530,7 +538,7 @@
               <span class="title">${escapeHtml(d.title)}</span>
               <span class="date">${escapeHtml(d.date)}</span>
             </div>
-            <div class="row2"><span class="preview">${escapeHtml(d.preview || d.statusText || '—')}</span>${userTag}</div>
+            <div class="row2"><span class="preview">${escapeHtml(d.preview || d.statusText || '—')}</span>${userTag}${jiraTag}</div>
           </button>
         </li>`;
       }).join('');
@@ -920,9 +928,29 @@
         }
         const data = await res.json();
         toast(`상태 변경 완료: ${data.statusText}`, 'success');
+        // 🎫 외부 연동 결과 (Jira · Teams) — applied 시에만 데이터 옴
+        if (data.externalSync) {
+          const parts = [];
+          const j = data.externalSync.jira;
+          const t = data.externalSync.teams;
+          if (j?.ok && j.key)              parts.push(`🎫 Jira ${j.key} 생성`);
+          else if (j?.ok && j.skipped === 'already-created' && j.key) parts.push(`🎫 Jira ${j.key} (기존 유지)`);
+          else if (j && !j.ok && !j.skipped) parts.push(`⚠️ Jira 실패: ${(j.error || '').slice(0, 100)}`);
+          if (t?.ok && !t.skipped)          parts.push(`💬 Teams 알림 전송`);
+          else if (t?.ok && t.skipped === 'already-notified') parts.push(`💬 Teams (기존 전송)`);
+          else if (t && !t.ok && !t.skipped) parts.push(`⚠️ Teams 실패: ${(t.error || '').slice(0, 100)}`);
+          if (parts.length) toast(parts.join(' · '), (j?.ok !== false && t?.ok !== false) ? 'success' : 'error');
+        }
         // 로컬 state 갱신 후 리스트 + 상세 재로드
         const d = state.decisions.find((x) => x.path === state.currentPath);
-        if (d) { d.status = data.status; d.statusText = data.statusText; }
+        if (d) {
+          d.status = data.status;
+          d.statusText = data.statusText;
+          if (data.externalSync?.jira?.key) {
+            d.jiraKey = data.externalSync.jira.key;
+            d.jiraUrl = data.externalSync.jira.url;
+          }
+        }
         renderList();
         await selectDecision(state.currentPath); // 우측 본문도 새로 (git push 된 새 내용 반영)
       } catch (err) {

@@ -44,6 +44,16 @@ export interface Env {
    *  - 요청 헤더 X-Bot-{GitHub-Repo|GitHub-Token|Anthropic-Key} 를 env 값 대신 사용
    *  다중 팀이 같은 Worker 를 공유하되 각자의 시크릿·레포로 동작. */
   SAAS_MODE?: string;
+  /** (옵션) Jira 연동 — decision "적용완료" 처리 시 Jira 티켓 자동 생성.
+   *  base URL 은 프로토콜 없이 host 만 (예: `blumn.atlassian.net`).
+   *  API token 은 https://id.atlassian.com/manage-profile/security/api-tokens 발급.
+   *  프로젝트 key · issue type 등 규칙은 blumnAI-qa-bot.config.yml 의 projects[].jira. */
+  JIRA_BASE_URL?: string;
+  JIRA_EMAIL?: string;
+  JIRA_API_TOKEN?: string;
+  /** (옵션) Teams Incoming Webhook — decision "적용완료" 처리 시 채널에 카드 전송.
+   *  Teams 채널 · Connectors · Incoming Webhook 에서 URL 발급. */
+  TEAMS_WEBHOOK_URL?: string;
 }
 
 /** 요청 헤더에 SaaS 모드용 인증 값이 있으면 env 를 override 해서 반환.
@@ -94,6 +104,21 @@ interface ProjectConfigEntry {
   label?: string;
   policies_dir?: string;
   storyboards_dir?: string;
+  /** (옵션) 이 프로젝트 decision 이 "적용완료" 될 때 Jira 티켓 자동 생성.
+   *  `project_key` 없으면 이 프로젝트는 Jira 연동 skip. env 에 JIRA_* 시크릿 3종
+   *  모두 있어야 실제 발동. */
+  jira?: {
+    project_key: string;              // 필수 — Jira project key (예: "QA", "PLAT")
+    issue_type?: string;              // default: "Task"
+    title_template?: string;          // default: "[QA 봇] {topic}" · placeholders: {topic} {questioner} {docPath}
+    default_labels?: string[];        // default: ["qa-bot", "planner-approved"]
+    assignee_email?: string;          // 선택 — 있으면 accountId lookup 후 assign 시도
+  };
+  /** (옵션) 이 프로젝트 decision 이 "적용완료" 될 때 Teams 채널 알림.
+   *  `enabled: true` 이고 env.TEAMS_WEBHOOK_URL 이 있어야 발동. */
+  teams?: {
+    enabled?: boolean;                // default: false
+  };
 }
 
 interface BotConfig {
@@ -1444,6 +1469,8 @@ interface QaFileEntry {
   preview?: string;
   user?: string;
   improvement?: string;
+  jiraKey?: string;   // decision md 하단 <!-- jira-issue: XYZ-123 --> 마커 파싱 결과
+  jiraUrl?: string;   // JIRA_BASE_URL 있으면 조합
 }
 
 function parseLimit(raw: string | null): number {
@@ -1483,6 +1510,7 @@ function parseDecisionStatus(md: string): { status: string; statusText: string }
 
 async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEntry[] }> {
   const items = await listMdDir(env, 'qa/decisions', limit);
+  const jiraHost = (env.JIRA_BASE_URL || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
   await Promise.all(
     items.map(async (it) => {
       try {
@@ -1494,6 +1522,11 @@ async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEn
         it.preview = proposal ? proposal[1].trim() : '';
         const userMatch = md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m);
         it.user = userMatch ? userMatch[1].trim() : '';
+        const jiraKey = extractJiraKey(md);
+        if (jiraKey) {
+          it.jiraKey = jiraKey;
+          if (jiraHost) it.jiraUrl = `https://${jiraHost}/browse/${jiraKey}`;
+        }
       } catch (_) {
         it.status = 'pending';
         it.statusText = '';
@@ -1598,7 +1631,308 @@ interface UpdateDecisionStatusBody {
   plannerName?: string;
 }
 
-async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): Promise<{ path: string; status: string; statusText: string; committed: boolean }> {
+/* ────────── 외부 시스템 연동 (Jira · Teams) ──────────
+ *  updateDecisionStatus 가 "applied" 로 커밋 완료 후 fire-and-forget 로 호출.
+ *  실패해도 적용완료 자체는 성공 처리 — 사용자 흐름 안 막음. 결과는
+ *  결정 md 하단 <!-- external-sync: ... --> HTML 코멘트로 남겨서 재실행
+ *  시 중복 티켓·중복 알림 방지 & 실패한 것만 재시도 가능. */
+
+interface ExternalSyncResult {
+  jira?: { ok: boolean; key?: string; url?: string; error?: string; skipped?: string };
+  teams?: { ok: boolean; error?: string; skipped?: string };
+}
+
+const JIRA_MARKER = /<!--\s*jira-issue:\s*([A-Z][A-Z0-9_]+-\d+)\s*-->/;
+const TEAMS_MARKER = /<!--\s*teams-notified:\s*(\d{4}-\d{2}-\d{2}T[^\s]+)\s*-->/;
+
+function extractJiraKey(md: string): string | null {
+  const m = md.match(JIRA_MARKER);
+  return m ? m[1] : null;
+}
+function teamsAlreadyNotified(md: string): boolean {
+  return TEAMS_MARKER.test(md);
+}
+function extractDecisionTopic(md: string): string {
+  const h1 = md.match(/^#\s+(.+)$/m);
+  return h1 ? h1[1].trim() : '(제목 없음)';
+}
+function extractDecisionQuestioner(md: string): string {
+  const m = md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m);
+  return m ? m[1].trim() : '익명';
+}
+function extractDecisionDocPath(md: string): string {
+  const m = md.match(/^\|\s*관련 문서\s*\|\s*`?([^`|]+?)`?\s*\|\s*$/m);
+  return m ? m[1].trim() : '';
+}
+function extractDecisionSummary(md: string): string {
+  // "## 합의 요약" 블록의 첫 non-blank 라인
+  const m = md.match(/##\s*합의 요약\s*\n+([^\n#]+)/);
+  return m ? m[1].trim().replace(/^_|_$/g, '').slice(0, 500) : '';
+}
+
+function applyJiraTitleTemplate(
+  tmpl: string,
+  vars: { topic: string; questioner: string; docPath: string },
+): string {
+  return tmpl
+    .replace(/\{topic\}/g, vars.topic)
+    .replace(/\{questioner\}/g, vars.questioner)
+    .replace(/\{docPath\}/g, vars.docPath || '(미지정)');
+}
+
+/** Jira REST v3 로 이슈 생성. 성공 시 { key, url } 반환. */
+async function createJiraIssue(env: Env, params: {
+  projectKey: string;
+  issueType: string;
+  summary: string;
+  descriptionText: string;
+  labels: string[];
+  assigneeEmail?: string;
+}): Promise<{ key: string; url: string }> {
+  if (!env.JIRA_BASE_URL || !env.JIRA_EMAIL || !env.JIRA_API_TOKEN) {
+    throw new Error('JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN 시크릿 미설정');
+  }
+  const host = env.JIRA_BASE_URL.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const authHeader = 'Basic ' + btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`);
+
+  // 선택: assignee_email 이 있으면 accountId lookup 후 attach
+  let accountId: string | undefined;
+  if (params.assigneeEmail) {
+    try {
+      const lookupRes = await fetch(
+        `https://${host}/rest/api/3/user/search?query=${encodeURIComponent(params.assigneeEmail)}`,
+        { headers: { Authorization: authHeader, Accept: 'application/json' } },
+      );
+      if (lookupRes.ok) {
+        const users = (await lookupRes.json()) as Array<{ accountId: string; emailAddress?: string }>;
+        const match = users.find((u) => u.emailAddress?.toLowerCase() === params.assigneeEmail!.toLowerCase()) ?? users[0];
+        accountId = match?.accountId;
+      }
+    } catch (_) { /* assignee lookup 실패는 무시 — 이슈는 unassigned 로 생성 */ }
+  }
+
+  const fields: Record<string, unknown> = {
+    project: { key: params.projectKey },
+    issuetype: { name: params.issueType },
+    summary: params.summary.slice(0, 250),
+    labels: params.labels,
+    // ADF (Atlassian Document Format) — v3 API 는 description 을 ADF 로 요구
+    description: {
+      type: 'doc',
+      version: 1,
+      content: [
+        { type: 'paragraph', content: [{ type: 'text', text: params.descriptionText.slice(0, 30_000) }] },
+      ],
+    },
+  };
+  if (accountId) fields.assignee = { accountId };
+
+  const res = await fetch(`https://${host}/rest/api/3/issue`, {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ fields }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Jira create ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { key: string };
+  return { key: data.key, url: `https://${host}/browse/${data.key}` };
+}
+
+/** Teams Incoming Webhook 으로 MessageCard 전송.
+ *  Adaptive Card v1.5 는 workflow 방식만 지원 → 하위 호환 위해 legacy MessageCard 사용. */
+async function postTeamsWebhook(env: Env, params: {
+  topic: string;
+  questioner: string;
+  planner: string;
+  docPath: string;
+  summary: string;
+  decisionUrl: string;
+  jiraUrl?: string;
+  jiraKey?: string;
+}): Promise<void> {
+  if (!env.TEAMS_WEBHOOK_URL) throw new Error('TEAMS_WEBHOOK_URL 시크릿 미설정');
+
+  const facts: Array<{ name: string; value: string }> = [
+    { name: '질문자', value: params.questioner },
+    { name: '기획자', value: params.planner || '(미기재)' },
+    { name: '관련 문서', value: params.docPath || '(미지정)' },
+  ];
+  if (params.jiraKey && params.jiraUrl) {
+    facts.push({ name: 'Jira', value: `[${params.jiraKey}](${params.jiraUrl})` });
+  }
+
+  const card = {
+    '@type': 'MessageCard',
+    '@context': 'https://schema.org/extensions',
+    summary: `QA 봇 적용완료: ${params.topic}`,
+    themeColor: '16A34A',
+    title: `✅ QA 봇 적용완료 — ${params.topic}`,
+    sections: [
+      {
+        activityTitle: params.summary || '(요약 없음)',
+        facts,
+        markdown: true,
+      },
+    ],
+    potentialAction: [
+      {
+        '@type': 'OpenUri',
+        name: '📄 결정 파일 열기',
+        targets: [{ os: 'default', uri: params.decisionUrl }],
+      },
+      ...(params.jiraUrl ? [{
+        '@type': 'OpenUri' as const,
+        name: '🎫 Jira 이슈 열기',
+        targets: [{ os: 'default', uri: params.jiraUrl }],
+      }] : []),
+    ],
+  };
+
+  const res = await fetch(env.TEAMS_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(card),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Teams webhook ${res.status}: ${text.slice(0, 200)}`);
+  }
+}
+
+/** applied 상태로 커밋된 decision md 를 다시 GET 해서, 하단에 sync 결과
+ *  HTML 코멘트를 append 하고 재커밋. 실패 케이스는 코멘트 생략 (재실행 시 재시도).
+ *  코멘트 형식:
+ *    <!-- jira-issue: XYZ-123 -->            ← 이슈 key (재실행 skip 마커)
+ *    <!-- teams-notified: 2026-07-22T04:15:00Z -->  ← 알림 시각 (재실행 skip) */
+async function appendExternalSyncMarkers(
+  env: Env,
+  path: string,
+  markers: { jiraKey?: string; teamsNotifiedAt?: string },
+): Promise<void> {
+  if (!markers.jiraKey && !markers.teamsNotifiedAt) return;
+  const contentRes = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(path)}`);
+  if (!contentRes.ok) return; // 실패해도 조용히 skip — decision 자체는 이미 applied 로 커밋됨
+  const data = (await contentRes.json()) as { sha: string; content: string; encoding: string };
+  const md = data.encoding === 'base64' ? base64ToUtf8(data.content) : data.content;
+
+  const additions: string[] = [];
+  if (markers.jiraKey && !JIRA_MARKER.test(md)) {
+    additions.push(`<!-- jira-issue: ${markers.jiraKey} -->`);
+  }
+  if (markers.teamsNotifiedAt && !TEAMS_MARKER.test(md)) {
+    additions.push(`<!-- teams-notified: ${markers.teamsNotifiedAt} -->`);
+  }
+  if (additions.length === 0) return;
+
+  const newMd = md.endsWith('\n') ? md + additions.join('\n') + '\n' : md + '\n' + additions.join('\n') + '\n';
+  await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(path)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      message: `qa-decision external-sync markers: ${path.split('/').pop()}`,
+      content: utf8ToBase64(newMd),
+      sha: data.sha,
+    }),
+  });
+}
+
+/** applied 커밋 성공 후 호출 — Jira 티켓 생성 + Teams 알림. 각각 독립적으로 시도. */
+async function runExternalSync(env: Env, path: string, md: string): Promise<ExternalSyncResult> {
+  const project = extractProjectFromPath(extractDecisionDocPath(md)) || await defaultProjectFallback(env);
+  const cfg = await getProjectConfig(env, project);
+  const result: ExternalSyncResult = {};
+
+  const topic = extractDecisionTopic(md);
+  const questioner = extractDecisionQuestioner(md);
+  const docPath = extractDecisionDocPath(md);
+  const summary = extractDecisionSummary(md);
+  const decisionUrl = `https://github.com/${env.GITHUB_REPO}/blob/main/${path}`;
+
+  // ── Jira ──
+  const jiraCfg = cfg?.jira;
+  const existingJiraKey = extractJiraKey(md);
+  if (existingJiraKey) {
+    const host = (env.JIRA_BASE_URL || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+    result.jira = { ok: true, key: existingJiraKey, url: host ? `https://${host}/browse/${existingJiraKey}` : undefined, skipped: 'already-created' };
+  } else if (!jiraCfg?.project_key) {
+    result.jira = { ok: false, skipped: 'not-configured' };
+  } else if (!env.JIRA_BASE_URL || !env.JIRA_EMAIL || !env.JIRA_API_TOKEN) {
+    result.jira = { ok: false, skipped: 'secrets-missing' };
+  } else {
+    try {
+      const titleTemplate = jiraCfg.title_template || '[QA 봇] {topic}';
+      const summary_ = applyJiraTitleTemplate(titleTemplate, { topic, questioner, docPath });
+      const descriptionText =
+        `QA 봇 협업 결정이 기획자에 의해 "적용완료" 처리되었습니다.\n\n` +
+        `▪ 질문자: ${questioner}\n` +
+        `▪ 관련 문서: ${docPath || '(미지정)'}\n` +
+        `▪ 결정 파일: ${decisionUrl}\n\n` +
+        `── 합의 요약 ──\n${summary || '(요약 없음)'}\n`;
+      const created = await createJiraIssue(env, {
+        projectKey: jiraCfg.project_key,
+        issueType: jiraCfg.issue_type || 'Task',
+        summary: summary_,
+        descriptionText,
+        labels: jiraCfg.default_labels || ['qa-bot', 'planner-approved'],
+        assigneeEmail: jiraCfg.assignee_email,
+      });
+      result.jira = { ok: true, key: created.key, url: created.url };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[external-sync] jira failed:', msg);
+      result.jira = { ok: false, error: msg };
+    }
+  }
+
+  // ── Teams ──
+  const teamsCfg = cfg?.teams;
+  if (teamsAlreadyNotified(md)) {
+    result.teams = { ok: true, skipped: 'already-notified' };
+  } else if (!teamsCfg?.enabled) {
+    result.teams = { ok: false, skipped: 'not-configured' };
+  } else if (!env.TEAMS_WEBHOOK_URL) {
+    result.teams = { ok: false, skipped: 'secrets-missing' };
+  } else {
+    try {
+      // planner name 은 최근 planner_note 블록에서 추출 시도
+      const plannerMatch = md.match(/기획자 메모.*?—\s*([^\n]+?)\s*(\n|$)/);
+      await postTeamsWebhook(env, {
+        topic,
+        questioner,
+        planner: plannerMatch ? plannerMatch[1].trim() : '',
+        docPath,
+        summary,
+        decisionUrl,
+        jiraUrl: result.jira?.url,
+        jiraKey: result.jira?.key,
+      });
+      result.teams = { ok: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[external-sync] teams failed:', msg);
+      result.teams = { ok: false, error: msg };
+    }
+  }
+
+  // ── 마커 append (성공한 것만) ──
+  try {
+    await appendExternalSyncMarkers(env, path, {
+      jiraKey: result.jira?.ok && !result.jira?.skipped ? result.jira.key : undefined,
+      teamsNotifiedAt: result.teams?.ok && !result.teams?.skipped ? new Date().toISOString() : undefined,
+    });
+  } catch (err) {
+    console.error('[external-sync] marker append failed:', err);
+  }
+
+  return result;
+}
+
+async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): Promise<{ path: string; status: string; statusText: string; committed: boolean; externalSync?: ExternalSyncResult }> {
   if (!body.path || !/^qa\/decisions\/[^/]+\.md$/.test(body.path)) {
     throw new Error('valid qa/decisions/ path required');
   }
@@ -1653,7 +1987,20 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): P
     const text = await putRes.text();
     throw new Error(`GitHub update ${putRes.status}: ${text.slice(0, 500)}`);
   }
-  return { path: body.path, status: body.status, statusText: newText, committed: true };
+
+  // 🎫 applied 커밋 성공 → Jira · Teams fire-and-forget 동기 시도
+  // (실패해도 적용완료 자체는 이미 커밋됐으므로 사용자 흐름 안 막음)
+  let externalSync: ExternalSyncResult | undefined;
+  if (body.status === 'applied') {
+    try {
+      externalSync = await runExternalSync(env, body.path, replaced);
+    } catch (err) {
+      console.error('[external-sync] fatal:', err);
+      externalSync = { jira: { ok: false, error: 'unexpected' }, teams: { ok: false, error: 'unexpected' } };
+    }
+  }
+
+  return { path: body.path, status: body.status, statusText: newText, committed: true, externalSync };
 }
 
 /* ────────── /delete-decision ────────── */
