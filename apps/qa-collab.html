@@ -992,11 +992,47 @@
     const DOC_CACHE_TTL_MS = 5 * 60 * 1000;
     const docContentCache = new Map(); // key = path, value = { at, content }
     const listDocsCache   = new Map(); // key = project, value = { at, docs }
+
+    /** GET 요청 자동 재시도 — 408/425/429/500/502/503/504 or 네트워크 오류에 한해
+     *  최대 3회 시도 (backoff 500·1200ms). GitHub Contents API 순간 5xx/429 로
+     *  전체 UI 가 "HTTP 500" 뜨는 상황을 자동 복구. 실패 시 워커 응답 body 의
+     *  `error` 필드까지 포함해서 throw → friendlyError 가 사람 말로 매핑. */
+    const RETRYABLE_GET_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+    async function retryableGet(url) {
+      const MAX = 3;
+      const BACKOFFS = [500, 1200];
+      let lastErr = null;
+      let lastRes = null;
+      for (let attempt = 1; attempt <= MAX; attempt++) {
+        try {
+          const res = await botFetch(url);
+          if (res.ok) return res;
+          lastRes = res;
+          if (!RETRYABLE_GET_STATUSES.has(res.status) || attempt === MAX) {
+            // 워커가 { error: ... } 로 실제 원인 실어주므로 그것까지 throw
+            const bodyText = await res.text().catch(() => '');
+            let reason = '';
+            try { reason = JSON.parse(bodyText)?.error || ''; } catch (_) { reason = bodyText.slice(0, 200); }
+            throw new Error(reason ? `HTTP ${res.status}: ${reason}` : `HTTP ${res.status}`);
+          }
+          console.warn(`[fetch-retry] ${url} attempt ${attempt} → ${res.status}, retrying`);
+        } catch (err) {
+          if (err instanceof Error && /^HTTP \d/.test(err.message)) throw err; // 위에서 처리된 non-retryable
+          const isNet = /Failed to fetch|NetworkError|net::ERR/i.test(err?.message || '');
+          if (!isNet || attempt === MAX) throw err;
+          lastErr = err;
+          console.warn(`[fetch-retry] ${url} attempt ${attempt} network err (${err.message}), retrying`);
+        }
+        if (attempt < MAX) await new Promise((r) => setTimeout(r, BACKOFFS[attempt - 1]));
+      }
+      if (lastRes) return lastRes;
+      throw lastErr || new Error('unknown fetch failure');
+    }
+
     async function fetchDocCached(path) {
       const c = docContentCache.get(path);
       if (c && Date.now() - c.at < DOC_CACHE_TTL_MS) return c.content;
-      const res = await botFetch(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await retryableGet(`${WORKER_URL}/doc?path=${encodeURIComponent(path)}`);
       const data = await res.json();
       docContentCache.set(path, { at: Date.now(), content: data.content });
       return data.content;
@@ -1004,8 +1040,7 @@
     async function fetchListDocsCached(project) {
       const c = listDocsCache.get(project);
       if (c && Date.now() - c.at < DOC_CACHE_TTL_MS) return c.docs;
-      const res = await botFetch(`${WORKER_URL}/list-docs?project=${encodeURIComponent(project)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await retryableGet(`${WORKER_URL}/list-docs?project=${encodeURIComponent(project)}`);
       const data = await res.json();
       const docs = data.docs || [];
       // 🩹 transient 실패가 빈 배열로 오면 5분 캐시에 눌러붙는 문제 방지 —
@@ -1353,7 +1388,16 @@
             </li>`;
         }
       } catch (err) {
-        $('#policy-list').innerHTML = `<li><button disabled style="color:var(--error)">목록 로드 실패: ${err.message}</button></li>`;
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        $('#policy-list').innerHTML =
+          `<li style="padding:12px;font-size:12px;color:var(--error);line-height:1.6">` +
+            `<div style="font-weight:600;margin-bottom:4px">📄 정책문서 로드 실패</div>` +
+            `<div style="margin-bottom:8px;color:var(--muted);word-break:break-all">${escapeHtml(friendlyError(err))}</div>` +
+            `<button type="button" id="policy-retry-btn" style="padding:6px 12px;background:#2563eb;color:white;border:0;border-radius:4px;font-weight:600;font-size:12px;cursor:pointer">🔁 다시 시도</button>` +
+            `<details style="margin-top:8px"><summary style="font-size:10px;color:var(--muted);cursor:pointer">🔍 원본 에러</summary><pre style="margin:4px 0 0;padding:6px;background:#f9fafb;border-radius:4px;font-size:10px;overflow:auto;max-height:120px;white-space:pre-wrap;color:#374151">${escapeHtml(rawMsg)}</pre></details>` +
+          `</li>`;
+        const btn = $('#policy-retry-btn');
+        if (btn) btn.addEventListener('click', () => loadDocs());
       }
     }
 
@@ -1496,7 +1540,19 @@
         assignDocHeaderIds(article);
         bindCiteAnchorsInArticle(article);
       } catch (err) {
-        article.innerHTML = `<p style="color:var(--error)">문서 로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
+        const rawMsg = err instanceof Error ? err.message : String(err);
+        article.innerHTML =
+          `<div style="padding:20px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px">` +
+            `<div style="font-weight:600;color:var(--error);margin-bottom:6px">📄 문서 로드 실패</div>` +
+            `<div style="color:#7f1d1d;margin-bottom:10px;font-size:13px;line-height:1.6">${escapeHtml(friendlyError(err))}</div>` +
+            `<button type="button" id="doc-retry-btn" style="padding:6px 14px;background:#2563eb;color:white;border:0;border-radius:4px;font-weight:600;font-size:13px;cursor:pointer">🔁 다시 시도</button>` +
+            `<details style="margin-top:10px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:4px 0 0;padding:8px;background:#fff;border-radius:4px;font-size:11px;overflow:auto;max-height:160px;white-space:pre-wrap;color:#374151">${escapeHtml(rawMsg)}</pre></details>` +
+          `</div>`;
+        const btn = $('#doc-retry-btn');
+        if (btn) btn.addEventListener('click', () => {
+          docContentCache.delete(path); // 5분 캐시가 실패 상태로 눌러 붙지 않게 강제 재요청
+          renderDocBody(path);
+        });
       }
     }
     /** docContentCache 에 유효한 항목이 있는지 확인 (TTL 안). renderDocBody 로딩 텍스트 skip 판단용. */

@@ -359,7 +359,13 @@ export default {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[qa-bot]', msg);
-      return jsonResponse({ error: msg }, 500, corsHeaders);
+      // Upstream GitHub 오류 (429/5xx) 는 502 로 매핑 → 프론트 retryableGet 이 자동 재시도.
+      // 기존엔 무조건 500 → 프론트에 "HTTP 500" 만 뜨고 사용자 재시도만이 유일한 해법이었음.
+      // 예: `fetch dir projects/xxx/docs/policies: 502` → 502 로 재분류.
+      const m = msg.match(/:\s*(4\d\d|5\d\d)\b/);
+      const upstream = m ? parseInt(m[1], 10) : 0;
+      const status = (upstream === 429 || (upstream >= 500 && upstream < 600)) ? 502 : 500;
+      return jsonResponse({ error: msg, upstreamStatus: upstream || undefined }, status, corsHeaders);
     }
   },
 };
@@ -441,50 +447,78 @@ async function safeDirListing(env: Env, path: string, warnLabel: string): Promis
   }
 }
 
-async function listDocs(env: Env, project: string): Promise<{ project: string; docs: DocEntry[] }> {
+async function listDocs(
+  env: Env,
+  project: string,
+): Promise<{ project: string; docs: DocEntry[]; warnings?: string[] }> {
   const polDir = await policiesDir(env, project);
   const storyDir = await storyboardsDir(env, project);
 
-  const policyEntries = await safeDirListing(env, polDir, `policies dir (${polDir})`);
-  const policies: DocEntry[] = policyEntries
-    .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_'))
-    .map((e) => ({
-      path: e.path,
-      title: e.name.replace(/_v\d+\.\d+\.\d+\.md$/, '').replace(/\.md$/, '').replace(/_/g, ' '),
-      kind: 'policy' as const,
-    }));
+  // 부분 실패 허용 — policies 만 성공해도 그거라도 보여준다.
+  // 둘 다 실패해야 500 던짐. 기존 로직은 storyboards 순간 오류 하나로 전체 500 이었음.
+  const [polResult, storyResult] = await Promise.allSettled([
+    safeDirListing(env, polDir, `policies dir (${polDir})`),
+    safeDirListing(env, storyDir, `storyboards dir (${storyDir})`),
+  ]);
+
+  const warnings: string[] = [];
+
+  const policies: DocEntry[] = polResult.status === 'fulfilled'
+    ? polResult.value
+        .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_'))
+        .map((e) => ({
+          path: e.path,
+          title: e.name.replace(/_v\d+\.\d+\.\d+\.md$/, '').replace(/\.md$/, '').replace(/_/g, ' '),
+          kind: 'policy' as const,
+        }))
+    : (warnings.push(`policies: ${errMsg(polResult.reason)}`), []);
 
   // storyboards — 두 레이아웃 모두 지원:
   //   nested: storyboards/<screen>/<screen>_storyboard_v0.1.0.md  (admin_v1 스타일)
   //   flat:   storyboards/<screen>_storyboard_v0.1.0.md           (backoffice_v2 스타일)
-  const storyboardEntries = await safeDirListing(env, storyDir, `storyboards dir (${storyDir})`);
   const storyboards: DocEntry[] = [];
-  for (const e of storyboardEntries) {
-    if (e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && e.name.toLowerCase() !== 'readme.md') {
-      // flat 케이스
-      const screen = e.name.replace(/_storyboard_v\d+\.\d+\.\d+\.md$/, '').replace(/\.md$/, '');
-      storyboards.push({
-        path: e.path,
-        title: screen.replace(/_/g, ' '),
-        kind: 'storyboard' as const,
-        screen,
-      });
-    } else if (e.type === 'dir') {
-      // nested 케이스 — 개별 폴더 fetch 실패는 관대하게 (그 화면만 빠짐)
-      const inner = await fetchDirListingCached(env, e.path).catch(() => [] as ContentEntry[]);
-      const md = inner.find((f) => f.type === 'file' && f.name.endsWith('.md'));
-      if (md) {
+  if (storyResult.status === 'fulfilled') {
+    for (const e of storyResult.value) {
+      if (e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && e.name.toLowerCase() !== 'readme.md') {
+        const screen = e.name.replace(/_storyboard_v\d+\.\d+\.\d+\.md$/, '').replace(/\.md$/, '');
         storyboards.push({
-          path: md.path,
-          title: e.name.replace(/_/g, ' '),
+          path: e.path,
+          title: screen.replace(/_/g, ' '),
           kind: 'storyboard' as const,
-          screen: e.name,
+          screen,
         });
+      } else if (e.type === 'dir') {
+        const inner = await fetchDirListingCached(env, e.path).catch(() => [] as ContentEntry[]);
+        const md = inner.find((f) => f.type === 'file' && f.name.endsWith('.md'));
+        if (md) {
+          storyboards.push({
+            path: md.path,
+            title: e.name.replace(/_/g, ' '),
+            kind: 'storyboard' as const,
+            screen: e.name,
+          });
+        }
       }
     }
+  } else {
+    warnings.push(`storyboards: ${errMsg(storyResult.reason)}`);
   }
 
-  return { project, docs: [...policies, ...storyboards].sort((a, b) => a.title.localeCompare(b.title)) };
+  // 둘 다 실패 → 상위 catch 가 upstream status 매핑 후 502 반환
+  if (polResult.status === 'rejected' && storyResult.status === 'rejected') {
+    throw polResult.reason;
+  }
+
+  const out: { project: string; docs: DocEntry[]; warnings?: string[] } = {
+    project,
+    docs: [...policies, ...storyboards].sort((a, b) => a.title.localeCompare(b.title)),
+  };
+  if (warnings.length > 0) out.warnings = warnings;
+  return out;
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 /* ────────── 2. /doc?path= ────────── */
