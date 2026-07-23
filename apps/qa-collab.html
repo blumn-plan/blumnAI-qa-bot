@@ -2464,13 +2464,12 @@
         }
       }
     });
-    $('#gen-html-dialog').addEventListener('close', async () => {
-      const dlg = $('#gen-html-dialog');
-      if (dlg.returnValue !== 'default') return;
-      const prompt = $('#gh-prompt').value.trim();
-      if (!prompt) { toast('어떤 화면 만들지 적어주세요', 'error'); return; }
-
-      // 답변 로딩 placeholder 재사용 — 스피너·경과시간 자동 갱신
+    /**
+     * 📄 HTML 목업 실행 — 다이얼로그 close 와 [🔁 다시 시도] 버튼 양쪽에서 호출.
+     * prompt·dataUrl·mime 를 인자로 받아 원본 요청을 그대로 재현. 실패 시
+     * body 안에 [🔁 다시 시도] 버튼을 심어 같은 페이로드로 재요청 가능.
+     */
+    async function runGenHtml(prompt, dataUrl, mime) {
       const loadingPh = startLoadingPlaceholder(false);
       const holder = loadingPh.div;
       const roleEl = holder.querySelector('.role');
@@ -2479,11 +2478,10 @@
       if (labelEl) labelEl.textContent = 'Claude 가 정책·코드 근거로 HTML 을 만들고 있어요…';
 
       try {
-        // 현재 프로젝트의 코드 연결 컨텍스트 함께 전달 (매칭 확률 상승)
         const currentProjectCfg = (CONFIG?.projects ?? []).find((p) => p.id === state.currentProject);
         const attachments = [];
-        if (genHtmlAttachedDataUrl) {
-          const m = genHtmlAttachedDataUrl.match(/^data:([^;]+);base64,(.*)$/);
+        if (dataUrl) {
+          const m = dataUrl.match(/^data:([^;]+);base64,(.*)$/);
           if (m) attachments.push({ mediaType: m[1], data: m[2] });
         }
         const payload = {
@@ -2507,15 +2505,11 @@
           throw new Error(errData.error || `HTTP ${res.status}`);
         }
         const data = await res.json();
-        // pages 절대 URL 재구성 — origin + savedPath
-        // qa-collab.html 이 /.blumnAI-qa-bot/apps/qa-collab.html 로 서빙되므로
-        // pages root 는 그 앞 경로. savedPath (qa/mockups/xxx.html) 를 이어붙임.
         const pathname = location.pathname;
         const rootMatch = pathname.match(/^(.*?)\/\.blumnAI-qa-bot\/apps\//);
         const pagesRoot = rootMatch ? rootMatch[1] : '';
         const absoluteUrl = `${location.origin}${pagesRoot}/${data.savedPath}`;
         const sizeKb = (data.bytes / 1024).toFixed(1);
-        // 로딩 상태 정리 — 타이머 stop + 로딩 클래스 제거 + body 를 완료 컨텐츠로 교체
         clearInterval(loadingPh.timer);
         holder.classList.remove('streaming', 'loading-placeholder');
         holder.querySelector('.role').textContent = '📄 HTML 목업 완료';
@@ -2529,7 +2523,6 @@
             `<div style="margin-top:8px;font-size:11px;color:#065f46"><code>${escapeHtml(data.savedPath)}</code> · ${sizeKb} KB · GitHub Pages 재빌드 완료 후 (1-2분) 접속 가능</div>` +
           `</div>` +
           `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">💡 마음에 안 들면 [📄 HTML] 다시 눌러서 프롬프트 더 구체적으로 재시도. 이 파일은 <code>qa/mockups/</code> 폴더에 커밋됨.</p>`;
-        setGenHtmlPreview(null, null);
       } catch (err) {
         clearInterval(loadingPh.timer);
         holder.classList.remove('streaming', 'loading-placeholder');
@@ -2538,9 +2531,32 @@
         bodyEl.classList.remove('loading-body');
         const rawMsg = err instanceof Error ? err.message : String(err);
         bodyEl.innerHTML =
-          `<p style="color:var(--error);margin:0 0 6px">${escapeHtml(friendlyError(err))}</p>` +
-          `<details style="margin:6px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:6px 0 0;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">${escapeHtml(rawMsg)}</pre></details>`;
+          `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
+          `<p style="color:var(--error);margin:0 0 8px">${escapeHtml(friendlyError(err))}</p>` +
+          `<button type="button" class="gh-retry-btn" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#2563eb;color:white;border:0;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer">🔁 같은 요청 다시 시도</button>` +
+          `<details style="margin:10px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:6px 0 0;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">${escapeHtml(rawMsg)}</pre></details>`;
+        const retryBtn = bodyEl.querySelector('.gh-retry-btn');
+        if (retryBtn) {
+          retryBtn.addEventListener('click', () => {
+            retryBtn.disabled = true;
+            retryBtn.textContent = '🔁 재시도 중…';
+            // 실패 메시지는 그대로 두고, 새 placeholder 로 재요청 → 히스토리에 시도 흔적 남음
+            runGenHtml(prompt, dataUrl, mime);
+          });
+        }
       }
+    }
+
+    $('#gen-html-dialog').addEventListener('close', async () => {
+      const dlg = $('#gen-html-dialog');
+      if (dlg.returnValue !== 'default') return;
+      const prompt = $('#gh-prompt').value.trim();
+      if (!prompt) { toast('어떤 화면 만들지 적어주세요', 'error'); return; }
+      // 다이얼로그 상태 캡처 후 즉시 초기화 — 재시도 시엔 캡처된 값을 그대로 사용
+      const dataUrl = genHtmlAttachedDataUrl;
+      const mime = genHtmlAttachedMime;
+      setGenHtmlPreview(null, null);
+      runGenHtml(prompt, dataUrl, mime);
     });
 
     /* 🎁 코어 봇 개선 제안 — GitHub Issue 로 리다이렉트 (URL 프리필) */
@@ -3451,6 +3467,10 @@
       }
       if (/CORS|Cross-Origin/i.test(msg)) {
         return 'CORS 차단. wrangler.toml 의 ALLOWED_ORIGINS 에 이 페이지 URL 을 추가하고 재배포하세요.';
+      }
+      // Cloudflare 524 — Worker/Claude 응답이 100s 넘게 걸려서 엣지가 끊음
+      if (/\b524\b|error code: 524/i.test(msg)) {
+        return 'Cloudflare 요청 타임아웃 (524) — Claude 답변 생성이 100초 넘게 걸려 엣지가 연결을 끊었어요. 프롬프트를 더 짧게·구체적으로 줄여서 [🔁 다시 시도] 해주세요.';
       }
       if (/HTTP 5\d\d/.test(msg)) {
         return `서버 오류: ${msg.slice(0, 120)}. Worker 로그 확인 필요 (wrangler tail).`;
