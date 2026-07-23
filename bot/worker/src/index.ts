@@ -931,7 +931,7 @@ function buildVolatileBlock(p: SystemPromptParts): string {
       '',
       '[🌐 현재 요청 모드 — 전체 정책 종합]',
       p.allDocsBundle
-        ? '협업자는 특정 문서를 열지 않고 프로젝트 전체 정책을 종합해서 답변받길 원합니다. 위 [📖 프로젝트 전체 정책 문서 본문] 을 근거로 답변하세요. "선택된 문서가 없다" 라고 회피하지 말고, 종합 근거로 답변할 것.'
+        ? '협업자는 특정 문서를 열지 않고 프로젝트 전체 정책을 종합해서 답변받길 원합니다. 위 [📖 프로젝트 전체 정책 문서 본문] 을 근거로 답변하세요. "선택된 문서가 없다" 라고 회피하지 말고, 종합 근거로 답변할 것. 만약 번들 하단에 [⚠️ fetch 실패 문서] 목록이 있고 사용자의 질문 대상이 그 목록에 있으면, "해당 정책 문서는 존재하지만 이번 요청에서 본문 로드 실패로 세부 확인이 어려워요 (transient 오류). 잠시 후 다시 시도하시거나 좌측 목록에서 직접 문서를 선택해주세요" 라고 안내하세요. "번들에 포함되지 않는다" · "문서가 없다" 라고 하지 마세요.'
         : '협업자가 전체 정책 종합 모드로 질문했으나 이 프로젝트에는 아직 등록된 정책 문서가 없습니다. "이 프로젝트에는 아직 정책 문서가 등록되지 않아 종합 답변을 드릴 수 없습니다. 기획팀에 정책 문서 등록을 요청해주세요" 라고 안내하세요.',
     );
   } else {
@@ -977,25 +977,51 @@ async function buildDocCatalog(env: Env, project: string): Promise<string> {
 }
 
 /** 프로젝트 전체 정책 문서 본문 번들 — Anthropic prompt caching 대상.
- *  focusedDocPath 는 이미 volatile 블록에 들어가므로 여기서 제외 (중복 방지). */
+ *  focusedDocPath 는 이미 volatile 블록에 들어가므로 여기서 제외 (중복 방지).
+ *
+ *  ⚠ 개별 문서 fetch 가 IP allow list 403 등으로 실패해도 그 사실을 번들에 명시.
+ *    기존엔 `.catch(() => '')` 로 조용히 skip → Claude 는 그 문서가 아예 없다고
+ *    오해해 "번들에 포함되지 않음 · 직접 선택 필요" 답변. 이제 존재는 알리되
+ *    본문이 없음을 표시해서 정확한 안내 유도. */
 async function buildAllDocsBundle(env: Env, project: string, focusedDocPath?: string): Promise<string> {
   const { docs } = await listDocs(env, project);
   const policies = docs.filter((d) => d.kind === 'policy' && d.path !== focusedDocPath);
   if (policies.length === 0) return '';
-  // 총 크기 sanity check — 200K 자 (~50K token) 넘으면 이 요청은 skip.
-  const MAX_BUNDLE_CHARS = 200_000;
+  // 병렬 fetch (N 개 문서 순차 fetch 시 IP-allow-list 재시도 backoff 이 N 배로 누적됨)
+  const fetched = await Promise.all(
+    policies.map(async (d) => {
+      try {
+        return { path: d.path, raw: await fetchTextFileCached(env, d.path), ok: true as const };
+      } catch (e) {
+        return { path: d.path, raw: '', ok: false as const, err: e instanceof Error ? e.message : String(e) };
+      }
+    }),
+  );
+  const MAX_BUNDLE_CHARS = 200_000; // ~50K token
   const chunks: string[] = [];
+  const missing: Array<{ path: string; err: string }> = [];
   let total = 0;
-  for (const d of policies) {
-    const raw = await fetchTextFileCached(env, d.path).catch(() => '');
-    if (!raw) continue;
-    const block = `\n=== ${d.path} ===\n${raw}`;
+  for (const r of fetched) {
+    if (!r.ok) {
+      missing.push({ path: r.path, err: r.err });
+      continue;
+    }
+    const block = `\n=== ${r.path} ===\n${r.raw}`;
     if (total + block.length > MAX_BUNDLE_CHARS) {
       chunks.push(`\n[⚠️ 전체 문서 번들 크기 상한 (${MAX_BUNDLE_CHARS}자) 초과 — 이후 문서 생략]`);
       break;
     }
     chunks.push(block);
     total += block.length;
+  }
+  if (missing.length > 0) {
+    // Claude 가 "이 문서가 없다" 라고 오해하지 않도록 존재+실패 사실을 명시.
+    chunks.push(
+      `\n[⚠️ 아래 문서들은 이 프로젝트에 존재하나 이번 요청에서 GitHub fetch 실패 (transient · IP allow list 403 등). ` +
+        `본문 미첨부지만 "존재하지 않는다" 라고 하지 말고, 사용자에게 "잠시 후 재시도" 또는 "좌측 목록에서 직접 선택" 을 안내하세요:\n` +
+        missing.map((m) => `  · \`${m.path}\` (${m.err})`).join('\n') +
+        `]`,
+    );
   }
   return chunks.join('');
 }
