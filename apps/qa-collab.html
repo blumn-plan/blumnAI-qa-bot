@@ -3516,7 +3516,7 @@
         return 'GitHub PAT (ghp_...) 만료 또는 오류. Classic PAT 재발급 후 wrangler secret put GITHUB_TOKEN 로 갱신하세요.';
       }
       if (/IP allow list/i.test(msg)) {
-        return '조직 GitHub IP allow list 로 인한 실패입니다. Worker 가 최대 6회 재시도했지만 모두 미허용 Cloudflare Edge IP 로 나갔어요. 근본 해결: GitHub org Settings → Authentication security → IP allow list 에 Cloudflare IP 범위 (https://www.cloudflare.com/ips-v4) 를 추가하세요. 임시 우회: 잠시 후 다시 시도.';
+        return '🚨 GitHub org IP allow list 로 인한 실패입니다. Worker 가 최대 10회 재시도했지만 모두 미허용 Cloudflare Edge IP 로 나갔어요.\n\n근본 해결 (org admin 액션 · 5분):\n1. https://github.com/organizations/<YOUR-ORG>/settings/security_analysis\n2. IP allow list → 아래 두 소스의 IP 범위 전부 추가:\n   · https://www.cloudflare.com/ips-v4\n   · https://www.cloudflare.com/ips-v6\n3. 저장 후 즉시 반영\n\n임시 우회: 페이지 새로고침 (재시도 시 성공 확률 있음).';
       }
       if (/GitHub.*404|not found.*repository/i.test(msg)) {
         return 'GitHub 레포·경로 못 찾음. GITHUB_REPO 시크릿 또는 config.yml 의 policies_dir 확인하세요.';

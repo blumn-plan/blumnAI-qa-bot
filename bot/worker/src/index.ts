@@ -1370,7 +1370,7 @@ interface ContentEntry {
 
 async function fetchDirListing(env: Env, path: string): Promise<ContentEntry[]> {
   const res = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(path)}`);
-  if (!res.ok) throw new Error(`fetch dir ${path}: ${res.status}`);
+  if (!res.ok) throw new Error(await ghErrorMessage(res, `fetch dir ${path}`));
   return (await res.json()) as ContentEntry[];
 }
 
@@ -1378,12 +1378,30 @@ async function fetchTextFile(env: Env, path: string): Promise<string> {
   // 표준 JSON 응답 + base64 decode 사용. `Accept: application/vnd.github.raw` 는
   // private repo 일부 파일에서 403 을 반환하는 케이스가 있어 회피.
   const res = await ghFetch(env, `/repos/${env.GITHUB_REPO}/contents/${encodeContentPath(path)}`);
-  if (!res.ok) throw new Error(`fetch file ${path}: ${res.status}`);
+  if (!res.ok) throw new Error(await ghErrorMessage(res, `fetch file ${path}`));
   const data = (await res.json()) as { content?: string; encoding?: string };
   if (data.encoding === 'base64' && typeof data.content === 'string') {
     return base64ToUtf8(data.content);
   }
   return (data.content ?? '') as string;
+}
+
+/** GitHub 응답 실패 시 원인 메시지 조합. 403 body 에 "IP allow list" 문구가 있으면
+ *  그 사실을 에러 메시지에 명시 → 프론트 friendlyError 가 `/IP allow list/i` 매칭으로
+ *  사용자 대응 안내 (Cloudflare IP 범위를 org allow list 에 추가) 로 매핑 가능.
+ *  기존엔 `<prefix>: <status>` 만 던져서 프론트가 "그냥 5xx" 로만 인식했음. */
+async function ghErrorMessage(res: Response, prefix: string): Promise<string> {
+  if (res.status === 403) {
+    try {
+      const body = await res.clone().text();
+      if (/IP allow list/i.test(body)) {
+        return `${prefix}: 403 IP allow list — GitHub org 이 Cloudflare Worker 의 edge IP 를 미허용`;
+      }
+    } catch {
+      /* body read 실패는 무시 — 기본 메시지 fallback */
+    }
+  }
+  return `${prefix}: ${res.status}`;
 }
 
 function encodeContentPath(p: string): string {
@@ -1431,15 +1449,19 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
 
   // Retry 정책:
   //   · 429/5xx (transient upstream) 또는 네트워크 오류 → 3회 시도, 500·1200ms backoff
-  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → 6회 시도,
-  //     짧은 backoff (200·400·700·1200·2000ms) — 각 시도 마다 새 edge IP 로 나갈
-  //     확률에 걸기 위해 sleep 은 짧게, 시도 횟수는 많게. GitHub 서버 도달 전
-  //     Cloudflare/GitHub Edge 에서 리젝되므로 write 요청도 안전 (중복 부작용 없음).
+  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → 10회 시도,
+  //     매우 짧은 backoff (100·150·200·250·300·400·500·600·800ms) — 각 시도 마다
+  //     새 edge IP 로 나갈 확률에 걸기 위해 sleep 은 짧게, 시도 횟수는 많게. GitHub
+  //     서버 도달 전 Cloudflare/GitHub Edge 에서 리젝되므로 write 요청도 안전
+  //     (중복 부작용 없음). 10회 총 대기 ~3.3s — 사용자 UX 허용 범위 안.
+  //     ⚠ 근본 해결: org GitHub Settings → Authentication security → IP allow list
+  //        에 Cloudflare IP 범위 (https://www.cloudflare.com/ips-v4) 를 등록 필요.
   //   · 나머지 오류 (401/403 non-IP/404 등) → 즉시 반환 (재시도해도 결과 동일).
   const isWrite = !isRetryableMethod(init);
   const MAX_REGULAR = 3;
-  const MAX_IP_ALLOW = 6;
-  const backoffMs = [200, 400, 700, 1200, 2000];
+  const MAX_IP_ALLOW = 10;
+  const regularBackoff = [500, 1200];
+  const ipAllowBackoff = [100, 150, 200, 250, 300, 400, 500, 600, 800];
   let lastRes: Response | null = null;
   let lastErr: unknown = null;
   let attempt = 0;
@@ -1473,13 +1495,14 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
       lastRes = res;
       const label = isIpAllow ? 'IP allow list' : `${res.status}`;
       console.warn(`[qa-bot] ghFetch ${label} ${path} — retry ${attempt}/${effectiveMax}`);
-      await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 2000));
+      const backoff = isIpAllow ? ipAllowBackoff : regularBackoff;
+      await new Promise((r) => setTimeout(r, backoff[attempt - 1] ?? backoff[backoff.length - 1] ?? 1200));
       continue;
     } catch (err) {
       lastErr = err;
       if (attempt < MAX_REGULAR) {
         console.warn(`[qa-bot] ghFetch network err ${path} — retry ${attempt}/${MAX_REGULAR}: ${err instanceof Error ? err.message : String(err)}`);
-        await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 1200));
+        await new Promise((r) => setTimeout(r, regularBackoff[attempt - 1] ?? 1200));
         continue;
       }
       throw err;
