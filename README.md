@@ -88,7 +88,7 @@ blumn-plan/blumnAI-qa-bot   →→→→   blumn/○○-planer
 1. ❌ **fork 하지 마세요** — 파일 복사 방식이 정답입니다. fork 는 원본 봇 업데이트를 받기 어려워져요. **복사는 아래 [🟢 세팅하기](#-세팅하기--처음-깔-때-필수) 섹션에 있는 프롬프트에 포함되어 AI 가 자동으로 해줍니다.**
 2. 🔔 **원본 봇 (`blumn-plan/blumnAI-qa-bot`) 에 새 버전이 나오면** 팀 봇 화면 상단에 배너가 자동으로 표시됩니다 → 🟠 업데이트하기 프롬프트를 한 번 실행하면 30초 만에 갱신 (팀 정책 파일은 절대로 건드리지 않아요)
 3. 🔄 **팀 정책 변경은 봇 화면 안에서** 이루어집니다 — 사용자가 [📤 기획전달] 을 누르면 AI 가 정책 md 를 자동으로 수정
-4. 🎁 **원본 봇 자체에 개선 아이디어가 있으면** 봇 툴바의 [🎁] 클릭 → GitHub Issue 가 자동으로 생성됩니다. 팀 사본을 수정해도 원본에는 자동으로 반영되지 않으니, 반드시 PR + 리뷰 절차를 거쳐야 합니다 ([CONTRIBUTING.md](CONTRIBUTING.md) 참고)
+4. 🎁 **원본 봇 자체에 개선 아이디어가 있으면** 봇 툴바의 [🎁] 클릭 → GitHub Issue 가 자동으로 생성됩니다. 팀 사본을 수정해도 원본에는 자동으로 반영되지 않으니, 아이디어는 Issue 로 남겨주세요 (자세한 반영 절차는 [CONTRIBUTING.md](CONTRIBUTING.md) 참고)
 
 자세한 원본-사본 원칙은 [docs/05-UPGRADE.md](docs/05-UPGRADE.md) 에 정리해뒀습니다.
 
@@ -423,7 +423,7 @@ G. 07-FIRST-TEST 시나리오 실행
 | [docs/07-FIRST-TEST.md](docs/07-FIRST-TEST.md) | 첫 테스트 5개 시나리오 |
 | [docs/08-STAGING.md](docs/08-STAGING.md) | 개발자 테스트·staging (기여자용) |
 | [CHANGELOG.md](CHANGELOG.md) | 버전별 변경사항 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 코어에 개선 반영 (PR) 절차 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 코어에 개선 반영 절차 (솔로 메인테이너 · 외부 기여자) |
 
 </details>
 
