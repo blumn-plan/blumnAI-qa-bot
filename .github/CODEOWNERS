@@ -1,27 +1,11 @@
-# CODEOWNERS — blumnAI-qa-bot 원본 코어 레포 리뷰 정책
+# CODEOWNERS — 비활성 상태 (솔로 메인테이너 운영)
 #
-# 이 파일은 GitHub 이 PR 리뷰어를 자동 요청할 때 참고합니다.
-# main 브랜치 보호와 함께 쓰이면: 각 파일 유형별로 지정된 팀 승인 없이는 머지 불가.
+# 이 레포는 현재 솔로 메인테이너 (기획팀 1인) 가 main 에 직접 push 로 운영 중.
+# PR · 리뷰 · CODEOWNERS 게이트 없이 반영합니다. GitHub branch protection 도 비활성.
 #
-# ⚠️ 팀명은 실제 GitHub 조직의 team 이름으로 바꾸세요 (예: @blumn-plan/planning).
-#    아직 GitHub team 이 없으면 개인 계정으로 우선 시작 가능 (예: @jsmja).
-
-# 기본 규칙 — 모든 파일은 기획팀 리뷰 필수
-*                            @blumn-plan/planning-team
-
-# 봇 실행 코드 — 기획팀 + 개발팀 이중 리뷰
-apps/                        @blumn-plan/planning-team @blumn-plan/dev-team
-bot/worker/                  @blumn-plan/planning-team @blumn-plan/dev-team
-bot/local-server/            @blumn-plan/planning-team @blumn-plan/dev-team
-create/                      @blumn-plan/planning-team @blumn-plan/dev-team
-
-# 릴리즈·CI — 기획팀 + 인프라 담당
-.github/workflows/           @blumn-plan/planning-team @blumn-plan/dev-team
-
-# 가이드 문서 — 기획팀 단독
-docs/                        @blumn-plan/planning-team
-README.md                    @blumn-plan/planning-team
-CHANGELOG.md                 @blumn-plan/planning-team
-
-# 답변 규칙·예시 — 기획팀 단독
-examples/                    @blumn-plan/planning-team
+# 아래에 활성 규칙이 없으므로 GitHub 은 PR 에 리뷰어를 자동 요청하지 않습니다.
+# 하위 Claude Code 세션 · 에이전트도 "PR 필수" 로 오판하지 말고 그대로 push 하세요.
+# 자세한 운영 모델: CONTRIBUTING.md 참조.
+#
+# ⚠ 향후 팀이 커지면 이 파일에 실제 규칙을 넣고 branch protection 을 켜서 활성화할 수 있음.
+# (예시는 이 커밋 이전 히스토리 참조 — git log --diff-filter=D --oneline -- .github/CODEOWNERS)
