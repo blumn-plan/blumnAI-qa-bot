@@ -2387,10 +2387,14 @@ interface GenHtmlRequest {
 }
 
 interface GenHtmlResponse {
-  savedPath: string;                       // qa/mockups/YYYY-MM-DD-<slug>.html
+  savedPath: string;                       // qa/mockups/YYYY-MM-DD-<slug>.html (저장 실패 시 '')
   url: string;                             // pages 절대 URL 힌트 (프론트가 origin 기준으로 재구성)
   bytes: number;
   modelUsed: string;
+  /** GitHub 저장 실패 시 (IP allow list 403 등) HTML 본문 그대로 반환 —
+   *  Claude 응답을 이미 소비했으니 사용자에게 결과물은 남겨서 수동 저장·미리보기 가능하게. */
+  html?: string;
+  saveError?: string;
 }
 
 async function generateHtmlMockup(env: Env, body: GenHtmlRequest, signal?: AbortSignal): Promise<GenHtmlResponse> {
@@ -2534,8 +2538,23 @@ async function generateHtmlMockup(env: Env, body: GenHtmlRequest, signal?: Abort
     }),
   });
   if (!putRes.ok) {
-    const errText = await putRes.text();
-    throw new Error(`GitHub mockup upload ${putRes.status}: ${errText.slice(0, 500)}`);
+    // ⚠ Claude 는 이미 응답을 반환했음 (사용자 토큰 비용 소비 완료). 여기서 throw 하면
+    //   그 값을 프론트에 전달 못 함 → 사용자는 재시도해야 하고 비용은 다시 발생.
+    //   대신 saveError + html 을 응답에 실어서 프론트가 미리보기·수동 저장 가능하게.
+    const errText = await putRes.text().catch(() => '');
+    const isIpAllow = /IP allow list/i.test(errText);
+    const saveError = isIpAllow
+      ? `GitHub 커밋 실패 (org IP allow list 403). Cloudflare Worker 의 outbound IP 가 whitelist 에 없어 저장 못함. HTML 은 아래 미리보기·복사로 활용하거나 org admin 에게 CF IP 범위 whitelist 추가 요청.`
+      : `GitHub 커밋 실패 ${putRes.status}: ${errText.slice(0, 300)}`;
+    console.warn(`[qa-bot] /gen-html PUT 실패 (${putRes.status}) — HTML 응답에 포함해 반환: ${saveError.slice(0, 120)}`);
+    return {
+      savedPath: '',
+      url: '',
+      bytes: html.length,
+      modelUsed: model,
+      html,
+      saveError,
+    };
   }
 
   return {

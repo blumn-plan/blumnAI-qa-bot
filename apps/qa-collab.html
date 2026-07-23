@@ -2561,24 +2561,57 @@
           throw new Error(errData.error || `HTTP ${res.status}`);
         }
         const data = await res.json();
-        const pathname = location.pathname;
-        const rootMatch = pathname.match(/^(.*?)\/\.blumnAI-qa-bot\/apps\//);
-        const pagesRoot = rootMatch ? rootMatch[1] : '';
-        const absoluteUrl = `${location.origin}${pagesRoot}/${data.savedPath}`;
         const sizeKb = (data.bytes / 1024).toFixed(1);
         clearInterval(loadingPh.timer);
         holder.classList.remove('streaming', 'loading-placeholder');
-        holder.querySelector('.role').textContent = '📄 HTML 목업 완료';
         const bodyEl = holder.querySelector('.body');
         bodyEl.classList.remove('loading-body');
-        bodyEl.innerHTML =
-          `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
-          `<div style="padding:14px 16px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;margin:8px 0">` +
-            `<div style="font-size:14px;font-weight:600;color:#047857;margin-bottom:6px">✅ 목업 파일 생성 완료</div>` +
-            `<a href="${escapeAttr(absoluteUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#059669;color:white;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px;margin-top:4px">🔗 새 탭에서 열기 ↗</a>` +
-            `<div style="margin-top:8px;font-size:11px;color:#065f46"><code>${escapeHtml(data.savedPath)}</code> · ${sizeKb} KB · GitHub Pages 재빌드 완료 후 (1-2분) 접속 가능</div>` +
-          `</div>` +
-          `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">💡 마음에 안 들면 [📄 HTML] 다시 눌러서 프롬프트 더 구체적으로 재시도. 이 파일은 <code>qa/mockups/</code> 폴더에 커밋됨.</p>`;
+
+        if (data.saveError && data.html) {
+          // 💾 저장 실패 (IP allow list 등) — Claude 생성물은 살아있으니 미리보기+복사 제공
+          holder.querySelector('.role').textContent = '📄 HTML 목업 생성 완료 · 저장 실패';
+          const previewBlobUrl = URL.createObjectURL(new Blob([data.html], { type: 'text/html' }));
+          bodyEl.innerHTML =
+            `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
+            `<div style="padding:14px 16px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;margin:8px 0">` +
+              `<div style="font-size:14px;font-weight:600;color:#92400e;margin-bottom:6px">⚠️ Claude 생성 완료 · GitHub 저장 실패</div>` +
+              `<div style="color:#78350f;font-size:12px;margin-bottom:10px;line-height:1.6">${escapeHtml(data.saveError)}</div>` +
+              `<div style="display:flex;gap:8px;flex-wrap:wrap">` +
+                `<a href="${escapeAttr(previewBlobUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px">👁️ 임시 미리보기 열기 ↗</a>` +
+                `<button type="button" class="gh-copy-html-btn" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#059669;color:white;border:0;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer">📋 HTML 클립보드 복사</button>` +
+                `<button type="button" class="gh-download-html-btn" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#4b5563;color:white;border:0;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer">💾 .html 다운로드</button>` +
+              `</div>` +
+              `<div style="margin-top:8px;font-size:11px;color:#78350f">${sizeKb} KB · Cloudflare Worker → GitHub 커밋 실패로 <code>qa/mockups/</code> 저장 안 됨 (org IP allow list 문제)</div>` +
+            `</div>` +
+            `<details style="margin:8px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">📄 HTML 소스 (미리보기·복사용)</summary><textarea readonly style="width:100%;height:200px;margin-top:6px;padding:8px;font-family:monospace;font-size:11px;border:1px solid var(--border);border-radius:4px;background:#f9fafb"></textarea></details>`;
+          bodyEl.querySelector('textarea').value = data.html;
+          bodyEl.querySelector('.gh-copy-html-btn').addEventListener('click', async (e) => {
+            try { await navigator.clipboard.writeText(data.html); e.target.textContent = '✅ 복사됨'; }
+            catch (_) { e.target.textContent = '⚠️ 복사 실패'; }
+          });
+          bodyEl.querySelector('.gh-download-html-btn').addEventListener('click', () => {
+            const a = document.createElement('a');
+            a.href = previewBlobUrl;
+            const dateStr = new Date().toISOString().slice(0, 10);
+            a.download = `${dateStr}-mockup.html`;
+            a.click();
+          });
+        } else {
+          // ✅ 정상 저장 완료
+          holder.querySelector('.role').textContent = '📄 HTML 목업 완료';
+          const pathname = location.pathname;
+          const rootMatch = pathname.match(/^(.*?)\/\.blumnAI-qa-bot\/apps\//);
+          const pagesRoot = rootMatch ? rootMatch[1] : '';
+          const absoluteUrl = `${location.origin}${pagesRoot}/${data.savedPath}`;
+          bodyEl.innerHTML =
+            `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
+            `<div style="padding:14px 16px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;margin:8px 0">` +
+              `<div style="font-size:14px;font-weight:600;color:#047857;margin-bottom:6px">✅ 목업 파일 생성 완료</div>` +
+              `<a href="${escapeAttr(absoluteUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#059669;color:white;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px;margin-top:4px">🔗 새 탭에서 열기 ↗</a>` +
+              `<div style="margin-top:8px;font-size:11px;color:#065f46"><code>${escapeHtml(data.savedPath)}</code> · ${sizeKb} KB · GitHub Pages 재빌드 완료 후 (1-2분) 접속 가능</div>` +
+            `</div>` +
+            `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">💡 마음에 안 들면 [📄 HTML] 다시 눌러서 프롬프트 더 구체적으로 재시도. 이 파일은 <code>qa/mockups/</code> 폴더에 커밋됨.</p>`;
+        }
       } catch (err) {
         clearInterval(loadingPh.timer);
         holder.classList.remove('streaming', 'loading-placeholder');
