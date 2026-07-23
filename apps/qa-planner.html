@@ -983,26 +983,18 @@
         if (!match) return;
         const remoteVersion = match[1];
         if (localVersion === remoteVersion) return;
-        const dismissKey = `core-update-dismissed-${remoteVersion}`;
-        if (localStorage.getItem(dismissKey)) return;
-        showUpdateBanner(localVersion, remoteVersion, coreRepo, dismissKey);
+        showUpdateBanner(localVersion, remoteVersion, coreRepo);
       } catch (err) {
         console.warn('[core-update-check]', err);
       }
     }
-    function showUpdateBanner(localVersion, remoteVersion, coreRepo, dismissKey) {
+    function showUpdateBanner(localVersion, remoteVersion, coreRepo) {
       const banner = document.createElement('div');
       banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#fef3c7;border-bottom:1px solid #f59e0b;padding:10px 16px;font-size:13px;color:#78350f;display:flex;align-items:center;gap:12px;font-family:-apple-system,BlinkMacSystemFont,sans-serif';
       banner.innerHTML =
         '<span>🔔</span>' +
         `<span style="flex:1"><strong>blumnAI-qa-bot 새 버전 v${remoteVersion}</strong> 나왔습니다 (현재 v${localVersion}). <strong>봇 관리 담당자 (기획팀)</strong> 가 Claude Code 에 <strong>"🟠 업데이트하기"</strong> 프롬프트를 실행하면 30초 안에 갱신됩니다.</span>` +
-        `<a href="https://github.com/${coreRepo}/blob/main/CHANGELOG.md" target="_blank" rel="noopener" style="color:#78350f;text-decoration:underline;font-weight:600">변경사항 보기</a>` +
-        '<button type="button" style="background:transparent;border:1px solid #f59e0b;color:#78350f;padding:4px 10px;border-radius:4px;font-size:12px;cursor:pointer">나중에</button>';
-      banner.querySelector('button').addEventListener('click', () => {
-        localStorage.setItem(dismissKey, '1');
-        banner.remove();
-        document.body.style.paddingTop = '';
-      });
+        `<a href="https://github.com/${coreRepo}/blob/main/CHANGELOG.md" target="_blank" rel="noopener" style="color:#78350f;text-decoration:underline;font-weight:600">변경사항 보기</a>`;
       document.body.insertBefore(banner, document.body.firstChild);
       document.body.style.paddingTop = (banner.offsetHeight + 4) + 'px';
     }

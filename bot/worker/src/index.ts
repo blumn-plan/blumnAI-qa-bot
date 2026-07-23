@@ -197,7 +197,9 @@ async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
     return parsed ?? null;
   } catch (err) {
     console.warn('[qa-bot] load config.yml failed:', err instanceof Error ? err.message : String(err));
-    configCache.set(key, { at: Date.now(), data: null });
+    // ⚠ null 을 캐시하지 않음 — transient (IP allow list 403 등) 실패가 캐시되면
+    // 다음 정상 요청도 CONFIG_CACHE_TTL_MS 동안 config 없는 것으로 처리돼서
+    // /list-projects 가 계속 빈 배열 반환 → 사용자 뷰에서 프로젝트 드롭다운 비고 500 에러 유발.
     return null;
   }
 }
@@ -691,6 +693,7 @@ async function askClaude(env: Env, body: QARequest, corsHeaders: HeadersInit, cl
     codeSnippets: codeResult.snippets,
     codeRepo: body.codeRepo ?? '',
     hasAttachments: !!body.attachments?.length,
+    useAllDocs: includeAllDocs,
   });
 
   type ContentBlock =
@@ -821,6 +824,7 @@ interface SystemPromptParts {
   codeSnippets: string;
   codeRepo: string;
   hasAttachments: boolean;
+  useAllDocs: boolean;               // 🌐 전체 정책 종합 모드 요청 여부
 }
 
 /** Anthropic prompt caching 을 활용하는 system 메시지 배열 생성.
@@ -914,22 +918,34 @@ function buildVolatileBlock(p: SystemPromptParts): string {
   if (p.codeSnippets) {
     parts.push('**관련 코드 스니펫이 함께 제공됩니다** — 정책 vs 코드 drift 판정에 활용. 파일 경로·라인 번호 반드시 표기.');
   }
-  // 문서 표시 — GitHub fetch 성공 여부에 따라 문구 분기.
-  //   · 성공 (내용 있음)         → 문서 본문 그대로 제공
-  //   · 성공 (진짜 빈 문서)      → "(문서 내용 없음 — 일반 질문)" 안내
-  //   · fetch 실패 (transient)    → "**⚠️ 문서 로드 실패**" 명시 → Claude 가
+  // 문서 표시 — 모드에 따라 분기.
+  //   · 🌐 전체 정책 종합 모드    → "선택된 문서 없음" 문구 대신 위 [프로젝트 전체 정책 문서 본문]
+  //                                   근거 사용을 명시. (allDocsBundle 이 비어있으면 그 사실도 안내)
+  //   · 개별 문서 · 성공          → 문서 본문 그대로 제공
+  //   · 개별 문서 · 진짜 빈 문서   → "(문서 내용 없음 — 일반 질문)" 안내
+  //   · 개별 문서 · fetch 실패     → "**⚠️ 문서 로드 실패**" 명시 → Claude 가
   //                                   "문서를 못 봤으니 다시 시도 필요" 라고 답하게 유도.
   //                                   빈 문서로 오해해 엉뚱한 답 하는 것 방지.
-  const docBody = p.focusedDocFetchFailed
-    ? `**⚠️ 문서 GitHub fetch 실패 (transient error${p.focusedDocFetchError ? `: ${p.focusedDocFetchError}` : ''}).**\n답변 대신 "문서 로드 실패로 정확한 답변이 어렵습니다. 잠시 후 다시 질문해주세요" 라고 안내하세요. 문서 내용을 추측하지 마세요.`
-    : (p.focusedDoc || '(문서 내용 없음 — 일반 질문)');
-  parts.push(
-    '',
-    '[현재 협업자가 보고 있는 문서]',
-    p.focusedDocPath ? `경로: ${p.focusedDocPath}` : '(선택된 문서 없음)',
-    '',
-    docBody,
-  );
+  if (p.useAllDocs) {
+    parts.push(
+      '',
+      '[🌐 현재 요청 모드 — 전체 정책 종합]',
+      p.allDocsBundle
+        ? '협업자는 특정 문서를 열지 않고 프로젝트 전체 정책을 종합해서 답변받길 원합니다. 위 [📖 프로젝트 전체 정책 문서 본문] 을 근거로 답변하세요. "선택된 문서가 없다" 라고 회피하지 말고, 종합 근거로 답변할 것.'
+        : '협업자가 전체 정책 종합 모드로 질문했으나 이 프로젝트에는 아직 등록된 정책 문서가 없습니다. "이 프로젝트에는 아직 정책 문서가 등록되지 않아 종합 답변을 드릴 수 없습니다. 기획팀에 정책 문서 등록을 요청해주세요" 라고 안내하세요.',
+    );
+  } else {
+    const docBody = p.focusedDocFetchFailed
+      ? `**⚠️ 문서 GitHub fetch 실패 (transient error${p.focusedDocFetchError ? `: ${p.focusedDocFetchError}` : ''}).**\n답변 대신 "문서 로드 실패로 정확한 답변이 어렵습니다. 잠시 후 다시 질문해주세요" 라고 안내하세요. 문서 내용을 추측하지 마세요.`
+      : (p.focusedDoc || '(문서 내용 없음 — 일반 질문)');
+    parts.push(
+      '',
+      '[현재 협업자가 보고 있는 문서]',
+      p.focusedDocPath ? `경로: ${p.focusedDocPath}` : '(선택된 문서 없음)',
+      '',
+      docBody,
+    );
+  }
   if (p.codeSnippets) {
     parts.push('', `[관련 코드 스니펫 — ${p.codeRepo}]`, p.codeSnippets);
   }
@@ -1413,57 +1429,62 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
     if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   }
 
-  // Idempotent GET/HEAD 는 최대 3회. 쓰기 (POST/PATCH/PUT/DELETE) 는 원칙적으로 1회.
-  // 예외: 403 이 IP allow list 원인이면 쓰기도 최대 3회 재시도 (Cloudflare Edge 가
-  //   매 요청마다 다른 IP 로 나가서 다음 시도는 허용 IP 로 나갈 수 있음).
-  //   Content-based 재시도라 중복 커밋 위험 없음 (GitHub 서버 도달 전 IP filter 리젝).
+  // Retry 정책:
+  //   · 429/5xx (transient upstream) 또는 네트워크 오류 → 3회 시도, 500·1200ms backoff
+  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → 6회 시도,
+  //     짧은 backoff (200·400·700·1200·2000ms) — 각 시도 마다 새 edge IP 로 나갈
+  //     확률에 걸기 위해 sleep 은 짧게, 시도 횟수는 많게. GitHub 서버 도달 전
+  //     Cloudflare/GitHub Edge 에서 리젝되므로 write 요청도 안전 (중복 부작용 없음).
+  //   · 나머지 오류 (401/403 non-IP/404 등) → 즉시 반환 (재시도해도 결과 동일).
   const isWrite = !isRetryableMethod(init);
-  const maxAttempts = 3;
-  const backoffMs = [500, 1200];
+  const MAX_REGULAR = 3;
+  const MAX_IP_ALLOW = 6;
+  const backoffMs = [200, 400, 700, 1200, 2000];
   let lastRes: Response | null = null;
   let lastErr: unknown = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  let attempt = 0;
+  while (true) {
+    attempt++;
     try {
       const res = await fetch(url, { ...init, headers });
-
-      // 2xx 성공은 즉시 반환
       if (res.ok) return res;
 
       // 재시도 대상 판정
       let retryable = GH_RETRYABLE_STATUSES.has(res.status);
+      let isIpAllow = false;
+      let ipAllowBody = '';
       if (!retryable && res.status === 403) {
-        const { isIpAllow } = await isIpAllowListError(res);
-        if (isIpAllow) {
-          retryable = true;
-          console.warn(`[qa-bot] ghFetch 403 IP allow list ${path} — retry with different edge IP (${attempt}/${maxAttempts - 1})`);
-        }
+        const check = await isIpAllowListError(res);
+        isIpAllow = check.isIpAllow;
+        ipAllowBody = check.body;
+        if (isIpAllow) retryable = true;
       }
-
       // 쓰기이면서 403 IP allow list 이외의 상태는 재시도 X (중복 위험)
-      if (isWrite && res.status !== 403) retryable = false;
+      if (isWrite && !isIpAllow && res.status !== 403) retryable = false;
 
-      if (!retryable) return res;
-      lastRes = res;
-      if (attempt < maxAttempts) {
-        console.warn(`[qa-bot] ghFetch ${res.status} ${path} — retry ${attempt}/${maxAttempts - 1}`);
-        await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 1200));
-        continue;
+      const effectiveMax = isIpAllow ? MAX_IP_ALLOW : MAX_REGULAR;
+      if (!retryable || attempt >= effectiveMax) {
+        if (isIpAllow) {
+          const preview = ipAllowBody.replace(/\s+/g, ' ').slice(0, 200);
+          console.error(`[qa-bot] ghFetch 403 IP allow list ${path} — ${attempt} attempts exhausted (max ${effectiveMax}). Body: ${preview}`);
+        }
+        return res;
       }
-      return res;
+      lastRes = res;
+      const label = isIpAllow ? 'IP allow list' : `${res.status}`;
+      console.warn(`[qa-bot] ghFetch ${label} ${path} — retry ${attempt}/${effectiveMax}`);
+      await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 2000));
+      continue;
     } catch (err) {
       lastErr = err;
-      // 네트워크 에러는 쓰기라도 재시도 (실제 요청이 갔는지 불확실하지만 GitHub API 는
-      // idempotency 개념 없어서 최소한 3회 시도로 안정성 확보).
-      if (attempt < maxAttempts) {
-        console.warn(`[qa-bot] ghFetch network err ${path} — retry ${attempt}/${maxAttempts - 1}: ${err instanceof Error ? err.message : String(err)}`);
+      if (attempt < MAX_REGULAR) {
+        console.warn(`[qa-bot] ghFetch network err ${path} — retry ${attempt}/${MAX_REGULAR}: ${err instanceof Error ? err.message : String(err)}`);
         await new Promise((r) => setTimeout(r, backoffMs[attempt - 1] ?? 1200));
         continue;
       }
       throw err;
     }
   }
-  if (lastRes) return lastRes;
-  throw lastErr;
 }
 
 /* ────────── /list-projects ────────── */
@@ -1480,11 +1501,17 @@ async function listProjects(env: Env): Promise<{ projects: Array<{ id: string; l
     return { projects, default: projects[0]?.id ?? '' };
   }
 
-  // fallback — config.yml 없는 팀
-  const entries = await fetchDirListingCached(env, 'projects').catch(() => [] as ContentEntry[]);
+  // fallback — config.yml 없는 팀 (혹은 config load 실패 시)
+  // ⚠ 예전엔 `.catch(() => [])` 로 조용히 빈 배열 반환 → 사용자 UI 는 "프로젝트 없음"
+  //   드롭다운만 뜨고 downstream 이 `project=undefined` 로 500 던지는 헬 케이스.
+  //   이제 실패 원인 (IP allow list · PAT 만료 · 5xx) 을 그대로 throw 해서 상위
+  //   catch 가 upstream status 매핑 (502 등) 후 프론트 friendlyError 로 흐르게 함.
+  const entries = await fetchDirListingCached(env, 'projects');
   const projects: Array<{ id: string; label: string }> = [];
   for (const e of entries) {
     if (e.type !== 'dir') continue;
+    // 개별 프로젝트의 docs 폴더 유무 판정은 관대하게 (일부 프로젝트 폴더 문제로
+    // 다른 프로젝트가 안 보이면 안 됨 — 여기 실패는 그 프로젝트 skip 정도로 충분).
     const hasDocs = await fetchDirListingCached(env, `${e.path}/docs`).then(() => true).catch(() => false);
     if (!hasDocs) continue;
     projects.push({ id: e.name, label: e.name });
