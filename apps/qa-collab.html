@@ -374,7 +374,21 @@
     /* 🪙 토큰·비용 뱃지 — 답변 완료 시 usage NDJSON 이벤트 도착 후 표시. 클릭 도움말 = 툴팁. */
     aside.chat .msg .usage-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-bottom: 6px; margin-right: 4px; border: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; cursor: help; }
     /* 🪙 이달 누적 뱃지 — 채팅 헤더에 상시 노출. 매 답변마다 자동 갱신. localStorage 저장 → 브라우저별 집계 */
-    aside.chat .header .monthly-usage-badge { margin-left: 10px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 400; border: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; cursor: help; white-space: nowrap; }
+    aside.chat .header .monthly-usage-badge { position: relative; margin-left: 10px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 400; border: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; cursor: help; white-space: nowrap; }
+    /* CSS 커스텀 툴팁 — 브라우저 기본 title 은 지연·안 뜨는 경우 있어 hover 즉시 렌더로 대체.
+       title 은 접근성(스크린리더·키보드) 위해 병기 유지. */
+    aside.chat .header .monthly-usage-badge:hover::after {
+      content: attr(data-tip);
+      position: absolute; top: calc(100% + 6px); right: 0;
+      padding: 10px 14px;
+      background: rgba(15, 23, 42, 0.96); color: white;
+      font-size: 11px; font-weight: 400; line-height: 1.55;
+      border-radius: 6px; white-space: pre-line;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+      z-index: 100; min-width: 280px; max-width: 380px;
+      pointer-events: none; text-align: left;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
     aside.chat .msg .msg-actions { display: flex; gap: 6px; margin-top: 8px; opacity: 0; transition: opacity 0.2s; }
     aside.chat .msg:hover .msg-actions, aside.chat .msg:focus-within .msg-actions { opacity: 1; }
     aside.chat .msg .msg-actions button.msg-act { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
@@ -573,7 +587,7 @@
     <aside class="chat">
       <div class="header">
         🤖 AI 에게 직접 질문
-        <span id="monthly-usage-badge" class="monthly-usage-badge" title="이번 달 아직 사용 없음">🪙 이달 누적: —</span>
+        <span id="monthly-usage-badge" class="monthly-usage-badge" data-tip="이번 달 아직 사용 없음" title="이번 달 아직 사용 없음">🪙 이달 누적: —</span>
         <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400">
           <span id="user-display">👤 (이름 미설정)</span>
           <a id="change-user-link" href="#" style="margin-left:6px;color:var(--primary);text-decoration:none">변경</a>
@@ -2016,10 +2030,11 @@
       if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
       return String(n);
     }
+    // 원화 표기 — `~` 는 마이너스 오독 소지가 있어 제거 (예상치라는 뉘앙스는 툴팁에서 안내).
     function formatKrw(krw) {
-      if (krw < 1)   return `~₩${krw.toFixed(2)}`;
-      if (krw < 100) return `~₩${krw.toFixed(1)}`;
-      return `~₩${Math.round(krw)}`;
+      if (krw < 1)   return `₩${krw.toFixed(2)}`;
+      if (krw < 100) return `₩${krw.toFixed(1)}`;
+      return `₩${Math.round(krw).toLocaleString()}`;
     }
     /** 사용 토큰·비용 뱃지 — usage NDJSON 이벤트에서 받은 값을 요율표로 환산해 표시.
      *  캐시 읽기는 신규 입력 대비 10x 저렴 → 툴팁으로 절감 효과 노출. */
@@ -2080,27 +2095,41 @@
       if (!el) return;
       const key = getMonthKey();
       const cur = loadMonthlyUsage()[key];
+      const tipEmpty = `[${key}] 이번 달 아직 사용 없음.\n답변 받을 때마다 자동 누적됩니다.\n(브라우저 로컬 저장 · 다른 PC·브라우저는 별도)`;
       if (!cur || cur.count === 0) {
-        el.textContent = '🪙 이달 누적: —';
-        el.title = `[${key}] 이번 달 아직 사용 없음. 답변 받을 때마다 자동 누적됩니다 (브라우저 로컬 저장).`;
+        el.textContent = '🪙 이달 누적: 아직 없음';
+        el.title = tipEmpty;
+        el.dataset.tip = tipEmpty;
         return;
       }
       const krw = cur.usd * KRW_PER_USD;
-      el.innerHTML = `🪙 이달: <b>${formatKrw(krw)}</b> <span style="opacity:0.7">· ${cur.count}회</span>`;
-      const totalInput = cur.input + cur.cacheRead + cur.cacheWrite;
-      el.title = [
-        `[${key}] 이달 누적 (브라우저 로컬 저장 — 다른 PC·브라우저는 별도)`,
+      const totalTokens = cur.input + cur.output + cur.cacheRead + cur.cacheWrite;
+      const totalInput  = cur.input + cur.cacheRead + cur.cacheWrite;
+      // 단가 = 총비용 / 총토큰 * 1000 (원/1K tok). 캐시 히트율에 따라 실효 요율 달라짐.
+      const ratePerK = totalTokens > 0 ? (krw / totalTokens) * 1000 : 0;
+      el.innerHTML = `🪙 이달 <b>${formatTokens(totalTokens)} tok</b> · ${formatKrw(krw)} <span style="opacity:0.75;font-weight:400">· 단가 ${formatKrw(ratePerK)}/1K</span>`;
+      const tip = [
+        `[${key}] 이달 누적 (${cur.count}회)`,
+        `※ 브라우저 로컬 저장 — 다른 PC·브라우저는 별도`,
+        ``,
         `─ 토큰 breakdown ─`,
-        `· 신규 입력: ${cur.input.toLocaleString()} tok`,
-        `· 캐시 읽기: ${cur.cacheRead.toLocaleString()} tok (10x 저렴)`,
-        `· 캐시 쓰기: ${cur.cacheWrite.toLocaleString()} tok`,
-        `· 출력: ${cur.output.toLocaleString()} tok`,
-        `· 총 입력: ${totalInput.toLocaleString()} tok`,
+        `· 신규 입력   : ${cur.input.toLocaleString()} tok`,
+        `· 캐시 읽기   : ${cur.cacheRead.toLocaleString()} tok  (10x 저렴)`,
+        `· 캐시 쓰기   : ${cur.cacheWrite.toLocaleString()} tok  (25% 서지)`,
+        `· 출력        : ${cur.output.toLocaleString()} tok`,
+        `· ─────────────`,
+        `· 총 입력     : ${totalInput.toLocaleString()} tok`,
+        `· 총 토큰     : ${totalTokens.toLocaleString()} tok`,
+        ``,
         `─ 비용 ─`,
-        `총 요청 ${cur.count}회`,
-        `$${cur.usd.toFixed(4)} = ${formatKrw(krw)} (환율 ${KRW_PER_USD}원/$, 예상치)`,
+        `총 비용 : $${cur.usd.toFixed(4)} = ${formatKrw(krw)}`,
+        `단가    : ${formatKrw(ratePerK)}/1K tok (실효 요율 · 캐시 히트율 반영)`,
+        `환율    : ${KRW_PER_USD}원/$ (예상치)`,
+        ``,
         `※ 서버측 정확 합계는 Anthropic Console 확인`,
       ].join('\n');
+      el.title = tip;
+      el.dataset.tip = tip;
     }
 
     // 코드 인젝션 진단 배지 HTML — 답변 상단에 표시. status 별 문구·색상 분기.
@@ -2756,33 +2785,24 @@
         if (data.usage) addToMonthlyUsage(data.usage, data.modelUsed);
 
         if (data.saveError && data.html) {
-          // 💾 저장 실패 (IP allow list 등) — Claude 생성물은 살아있으니 미리보기+복사 제공
-          holder.querySelector('.role').textContent = '📄 HTML 목업 생성 완료 · 저장 실패';
+          // 💾 GitHub 저장은 실패했지만 Claude 생성물은 완성 — 저장 실패를 강조하지 않고 완성본 자체를 primary 로.
+          //   [👁️ 완성본 보기 ↗] blob URL 새 탭 + [📋 HTML 복사] 두 버튼만. saveError · 다운로드 · 소스 details 제거.
+          //   원인 (org IP allow list 등) 은 답변 롤에 회색 작은 글씨로만 노출.
+          holder.querySelector('.role').textContent = '📄 HTML 목업 완성';
           const previewBlobUrl = URL.createObjectURL(new Blob([data.html], { type: 'text/html' }));
           bodyEl.innerHTML =
             `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
-            `<div style="padding:14px 16px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;margin:8px 0">` +
-              `<div style="font-size:14px;font-weight:600;color:#92400e;margin-bottom:6px">⚠️ Claude 생성 완료 · GitHub 저장 실패</div>` +
-              `<div style="color:#78350f;font-size:12px;margin-bottom:10px;line-height:1.6">${escapeHtml(data.saveError)}</div>` +
+            `<div style="padding:14px 16px;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:8px;margin:8px 0">` +
+              `<div style="font-size:14px;font-weight:600;color:#047857;margin-bottom:8px">✅ 목업 완성</div>` +
               `<div style="display:flex;gap:8px;flex-wrap:wrap">` +
-                `<a href="${escapeAttr(previewBlobUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px">👁️ 임시 미리보기 열기 ↗</a>` +
-                `<button type="button" class="gh-copy-html-btn" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#059669;color:white;border:0;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer">📋 HTML 클립보드 복사</button>` +
-                `<button type="button" class="gh-download-html-btn" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#4b5563;color:white;border:0;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer">💾 .html 다운로드</button>` +
+                `<a href="${escapeAttr(previewBlobUrl)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#059669;color:white;text-decoration:none;border-radius:6px;font-weight:600;font-size:13px">👁️ 완성본 보기 ↗</a>` +
+                `<button type="button" class="gh-copy-html-btn" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#4b5563;color:white;border:0;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer">📋 HTML 복사</button>` +
               `</div>` +
-              `<div style="margin-top:8px;font-size:11px;color:#78350f">${sizeKb} KB · Cloudflare Worker → GitHub 커밋 실패로 <code>qa/mockups/</code> 저장 안 됨 (org IP allow list 문제)</div>` +
-            `</div>` +
-            `<details style="margin:8px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">📄 HTML 소스 (미리보기·복사용)</summary><textarea readonly style="width:100%;height:200px;margin-top:6px;padding:8px;font-family:monospace;font-size:11px;border:1px solid var(--border);border-radius:4px;background:#f9fafb"></textarea></details>`;
-          bodyEl.querySelector('textarea').value = data.html;
+              `<div style="margin-top:8px;font-size:11px;color:#065f46">${sizeKb} KB · 이 링크는 브라우저 세션 동안만 유지 — 필요하면 새 탭에서 화면 저장 또는 HTML 복사</div>` +
+            `</div>`;
           bodyEl.querySelector('.gh-copy-html-btn').addEventListener('click', async (e) => {
             try { await navigator.clipboard.writeText(data.html); e.target.textContent = '✅ 복사됨'; }
             catch (_) { e.target.textContent = '⚠️ 복사 실패'; }
-          });
-          bodyEl.querySelector('.gh-download-html-btn').addEventListener('click', () => {
-            const a = document.createElement('a');
-            a.href = previewBlobUrl;
-            const dateStr = new Date().toISOString().slice(0, 10);
-            a.download = `${dateStr}-mockup.html`;
-            a.click();
           });
         } else {
           // ✅ 정상 저장 완료
