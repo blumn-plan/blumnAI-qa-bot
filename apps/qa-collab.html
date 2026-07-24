@@ -1284,7 +1284,7 @@
       setupMobileSidebar();
       setupImageLightbox();
       // 스코프 칩 초기 렌더 — 세션 복원 · doc 선택 · 종합 모드 전환 시 갱신됨
-      updateScopeChip();
+      updateScope();
       // 🪙 이달 누적 뱃지 초기 렌더 (매 답변마다 addToMonthlyUsage 가 갱신)
       renderMonthlyUsageBadge();
       // 처음 진입 시 대화 영역에 사용법 힌트
@@ -1520,7 +1520,7 @@
       state.docView = isStoryboard ? (state.docView || 'preview') : 'markdown';
       toggle.querySelectorAll('button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === state.docView));
       await renderDocBody(path);
-      updateScopeChip();
+      updateScope();
       saveCurrentSession();
     }
 
@@ -2031,7 +2031,9 @@
       return String(n);
     }
     // 원화 표기 — `~` 는 마이너스 오독 소지가 있어 제거 (예상치라는 뉘앙스는 툴팁에서 안내).
+    // 1토큰 단가는 ₩0.01 미만이 흔해서 3자리 소수까지 표기.
     function formatKrw(krw) {
+      if (krw < 0.1) return `₩${krw.toFixed(3)}`;
       if (krw < 1)   return `₩${krw.toFixed(2)}`;
       if (krw < 100) return `₩${krw.toFixed(1)}`;
       return `₩${Math.round(krw).toLocaleString()}`;
@@ -2095,41 +2097,19 @@
       if (!el) return;
       const key = getMonthKey();
       const cur = loadMonthlyUsage()[key];
-      const tipEmpty = `[${key}] 이번 달 아직 사용 없음.\n답변 받을 때마다 자동 누적됩니다.\n(브라우저 로컬 저장 · 다른 PC·브라우저는 별도)`;
+      // 툴팁: 이달 내가 얼마나 이용했는지 확인 용도 — 저장 위치 안내 한 줄만.
+      const tip = `[${key}] 이달 누적 사용량 · 브라우저 로컬 저장 (다른 PC·브라우저는 별도)`;
+      el.title = tip;
+      el.dataset.tip = tip;
       if (!cur || cur.count === 0) {
         el.textContent = '🪙 이달 누적: 아직 없음';
-        el.title = tipEmpty;
-        el.dataset.tip = tipEmpty;
         return;
       }
       const krw = cur.usd * KRW_PER_USD;
       const totalTokens = cur.input + cur.output + cur.cacheRead + cur.cacheWrite;
-      const totalInput  = cur.input + cur.cacheRead + cur.cacheWrite;
-      // 단가 = 총비용 / 총토큰 * 1000 (원/1K tok). 캐시 히트율에 따라 실효 요율 달라짐.
-      const ratePerK = totalTokens > 0 ? (krw / totalTokens) * 1000 : 0;
-      el.innerHTML = `🪙 이달 <b>${formatTokens(totalTokens)} tok</b> · ${formatKrw(krw)} <span style="opacity:0.75;font-weight:400">· 단가 ${formatKrw(ratePerK)}/1K</span>`;
-      const tip = [
-        `[${key}] 이달 누적 (${cur.count}회)`,
-        `※ 브라우저 로컬 저장 — 다른 PC·브라우저는 별도`,
-        ``,
-        `─ 토큰 breakdown ─`,
-        `· 신규 입력   : ${cur.input.toLocaleString()} tok`,
-        `· 캐시 읽기   : ${cur.cacheRead.toLocaleString()} tok  (10x 저렴)`,
-        `· 캐시 쓰기   : ${cur.cacheWrite.toLocaleString()} tok  (25% 서지)`,
-        `· 출력        : ${cur.output.toLocaleString()} tok`,
-        `· ─────────────`,
-        `· 총 입력     : ${totalInput.toLocaleString()} tok`,
-        `· 총 토큰     : ${totalTokens.toLocaleString()} tok`,
-        ``,
-        `─ 비용 ─`,
-        `총 비용 : $${cur.usd.toFixed(4)} = ${formatKrw(krw)}`,
-        `단가    : ${formatKrw(ratePerK)}/1K tok (실효 요율 · 캐시 히트율 반영)`,
-        `환율    : ${KRW_PER_USD}원/$ (예상치)`,
-        ``,
-        `※ 서버측 정확 합계는 Anthropic Console 확인`,
-      ].join('\n');
-      el.title = tip;
-      el.dataset.tip = tip;
+      // 1토큰 단가 = 총비용 / 총토큰 (원/tok · 캐시 히트율 반영된 실효 요율)
+      const ratePerTok = totalTokens > 0 ? (krw / totalTokens) : 0;
+      el.innerHTML = `🪙 이달 <b>${formatTokens(totalTokens)} tok</b> <span style="opacity:0.75;font-weight:400">(1토큰=${formatKrw(ratePerTok)})</span>`;
     }
 
     // 코드 인젝션 진단 배지 HTML — 답변 상단에 표시. status 별 문구·색상 분기.
@@ -2522,7 +2502,6 @@
             </p>
           </div>`;
         $('#doc-iframe').style.display = 'none';
-        $('#question')?.setAttribute('placeholder', '💬 프로젝트 전체 정책 기준으로 질문하세요');
       } else {
         aside?.classList.remove('all-docs-on');
         toggle.classList.remove('on');
@@ -2530,27 +2509,52 @@
         stateBadge.textContent = 'OFF';
         hint.textContent = '체크 시 프로젝트 전체 정책 종합 답변';
         if (docSearch) docSearch.disabled = false;
-        $('#question')?.setAttribute('placeholder', '예) 대시보드 필터에 초기화 버튼이 없는 이유가 뭔가요?\n\n💡 이미지 첨부: 텍스트박스에 Ctrl+V 로 붙여넣거나 파일을 드래그\n예: \'정책에는 X 인데 화면은 Y 입니다. 비교해주세요\' + 화면 캡처');
       }
-      updateScopeChip();
+      // placeholder · 스코프 칩 · 프롬프트 활성화 는 updateScope() 가 중앙에서 관리
+      updateScope();
     }
     // click 이 아니라 change 이벤트 사용 — 체크박스 상태 변경만 신뢰 (label 클릭 시 이중 발화 방지)
     $('#all-docs-checkbox').addEventListener('change', (e) => setAllDocsMode(e.target.checked));
 
-    /** 채팅창 위 현재 스코프 칩 — 어떤 근거로 답변할지 상시 노출.
-     *  종합 모드 · 개별 문서 · 미선택 3가지 상태. selectDoc / setAllDocsMode 에서 호출. */
-    function updateScopeChip() {
+    /** 스코프 상태 → UI 반영: 채팅창 위 스코프 칩 + 프롬프트 입력창 활성화 여부 + placeholder.
+     *  종합 모드 · 개별 문서 · 미선택 3가지 상태. selectDoc / setAllDocsMode / init / restoreSession 에서 호출.
+     *
+     *  스코프 미선택 시 프롬프트 입력창 비활성화 — 사용자가 문서 or 종합 모드를 명확히 선택해야
+     *  질문할 수 있음을 UI 로 강제. 첨부 링크도 함께 비활성. */
+    function updateScope() {
+      const hasScope = state.useAllDocs || !!state.currentDoc;
+      // 1. 스코프 칩
       const chip = $('#scope-chip');
-      if (!chip) return;
-      if (state.useAllDocs) {
-        chip.className = 'scope-chip all';
-        chip.innerHTML = '🌐 현재 스코프: <b>전체 정책 종합</b>';
-      } else if (state.currentDoc) {
-        chip.className = 'scope-chip doc';
-        chip.innerHTML = `📄 현재 스코프: <b>${escapeHtml(state.currentDoc.title)}</b>`;
-      } else {
-        chip.className = 'scope-chip none';
-        chip.innerHTML = '⚠️ 스코프 미선택 — 좌측에서 문서 선택 또는 🌐 종합 모드 ON';
+      if (chip) {
+        if (state.useAllDocs) {
+          chip.className = 'scope-chip all';
+          chip.innerHTML = '🌐 현재 스코프: <b>전체 정책 종합</b>';
+        } else if (state.currentDoc) {
+          chip.className = 'scope-chip doc';
+          chip.innerHTML = `📄 현재 스코프: <b>${escapeHtml(state.currentDoc.title)}</b>`;
+        } else {
+          chip.className = 'scope-chip none';
+          chip.innerHTML = '⚠️ 스코프 미선택 — 좌측에서 문서 선택 또는 🌐 종합 모드 ON';
+        }
+      }
+      // 2. 프롬프트 입력창 + 첨부 링크 활성화 + placeholder
+      const question = $('#question');
+      const sendBtn = $('#send-btn');
+      const attachLink = $('#attach-link');
+      if (question) {
+        question.disabled = !hasScope;
+        if (!hasScope) {
+          question.placeholder = '⬅ 먼저 좌측에서 정책·화면설계서를 선택하거나 🌐 전체 정책 종합 모드를 켜주세요';
+        } else if (state.useAllDocs) {
+          question.placeholder = '💬 프로젝트 전체 정책 기준으로 질문하세요';
+        } else {
+          question.placeholder = '예) 대시보드 필터에 초기화 버튼이 없는 이유가 뭔가요?\n\n💡 이미지 첨부: 텍스트박스에 Ctrl+V 로 붙여넣거나 파일을 드래그\n예: \'정책에는 X 인데 화면은 Y 입니다. 비교해주세요\' + 화면 캡처';
+        }
+      }
+      if (sendBtn) sendBtn.disabled = !hasScope;
+      if (attachLink) {
+        attachLink.style.pointerEvents = hasScope ? '' : 'none';
+        attachLink.style.opacity = hasScope ? '' : '0.4';
       }
     }
 
@@ -3165,7 +3169,7 @@
         });
       }
       $('#forward-btn').disabled = state.history.length === 0;
-      updateScopeChip();
+      updateScope();
       renderRecentList();
     }
 

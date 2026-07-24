@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+## v0.3.5 — 2026-07-24
+
+**Highlights** — 🚫 스코프 미선택 시 프롬프트 입력창 비활성화 · 🪙 이달 누적 뱃지 극단 간소화 (토큰량 + 1토큰 단가만).
+
+- 🚫 **스코프 미선택 시 프롬프트 입력창 비활성화** (`apps/qa-collab.html`) — 사용자가 정책 문서 or 🌐 종합 모드 중 하나를 반드시 선택해야 질문 가능함을 UI 로 강제. `updateScopeChip` → `updateScope` 로 refactor: (1) 스코프 칩 (2) `#question` textarea `disabled` (3) `#send-btn` `disabled` (4) `#attach-link` `pointer-events:none` + `opacity:0.4` (5) placeholder 를 스코프 상태별로 갱신 — 미선택: `⬅ 먼저 좌측에서 정책·화면설계서를 선택하거나 🌐 전체 정책 종합 모드를 켜주세요` / 종합 모드: `💬 프로젝트 전체 정책 기준으로 질문하세요` / 개별 문서: 기본 예시 문구. 이 5가지를 한 함수에서 관리해 setAllDocsMode 의 중복 placeholder 세팅 제거. 4개 caller (init · setAllDocsMode · selectDoc · restoreSession) 도 함께 rename
+- 🪙 **이달 누적 뱃지 극단 간소화 — 토큰량 + 1토큰 단가만** (`apps/qa-collab.html`) — 기존 `🪙 이달 2.7K tok · ₩35.1 · 단가 ₩13.2/1K` 표시가 너무 길고 툴팁도 breakdown·비용·환율·서버 정확 합계 참고 문구 등 디테일 과다. "이번 달 얼마나 이용했는지" 만 알면 되는 용도이므로 극단 간소화. 표시 `🪙 이달 2.7K tok (1토큰=₩0.013)` — 토큰량 + 1토큰 단가만 · 총비용·요청수·1K 단가 전부 제거. 툴팁 `[2026-07] 이달 누적 사용량 · 브라우저 로컬 저장 (다른 PC·브라우저는 별도)` 한 줄만. `formatKrw` 에 `₩0.1` 미만 3자리 소수 케이스 추가 (`₩0.013`) — 1토큰 단가처럼 아주 작은 값 정밀 표기
+
 ## v0.3.4 — 2026-07-24
 
 **Highlights** — 🪙 이달 누적 뱃지 · 토큰량+단가 표시 + 커스텀 툴팁 · 📄 HTML 목업 저장 실패 케이스 "완성" 프레이밍 재설계 · 🛠 로컬 dev 서버 포트 4000 기본 + 확장자 없는 URL 자동 처리.
