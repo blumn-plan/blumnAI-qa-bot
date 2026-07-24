@@ -279,10 +279,37 @@
     aside.docs h2.collapsible::before { content: '▾'; font-size: 9px; transition: transform 0.15s; display: inline-block; width: 10px; }
     aside.docs h2.collapsible.collapsed::before { transform: rotate(-90deg); }
     aside.docs h2 .count { color: var(--muted); font-weight: 400; font-size: 10px; margin-left: auto; }
-    aside.docs .all-docs-wrap { padding: 8px 12px 4px; }
-    aside.docs .all-docs-wrap button { width: 100%; padding: 8px 10px; border: 1px dashed var(--border); background: linear-gradient(to bottom, #f0f7ff, #e0edff); color: #1e40af; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; text-align: left; transition: all 0.15s; }
-    aside.docs .all-docs-wrap button:hover { border-color: var(--primary); border-style: solid; background: linear-gradient(to bottom, #dbeafe, #bfdbfe); }
-    aside.docs .all-docs-wrap button.active { background: linear-gradient(to bottom, #6366f1, #4f46e5); color: white; border-color: #4f46e5; border-style: solid; box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3); }
+    /* 🌐 전체 정책 종합 모드 토글 — iOS 스타일 스위치 */
+    aside.docs .all-docs-wrap { padding: 8px 12px 6px; }
+    aside.docs .all-docs-toggle { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); background: #fafbfc; border-radius: 8px; cursor: pointer; transition: all 0.15s; user-select: none; }
+    aside.docs .all-docs-toggle:hover { border-color: #94a3b8; background: #f1f5f9; }
+    aside.docs .all-docs-toggle.on { border-color: #4f46e5; background: linear-gradient(to bottom, #eef2ff, #e0e7ff); box-shadow: 0 1px 4px rgba(99, 102, 241, 0.15); }
+    aside.docs .all-docs-toggle input[type="checkbox"] { position: absolute; opacity: 0; pointer-events: none; }
+    aside.docs .toggle-switch { flex-shrink: 0; width: 32px; height: 18px; border-radius: 10px; background: #cbd5e1; position: relative; transition: background 0.2s; margin-top: 1px; }
+    aside.docs .toggle-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.2); transition: transform 0.2s; }
+    aside.docs .all-docs-toggle.on .toggle-switch { background: #4f46e5; }
+    aside.docs .all-docs-toggle.on .toggle-switch::after { transform: translateX(14px); }
+    aside.docs .toggle-labels { flex: 1; min-width: 0; line-height: 1.35; }
+    aside.docs .toggle-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #1e293b; }
+    aside.docs .all-docs-toggle.on .toggle-title { color: #3730a3; }
+    aside.docs .toggle-state { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: #e2e8f0; color: #64748b; letter-spacing: 0.02em; }
+    aside.docs .all-docs-toggle.on .toggle-state { background: #4f46e5; color: white; }
+    aside.docs .toggle-hint { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+    aside.docs .all-docs-toggle.on .toggle-hint { color: #4338ca; }
+
+    /* 종합 모드 ON 시 문서 목록 비활성 — 회색 처리 + 배너 + 클릭 차단 */
+    aside.docs .doc-list-disabled-banner { display: none; margin: 0 12px 6px; padding: 6px 10px; background: #eef2ff; border: 1px dashed #a5b4fc; border-radius: 6px; font-size: 11px; color: #3730a3; line-height: 1.5; }
+    aside.docs .doc-list-disabled-banner strong { font-weight: 600; }
+    aside.docs.all-docs-on .doc-list-disabled-banner { display: block; }
+    aside.docs.all-docs-on .docs-selectable { opacity: 0.5; pointer-events: none; filter: grayscale(0.4); }
+    aside.docs.all-docs-on .docs-selectable input { pointer-events: none; }
+
+    /* 채팅창 위 현재 스코프 칩 — 어떤 근거로 답변할지 상시 노출 */
+    .scope-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+    .scope-chip.all { background: linear-gradient(to right, #eef2ff, #e0e7ff); color: #3730a3; border-color: #a5b4fc; }
+    .scope-chip.doc { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+    .scope-chip.none { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+    .scope-bar { padding: 6px 12px 0; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
     aside.docs .recent-search-wrap, aside.docs .doc-search-wrap { padding: 0 16px 6px; }
     aside.docs .recent-search-wrap input, aside.docs .doc-search-wrap input { width: 100%; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
     aside.docs .recent-search-wrap input:focus, aside.docs .doc-search-wrap input:focus { outline: none; border-color: var(--primary); }
@@ -467,12 +494,29 @@
         </div>
       </div>
       <div class="doc-list-wrap">
-        <div class="all-docs-wrap"><button id="all-docs-btn" type="button" title="특정 문서 대신 프로젝트 전체 정책·화면설계서를 종합해서 답변">🌐 전체 정책 종합해서 답변</button></div>
+        <div class="all-docs-wrap">
+          <label id="all-docs-toggle" class="all-docs-toggle" title="ON: 프로젝트 전체 정책·화면설계서를 종합해서 답변 · OFF: 아래 목록에서 문서 하나 선택">
+            <input type="checkbox" id="all-docs-checkbox" />
+            <span class="toggle-switch" aria-hidden="true"></span>
+            <span class="toggle-labels">
+              <span class="toggle-title">
+                🌐 전체 정책 종합 모드
+                <span class="toggle-state" id="all-docs-state">OFF</span>
+              </span>
+              <span class="toggle-hint" id="all-docs-hint">체크 시 프로젝트 전체 정책 종합 답변</span>
+            </span>
+          </label>
+        </div>
+        <div class="doc-list-disabled-banner">
+          <strong>🌐 종합 모드 활성 중</strong> — 아래 목록의 개별 문서 선택은 비활성화됐습니다. 개별 문서를 보려면 위 토글을 끄세요.
+        </div>
+        <div class="docs-selectable">
         <h2 class="collapsible" data-section="policies">정책문서 <span class="count" id="policies-count"></span></h2>
         <div class="doc-search-wrap"><input id="doc-search" type="search" placeholder="정책·화면설계서 이름 검색" autocomplete="off" /></div>
         <ul id="policy-list"><li class="loading"><button disabled>로딩 중...</button></li></ul>
         <h2 class="collapsible" data-section="storyboards">화면설계서 <span class="count" id="storyboards-count"></span></h2>
         <ul id="storyboard-list"></ul>
+        </div>
         <h2 class="collapsible" data-section="recent">📜 최근 대화 <span class="count" id="recent-count"></span><span style="font-size:9px;color:var(--muted);margin-left:6px;font-weight:400">(브라우저별)</span></h2>
         <div class="recent-search-wrap"><input id="recent-search" type="search" placeholder="대화 검색 (제목·본문)" autocomplete="off" /></div>
         <div class="recent-actions"><a id="recent-clear-all" class="danger" title="모든 최근 대화 일괄 삭제">🗑️ 모두 지우기</a></div>
@@ -574,6 +618,9 @@
             </div>
           </span>
         </span>
+      </div>
+      <div class="scope-bar" title="답변에 참고할 근거 범위 — 좌측 사이드바에서 변경">
+        <span id="scope-chip" class="scope-chip none">⚠️ 스코프 미선택 — 좌측에서 문서 선택 또는 🌐 종합 모드 ON</span>
       </div>
       <form class="ask" id="ask-form">
         <div class="textarea-wrap">
@@ -1217,6 +1264,8 @@
       setupColumnResizers();
       setupMobileSidebar();
       setupImageLightbox();
+      // 스코프 칩 초기 렌더 — 세션 복원 · doc 선택 · 종합 모드 전환 시 갱신됨
+      updateScopeChip();
       // 처음 진입 시 대화 영역에 사용법 힌트
       if (state.history.length === 0) renderWelcomeHint();
       loadSessions();
@@ -1435,11 +1484,12 @@
 
     /* ────────── 문서 선택·렌더 ────────── */
     async function selectDoc(path) {
+      // 종합 모드 ON 상태에서는 UI 자체가 pointer-events:none 이라 이 경로 도달 X.
+      // 그래도 방어적으로 guard — 종합 모드 켜져 있으면 무시 (자동 해제 X, 사용자가 명시적으로 토글 OFF 해야 함).
+      if (state.useAllDocs) return;
       const doc = state.docs.find((d) => d.path === path);
       if (!doc) return;
       state.currentDoc = doc;
-      // 개별 문서 선택 시 전체 종합 모드는 자동 해제
-      if (state.useAllDocs) setAllDocsMode(false);
       $$('.docs li button').forEach((b) => b.classList.toggle('active', b.dataset.path === path));
       $('#doc-title').textContent = doc.title;
       // 화면설계서면 기본 '미리보기' 모드로 진입, 정책이면 마크다운만
@@ -1449,6 +1499,7 @@
       state.docView = isStoryboard ? (state.docView || 'preview') : 'markdown';
       toggle.querySelectorAll('button[data-view]').forEach((b) => b.classList.toggle('active', b.dataset.view === state.docView));
       await renderDocBody(path);
+      updateScopeChip();
       saveCurrentSession();
     }
 
@@ -2339,14 +2390,25 @@
       // improve-toolbar-btn 은 항상 활성 (답변 없어도 일반 규칙 추가 가능)
     });
 
-    /** 🌐 전체 정책 종합 모드 ON/OFF 전환. 개별 문서 선택 상태와 상호 배타. */
+    /** 🌐 전체 정책 종합 모드 ON/OFF 전환.
+     *  ON 시: 문서 목록 비활성 (회색 처리 + 클릭 차단) + 스코프 칩 갱신.
+     *  OFF 시: 개별 문서 선택 가능 상태로 복귀. 이전 선택 문서가 있으면 그대로 유지. */
     function setAllDocsMode(on) {
       state.useAllDocs = on;
-      const btn = $('#all-docs-btn');
+      const aside = document.querySelector('aside.docs');
+      const toggle = $('#all-docs-toggle');
+      const checkbox = $('#all-docs-checkbox');
+      const stateBadge = $('#all-docs-state');
+      const hint = $('#all-docs-hint');
+      const docSearch = $('#doc-search');
       if (on) {
-        btn.classList.add('active');
-        btn.innerHTML = '🌐 전체 정책 종합 모드 <span style="font-size:10px;opacity:0.85;font-weight:400">· 클릭해서 해제</span>';
-        // 개별 문서 선택 UI 해제
+        aside?.classList.add('all-docs-on');
+        toggle.classList.add('on');
+        checkbox.checked = true;
+        stateBadge.textContent = 'ON';
+        hint.textContent = '✅ 활성 중 · 아래 문서 목록 비활성';
+        if (docSearch) docSearch.disabled = true;
+        // 개별 문서 선택 UI 해제 (선택된 문서 자체는 state 에서 지움 — 종합 모드 답변에 doc 컨텍스트 안 섞이게)
         $$('.docs li button').forEach((b) => b.classList.remove('active'));
         state.currentDoc = null;
         $('#doc-title').textContent = '🌐 전체 정책 종합 모드';
@@ -2360,19 +2422,42 @@
               프로젝트 안의 <b>모든 정책·화면설계서를 종합해서</b> 답변합니다.<br><br>
               💬 우측 채팅에 자유롭게 질문하세요.<br>
               <span style="font-size:11px;opacity:0.85">
-                (개별 문서를 참고하고 싶으면 좌측 목록에서 클릭 → 자동으로 모드 해제)
+                (개별 문서로 전환하려면 좌측 상단 토글 OFF)
               </span>
             </p>
           </div>`;
         $('#doc-iframe').style.display = 'none';
         $('#question')?.setAttribute('placeholder', '💬 프로젝트 전체 정책 기준으로 질문하세요');
       } else {
-        btn.classList.remove('active');
-        btn.innerHTML = '🌐 전체 정책 종합해서 답변';
+        aside?.classList.remove('all-docs-on');
+        toggle.classList.remove('on');
+        checkbox.checked = false;
+        stateBadge.textContent = 'OFF';
+        hint.textContent = '체크 시 프로젝트 전체 정책 종합 답변';
+        if (docSearch) docSearch.disabled = false;
         $('#question')?.setAttribute('placeholder', '예) 대시보드 필터에 초기화 버튼이 없는 이유가 뭔가요?\n\n💡 이미지 첨부: 텍스트박스에 Ctrl+V 로 붙여넣거나 파일을 드래그\n예: \'정책에는 X 인데 화면은 Y 입니다. 비교해주세요\' + 화면 캡처');
       }
+      updateScopeChip();
     }
-    $('#all-docs-btn').addEventListener('click', () => setAllDocsMode(!state.useAllDocs));
+    // click 이 아니라 change 이벤트 사용 — 체크박스 상태 변경만 신뢰 (label 클릭 시 이중 발화 방지)
+    $('#all-docs-checkbox').addEventListener('change', (e) => setAllDocsMode(e.target.checked));
+
+    /** 채팅창 위 현재 스코프 칩 — 어떤 근거로 답변할지 상시 노출.
+     *  종합 모드 · 개별 문서 · 미선택 3가지 상태. selectDoc / setAllDocsMode 에서 호출. */
+    function updateScopeChip() {
+      const chip = $('#scope-chip');
+      if (!chip) return;
+      if (state.useAllDocs) {
+        chip.className = 'scope-chip all';
+        chip.innerHTML = '🌐 현재 스코프: <b>전체 정책 종합</b>';
+      } else if (state.currentDoc) {
+        chip.className = 'scope-chip doc';
+        chip.innerHTML = `📄 현재 스코프: <b>${escapeHtml(state.currentDoc.title)}</b>`;
+      } else {
+        chip.className = 'scope-chip none';
+        chip.innerHTML = '⚠️ 스코프 미선택 — 좌측에서 문서 선택 또는 🌐 종합 모드 ON';
+      }
+    }
 
     /** 대화 없을 때 초기 웰컴 힌트 — 어떻게 시작할지 안내 */
     function renderWelcomeHint() {
@@ -2392,9 +2477,9 @@
             <div style="background:#f0f7ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 14px">
               <div style="font-weight:600;color:#1e40af;margin-bottom:6px">🌐 방법 2. 전체 정책 종합해서 질문</div>
               <div style="font-size:12.5px;color:#4b5563;line-height:1.65">
-                ① 좌측 상단 <b>[🌐 전체 정책 종합해서 답변]</b> 버튼 클릭<br>
+                ① 좌측 상단 <b>[🌐 전체 정책 종합 모드]</b> 토글을 <b>ON</b> 으로<br>
                 ② 자유롭게 질문 (특정 문서 선택 불필요)<br>
-                <span style="color:#6b7280;font-size:11.5px">→ 봇이 프로젝트 안 여러 정책을 종합해서 답합니다. 정확한 문서 이름 몰라도 OK.</span>
+                <span style="color:#6b7280;font-size:11.5px">→ 봇이 프로젝트 안 여러 정책을 종합해서 답합니다. 정확한 문서 이름 몰라도 OK.<br>(ON 시 아래 문서 목록은 비활성화됩니다 · 개별 문서로 돌아가려면 토글 OFF)</span>
               </div>
             </div>
           </div>
@@ -2957,6 +3042,7 @@
         });
       }
       $('#forward-btn').disabled = state.history.length === 0;
+      updateScopeChip();
       renderRecentList();
     }
 
