@@ -2712,7 +2712,41 @@
           const errData = await res.json().catch(() => ({}));
           throw new Error(errData.error || `HTTP ${res.status}`);
         }
-        const data = await res.json();
+        // NDJSON 스트리밍 파스 — Cloudflare 524 (100s idle) 회피용 heartbeat 이벤트
+        // 를 skip 하고 done/error 이벤트만 사용. 마지막 done 의 payload 를 data 로 채택.
+        // 기존 res.json() 방식은 응답 완료까지 blocking → Claude 100s+ 요청은 524 로 죽음.
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let data = null;
+        let heartbeatCount = 0;
+        streamLoop: while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let nlIdx;
+          while ((nlIdx = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, nlIdx).trim();
+            buffer = buffer.slice(nlIdx + 1);
+            if (!line) continue;
+            let evt;
+            try { evt = JSON.parse(line); } catch (_) { continue; }
+            if (evt.type === 'heartbeat') {
+              heartbeatCount++;
+              // 로딩 label 에 대기시간 힌트 (사용자한테 살아있음 신호)
+              if (labelEl) labelEl.textContent = `Claude 가 HTML 을 만들고 있어요… (${heartbeatCount * 15}s+ 경과)`;
+              continue;
+            }
+            if (evt.type === 'error') {
+              throw new Error(evt.error || 'gen-html error');
+            }
+            if (evt.type === 'done') {
+              data = evt;
+              break streamLoop;
+            }
+          }
+        }
+        if (!data) throw new Error('gen-html: 스트림 종료됐지만 done 이벤트 없음');
         const sizeKb = (data.bytes / 1024).toFixed(1);
         clearInterval(loadingPh.timer);
         holder.classList.remove('streaming', 'loading-placeholder');

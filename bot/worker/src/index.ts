@@ -379,8 +379,10 @@ export default {
           break;
         case '/gen-html':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          result = await generateHtmlMockup(env, await req.json(), req.signal);
-          break;
+          // NDJSON 스트리밍 — Claude API 가 100s+ 걸려서 Cloudflare 524 로 끊기던 문제 해결.
+          //   heartbeat 이벤트를 15s 마다 emit 해서 엣지 idle timer 리셋.
+          //   프론트는 stream 을 line-by-line 파싱해 done/error 이벤트로 최종 결과 수신.
+          return await generateHtmlMockup(env, await req.json(), corsHeaders, req.signal);
         case '/list-storyboard-images':
           result = await listStoryboardImages(env, url.searchParams.get('dir') ?? '', url.searchParams.get('prefix') ?? '');
           break;
@@ -2448,30 +2450,74 @@ interface GenHtmlResponse {
   saveError?: string;
 }
 
-async function generateHtmlMockup(env: Env, body: GenHtmlRequest, signal?: AbortSignal): Promise<GenHtmlResponse> {
-  if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY 미설정 — /gen-html 사용 불가');
-  if (!body.prompt?.trim()) throw new Error('prompt required');
+async function generateHtmlMockup(env: Env, body: GenHtmlRequest, corsHeaders: HeadersInit, signal?: AbortSignal): Promise<Response> {
+  const ndjsonHeaders: HeadersInit = {
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache',
+    ...corsHeaders,
+  };
+  // 조기 validation 은 단일 NDJSON error 라인으로 응답
+  const earlyError = (msg: string): Response =>
+    new Response(JSON.stringify({ type: 'error', error: msg }) + '\n', { status: 200, headers: ndjsonHeaders });
+  if (!env.ANTHROPIC_API_KEY) return earlyError('ANTHROPIC_API_KEY 미설정 — /gen-html 사용 불가');
+  if (!body.prompt?.trim()) return earlyError('prompt required');
 
   const model = env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const emit = async (obj: unknown): Promise<void> => {
+    try { await writer.write(encoder.encode(JSON.stringify(obj) + '\n')); }
+    catch (_) { /* client disconnected — ignore */ }
+  };
 
-  // 컨텍스트 로드 — /qa 와 동일 재사용
-  const focusedDoc = body.focusedDocPath
-    ? await fetchTextFileCached(env, body.focusedDocPath).catch(() => '')
-    : '';
-  const codeResult: CodeSnippetResult = body.codeRepo
-    ? await fetchCodeSnippets(env, {
-        repo: body.codeRepo,
-        question: body.prompt,
-        pathHints: body.codePaths ?? [],
-        searchHint: body.codeSearchHint ?? '',
-        maxSnippets: body.codeMaxSnippets ?? 3,
-        snippetLines: body.codeSnippetLines ?? 120,
-        focusedDoc: focusedDoc || undefined,
-      }).catch(() => ({
-        snippets: '',
-        diagnostic: { status: 'fetch-error' as CodeInjectionStatus, repo: body.codeRepo ?? '', count: 0, keywords: '', files: [] },
-      }))
-    : { snippets: '', diagnostic: { status: 'no-repo' as CodeInjectionStatus, repo: '', count: 0, keywords: '', files: [] } };
+  // 실제 작업은 백그라운드에서 진행하고 즉시 Response 반환
+  // → 첫 바이트 (heartbeat) 가 15s 안에 도착해서 Cloudflare 524 (100s idle) 회피.
+  (async () => {
+    // heartbeat 은 15s 간격 — CF edge idle timer (100s) 훨씬 이내에 계속 바이트 흘림
+    const heartbeatTimer = setInterval(() => { void emit({ type: 'heartbeat', t: Date.now() }); }, 15000);
+    try {
+      // 컨텍스트 로드 — /qa 와 동일 재사용
+      const focusedDoc = body.focusedDocPath
+        ? await fetchTextFileCached(env, body.focusedDocPath).catch(() => '')
+        : '';
+      const codeResult: CodeSnippetResult = body.codeRepo
+        ? await fetchCodeSnippets(env, {
+            repo: body.codeRepo,
+            question: body.prompt,
+            pathHints: body.codePaths ?? [],
+            searchHint: body.codeSearchHint ?? '',
+            maxSnippets: body.codeMaxSnippets ?? 3,
+            snippetLines: body.codeSnippetLines ?? 120,
+            focusedDoc: focusedDoc || undefined,
+          }).catch(() => ({
+            snippets: '',
+            diagnostic: { status: 'fetch-error' as CodeInjectionStatus, repo: body.codeRepo ?? '', count: 0, keywords: '', files: [] },
+          }))
+        : { snippets: '', diagnostic: { status: 'no-repo' as CodeInjectionStatus, repo: '', count: 0, keywords: '', files: [] } };
+
+      const result = await runGenHtmlInner(env, body, model, focusedDoc, codeResult, signal);
+      await emit({ type: 'done', ...result });
+    } catch (err) {
+      await emit({ type: 'error', error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      clearInterval(heartbeatTimer);
+      try { await writer.close(); } catch (_) { /* already closed */ }
+    }
+  })();
+
+  return new Response(readable, { status: 200, headers: ndjsonHeaders });
+}
+
+/** 실제 Claude 호출 · PUT 커밋 로직 — generateHtmlMockup 의 백그라운드 부분에서 호출. */
+async function runGenHtmlInner(
+  env: Env,
+  body: GenHtmlRequest,
+  model: string,
+  focusedDoc: string,
+  codeResult: CodeSnippetResult,
+  signal?: AbortSignal,
+): Promise<GenHtmlResponse> {
 
   // 시스템 프롬프트 — HTML 만 반환, 완결된 문서, TailwindCDN 사용 권장
   const systemLines: string[] = [
