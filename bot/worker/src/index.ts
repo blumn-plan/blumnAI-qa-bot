@@ -159,46 +159,86 @@ function cacheKey(env: Env, path: string): string {
   return `${env.GITHUB_REPO}::${path}`;
 }
 /**
- * ⚠ Stale-cache fallback 전략:
- *   TTL 안 → 캐시 hit 즉시 반환
- *   TTL 초과 → live fetch 시도
- *     · 성공 → 새 값 캐시 & 반환
- *     · 실패 → 이전 성공값이 남아있으면 그거라도 반환 (stale-while-error)
- *         · IP allow list 403 같이 transient 인프라 실패에도 UI 살리기 위함.
- *         · 캐시 자체가 아예 없을 때만 최종적으로 throw.
- *   장점: 한 번이라도 성공한 리소스는 이후 IP allow list 실패에도 계속 동작.
- *   대가: 데이터가 최대 인스턴스 lifetime 만큼 stale 될 수 있음 (Worker 인스턴스
- *        재시작으로 몇 분~수시간마다 캐시 자연 초기화되므로 실무상 큰 문제 X).
+ * ⚠ Multi-tier cache 전략 (IP allow list 실패 회복 최대화):
+ *   L1: In-memory cache (per Worker instance, 짧은 TTL) — 같은 인스턴스 재사용 최적
+ *   L2: Cloudflare Edge Cache API (인스턴스 간 공유, 24h TTL) — 인스턴스 재시작에도 유지
+ *   Fallback: stale L1 → stale L2 → 마지막 수단으로 throw
+ *   장점: 한 인스턴스가 성공적으로 fetch 하면, 24h 동안 모든 인스턴스가 같은 값 서빙.
+ *        Worker 재시작 · 서로 다른 리전 인스턴스 · IP allow list 실패에도 관대.
  */
+const EDGE_CACHE_TTL_SEC = 24 * 60 * 60;
+
+function edgeCacheReqKey(env: Env, kind: 'file' | 'dir', path: string): Request {
+  // Cache API 는 Request 를 key 로 사용. URL 은 임의 도메인이어도 인스턴스 간 shared.
+  return new Request(`https://qa-bot-edge-cache.internal/${kind}/${encodeURIComponent(env.GITHUB_REPO || 'no-repo')}/${encodeContentPath(path)}`, { method: 'GET' });
+}
+
 async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): Promise<string> {
   const key = cacheKey(env, path);
   const c = textCache.get(key);
   if (c && Date.now() - c.at < ttl) return c.data;
+
+  const edgeKey = edgeCacheReqKey(env, 'file', path);
   try {
     const data = await fetchTextFile(env, path);
     textCache.set(key, { at: Date.now(), data });
+    // L2 edge cache put — 인스턴스 간 shared, 24h TTL
+    try {
+      await caches.default.put(edgeKey, new Response(data, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
+      }));
+    } catch (_) { /* cache put 실패는 무시 */ }
     return data;
   } catch (err) {
+    // L1 stale fallback
     if (c) {
-      console.warn(`[qa-bot] fetchTextFile ${path} 실패 → stale cache fallback (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`[qa-bot] fetchTextFile ${path} 실패 → L1 stale (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
       return c.data;
     }
+    // L2 edge cache fallback — 이전에 어떤 인스턴스라도 성공했으면 유효
+    try {
+      const cached = await caches.default.match(edgeKey);
+      if (cached) {
+        const data = await cached.text();
+        console.warn(`[qa-bot] fetchTextFile ${path} 실패 → L2 edge cache hit`);
+        textCache.set(key, { at: Date.now(), data }); // L1 prime
+        return data;
+      }
+    } catch (_) { /* cache match 실패 시 정상 throw 로 진행 */ }
     throw err;
   }
 }
+
 async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS): Promise<ContentEntry[]> {
   const key = cacheKey(env, path);
   const c = listCache.get(key);
   if (c && Date.now() - c.at < ttl) return c.data;
+
+  const edgeKey = edgeCacheReqKey(env, 'dir', path);
   try {
     const data = await fetchDirListing(env, path);
     listCache.set(key, { at: Date.now(), data });
+    try {
+      await caches.default.put(edgeKey, new Response(JSON.stringify(data), {
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
+      }));
+    } catch (_) { /* ignore */ }
     return data;
   } catch (err) {
     if (c) {
-      console.warn(`[qa-bot] fetchDirListing ${path} 실패 → stale cache fallback (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
+      console.warn(`[qa-bot] fetchDirListing ${path} 실패 → L1 stale (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
       return c.data;
     }
+    try {
+      const cached = await caches.default.match(edgeKey);
+      if (cached) {
+        const text = await cached.text();
+        const data = JSON.parse(text) as ContentEntry[];
+        console.warn(`[qa-bot] fetchDirListing ${path} 실패 → L2 edge cache hit`);
+        listCache.set(key, { at: Date.now(), data });
+        return data;
+      }
+    } catch (_) { /* ignore */ }
     throw err;
   }
 }
@@ -214,24 +254,22 @@ function invalidateCache(env: Env, ...paths: string[]) {
 async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
   const key = env.GITHUB_REPO || '(no-repo)';
   const cached = configCache.get(key);
-  // 성공값이 캐시에 있고 TTL 안이면 즉시 반환
   if (cached && cached.data !== null && Date.now() - cached.at < CONFIG_CACHE_TTL_MS) {
     return cached.data;
   }
+  // loadTeamConfig 도 fetchTextFileCached 를 통과하면 자동으로 L2 edge cache 혜택을 봄.
+  // 여기서는 in-memory L1 config cache + fetchTextFileCached 의 L2 fallback 로 2중 보호.
   try {
-    const raw = await fetchTextFile(env, 'blumnAI-qa-bot.config.yml');
+    const raw = await fetchTextFileCached(env, 'blumnAI-qa-bot.config.yml');
     const YAML = await import('yaml');
     const parsed = YAML.parse(raw) as TeamConfig | null;
     configCache.set(key, { at: Date.now(), data: parsed ?? null });
     return parsed ?? null;
   } catch (err) {
     console.warn('[qa-bot] load config.yml failed:', err instanceof Error ? err.message : String(err));
-    // Stale-fallback — 이전에 성공한 config 가 캐시에 남아있으면 그거라도 사용.
-    // TTL 지났어도 IP allow list 403 로 인한 transient 실패보다는 stale config 이 나음
-    // (/list-projects 가 계속 빈 배열 반환 → 프로젝트 드롭다운 empty → 500 헬 케이스 방지).
-    // null 은 캐시하지 않음 (실패 확산 방지).
+    // L1 stale fallback — 이전 성공값 재사용 (fetchTextFileCached L2 도 모두 실패한 경우)
     if (cached && cached.data !== null) {
-      console.warn(`[qa-bot] loadTeamConfig — stale config fallback (${Math.round((Date.now() - cached.at) / 1000)}s old)`);
+      console.warn(`[qa-bot] loadTeamConfig — L1 stale config fallback (${Math.round((Date.now() - cached.at) / 1000)}s old)`);
       return cached.data;
     }
     return null;
