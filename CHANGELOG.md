@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+## v0.3.3 — 2026-07-24
+
+**Highlights** — 🪙 이달 누적 토큰·비용 뱃지 (/qa + /gen-html 통합 집계) · 📄 HTML 목업 다이얼로그 파일 픽커 오발동 제거 · 💰 1회당 비용 안내 문구 제거.
+
+- 🪙 **채팅 헤더 · 이달 누적 토큰·비용 뱃지 상시 노출** (`apps/qa-collab.html` · `bot/worker/src/index.ts`) — 매 답변마다 usage NDJSON 이벤트가 도착하면 `addToMonthlyUsage` 로 현재 월 (`YYYY-MM`, 로컬 시간대) 누적치에 반영. 헤더 우측에 `🪙 이달: ₩1,234 · 12회` 표시 (없으면 `🪙 이달 누적: —`). 툴팁으로 신규 입력·캐시 읽기·캐시 쓰기·출력 breakdown + USD·KRW 환산 + 총 요청 수 노출. `localStorage.blumnai-qa-usage-monthly-v1` 에 월별 객체로 저장 (과거 월도 보관, 스페이스 무시). 브라우저별 집계라 다른 PC·브라우저는 별도 카운터 — 툴팁에 명시 (서버측 정확 합계는 Anthropic Console 확인). 요율표·환율은 기존 `computeUsageCost` 재사용. **/qa (제이나미봇 채팅) + /gen-html (📄 HTML 목업) 두 엔드포인트 모두 통합 집계** — 워커 `GenHtmlResponse.usage` 필드 신설 → Anthropic 응답의 usage 를 프론트로 전달 → 저장 성공·실패 어느 쪽이든 누적 반영 (Claude 토큰은 이미 소비됐으므로)
+- 📄 **HTML 목업 다이얼로그 · 파일 픽커 오발동 제거** (`apps/qa-collab.html`) — 다이얼로그 안 `<input type="file">` 이 그대로 노출돼 있어서 `<label for>` 클릭·Tab 포커스·paste 이벤트 부작용으로 "내 컴퓨터 선택" 창이 예상 밖으로 튀던 문제. 파일 인풋을 `display:none` 처리 + 상단 힌트에 "**Ctrl+V** 로 붙여넣거나 드래그, 또는 [📎 파일 선택]" 링크만 노출 → 파일 픽커는 명시적으로 "📎 파일 선택" 클릭 시에만 발동. paste·드래그가 primary 방법으로 명확화
+- 🧹 **HTML 목업 다이얼로그 · "1회당 약 5-20원" 비용 안내 제거** (`apps/qa-collab.html`) — 이달 누적 뱃지가 헤더에 상시 노출되므로 다이얼로그 하단의 per-run 비용 예상 문구는 중복·소음. 저장 위치 안내만 유지
+
 ## v0.3.2 — 2026-07-24
 
 **Highlights** — 🎨 🌐 전체 정책 종합 모드 UX 재설계 (버튼 → 토글 스위치 + 문서목록 명시적 비활성 + 스코프 칩).

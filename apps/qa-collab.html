@@ -373,6 +373,8 @@
     aside.chat .msg .code-inject-files code { background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
     /* 🪙 토큰·비용 뱃지 — 답변 완료 시 usage NDJSON 이벤트 도착 후 표시. 클릭 도움말 = 툴팁. */
     aside.chat .msg .usage-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin-bottom: 6px; margin-right: 4px; border: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; cursor: help; }
+    /* 🪙 이달 누적 뱃지 — 채팅 헤더에 상시 노출. 매 답변마다 자동 갱신. localStorage 저장 → 브라우저별 집계 */
+    aside.chat .header .monthly-usage-badge { margin-left: 10px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 400; border: 1px solid #dbeafe; background: #eff6ff; color: #1d4ed8; cursor: help; white-space: nowrap; }
     aside.chat .msg .msg-actions { display: flex; gap: 6px; margin-top: 8px; opacity: 0; transition: opacity 0.2s; }
     aside.chat .msg:hover .msg-actions, aside.chat .msg:focus-within .msg-actions { opacity: 1; }
     aside.chat .msg .msg-actions button.msg-act { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 3px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
@@ -571,6 +573,7 @@
     <aside class="chat">
       <div class="header">
         🤖 AI 에게 직접 질문
+        <span id="monthly-usage-badge" class="monthly-usage-badge" title="이번 달 아직 사용 없음">🪙 이달 누적: —</span>
         <span style="margin-left:auto;font-size:11px;color:var(--muted);font-weight:400">
           <span id="user-display">👤 (이름 미설정)</span>
           <a id="change-user-link" href="#" style="margin-left:6px;color:var(--primary);text-decoration:none">변경</a>
@@ -744,15 +747,17 @@
         <textarea id="gh-prompt" required placeholder="예:
 · 첨부한 대시보드 캡처 그대로 목업 만들어줘. KPI 카드 4개 · 하단 차트 2개 배치.
 · 현재 열려있는 메시지 통계 정책 §4-6-3 기준으로 탭 3개 짜리 상세 화면 만들어줘."></textarea>
-        <label for="gh-image-input" style="margin-top:8px">참고 이미지 (선택 · Ctrl+V 또는 드래그)</label>
-        <input id="gh-image-input" type="file" accept="image/*" style="font-size:12px" />
+        <div style="margin-top:8px;font-size:12px;color:var(--text)">
+          참고 이미지 <span style="color:var(--muted);font-weight:400">(선택)</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:6px">— <b>Ctrl+V</b> 로 붙여넣거나 드래그, 또는 <a id="gh-image-pick" href="#" style="color:var(--primary);text-decoration:none">📎 파일 선택</a></span>
+        </div>
+        <input id="gh-image-input" type="file" accept="image/*" style="display:none" />
         <div id="gh-image-preview" style="margin-top:8px;display:none">
           <img id="gh-image-preview-img" alt="첨부 이미지 미리보기" style="max-width:100%;max-height:200px;border:1px solid var(--border);border-radius:6px;display:block" />
           <button type="button" id="gh-image-clear" style="margin-top:4px;background:transparent;border:none;color:var(--error);font-size:11px;cursor:pointer;padding:0">✕ 첨부 제거</button>
         </div>
         <p style="font-size:11px;color:var(--muted);margin:10px 0 0;line-height:1.5">
-          💾 <b>저장 위치</b>: <code>qa/mockups/YYYY-MM-DD-슬러그.html</code> · GitHub Pages 자동 서빙<br>
-          💰 <b>비용</b>: 1회당 약 5-20원 (Claude Sonnet 4.6 · HTML 길이 따라)
+          💾 <b>저장 위치</b>: <code>qa/mockups/YYYY-MM-DD-슬러그.html</code> · GitHub Pages 자동 서빙
         </p>
       </div>
       <div class="foot">
@@ -1266,6 +1271,8 @@
       setupImageLightbox();
       // 스코프 칩 초기 렌더 — 세션 복원 · doc 선택 · 종합 모드 전환 시 갱신됨
       updateScopeChip();
+      // 🪙 이달 누적 뱃지 초기 렌더 (매 답변마다 addToMonthlyUsage 가 갱신)
+      renderMonthlyUsageBadge();
       // 처음 진입 시 대화 영역에 사용법 힌트
       if (state.history.length === 0) renderWelcomeHint();
       loadSessions();
@@ -2039,6 +2046,63 @@
       return `<span class="usage-tag" title="${escapeHtml(title)}">🪙 입력 ${formatTokens(totalInput)}${cacheHint} · 출력 ${formatTokens(output)} · ${formatKrw(krw)}</span>`;
     }
 
+    /* ────────── 🪙 이달 누적 사용량 집계 (localStorage · 브라우저별) ──────────
+     *  매 답변마다 usage NDJSON 이벤트 도착 시 finalizeStreamingMessage → addToMonthlyUsage 호출.
+     *  월 키 = YYYY-MM (로컬 시간대 기준). 과거 월도 그대로 보관 (스페이스 무시할 수 있음).
+     *  주의: 브라우저별 저장 — 다른 PC·브라우저는 별도 카운터. 서버측 정확 합계는 Cloudflare
+     *  Analytics · Anthropic Console 을 봐야 함. 이 뱃지는 담당자 인지·자체 점검용. */
+    const MONTHLY_USAGE_KEY = 'blumnai-qa-usage-monthly-v1';
+    function getMonthKey(d = new Date()) {
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+    function loadMonthlyUsage() {
+      try { return JSON.parse(localStorage.getItem(MONTHLY_USAGE_KEY) || '{}'); }
+      catch { return {}; }
+    }
+    function addToMonthlyUsage(usage, model) {
+      if (!usage) return;
+      const { usd } = computeUsageCost(usage, model);
+      const key = getMonthKey();
+      const all = loadMonthlyUsage();
+      const cur = all[key] || { count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };
+      cur.count += 1;
+      cur.input      += usage.input_tokens ?? 0;
+      cur.output     += usage.output_tokens ?? 0;
+      cur.cacheRead  += usage.cache_read_input_tokens ?? 0;
+      cur.cacheWrite += usage.cache_creation_input_tokens ?? 0;
+      cur.usd        += usd;
+      all[key] = cur;
+      try { localStorage.setItem(MONTHLY_USAGE_KEY, JSON.stringify(all)); } catch {}
+      renderMonthlyUsageBadge();
+    }
+    function renderMonthlyUsageBadge() {
+      const el = document.getElementById('monthly-usage-badge');
+      if (!el) return;
+      const key = getMonthKey();
+      const cur = loadMonthlyUsage()[key];
+      if (!cur || cur.count === 0) {
+        el.textContent = '🪙 이달 누적: —';
+        el.title = `[${key}] 이번 달 아직 사용 없음. 답변 받을 때마다 자동 누적됩니다 (브라우저 로컬 저장).`;
+        return;
+      }
+      const krw = cur.usd * KRW_PER_USD;
+      el.innerHTML = `🪙 이달: <b>${formatKrw(krw)}</b> <span style="opacity:0.7">· ${cur.count}회</span>`;
+      const totalInput = cur.input + cur.cacheRead + cur.cacheWrite;
+      el.title = [
+        `[${key}] 이달 누적 (브라우저 로컬 저장 — 다른 PC·브라우저는 별도)`,
+        `─ 토큰 breakdown ─`,
+        `· 신규 입력: ${cur.input.toLocaleString()} tok`,
+        `· 캐시 읽기: ${cur.cacheRead.toLocaleString()} tok (10x 저렴)`,
+        `· 캐시 쓰기: ${cur.cacheWrite.toLocaleString()} tok`,
+        `· 출력: ${cur.output.toLocaleString()} tok`,
+        `· 총 입력: ${totalInput.toLocaleString()} tok`,
+        `─ 비용 ─`,
+        `총 요청 ${cur.count}회`,
+        `$${cur.usd.toFixed(4)} = ${formatKrw(krw)} (환율 ${KRW_PER_USD}원/$, 예상치)`,
+        `※ 서버측 정확 합계는 Anthropic Console 확인`,
+      ].join('\n');
+    }
+
     // 코드 인젝션 진단 배지 HTML — 답변 상단에 표시. status 별 문구·색상 분기.
     // 사용자·기획자·QA 모두 봇 답변이 실제 코드를 참고했는지 즉시 확인 가능.
     // 실패 시 GitHub 검색 URL 을 클릭 링크로 노출해서 원인 즉시 확인 가능.
@@ -2127,6 +2191,8 @@
           const anchor = codeTag || div.querySelector('.regen-tag') || div.querySelector('.role');
           anchor.insertAdjacentHTML('afterend', usageBadgeHtml);
         }
+        // 이달 누적에도 반영 — 헤더 뱃지 자동 갱신.
+        addToMonthlyUsage(usage, model);
       }
 
       // 툴바 forward 활성화 (improve 는 항상 활성)
@@ -2582,6 +2648,7 @@
       $('#gen-html-dialog').showModal();
       $('#gh-prompt').focus();
     });
+    $('#gh-image-pick').addEventListener('click', (e) => { e.preventDefault(); $('#gh-image-input').click(); });
     $('#gh-image-input').addEventListener('change', async (e) => {
       const f = e.target.files?.[0];
       if (!f) return;
@@ -2651,6 +2718,8 @@
         holder.classList.remove('streaming', 'loading-placeholder');
         const bodyEl = holder.querySelector('.body');
         bodyEl.classList.remove('loading-body');
+        // 🪙 이달 누적에 반영 — 저장 실패든 성공이든 Claude 토큰은 이미 소비됨
+        if (data.usage) addToMonthlyUsage(data.usage, data.modelUsed);
 
         if (data.saveError && data.html) {
           // 💾 저장 실패 (IP allow list 등) — Claude 생성물은 살아있으니 미리보기+복사 제공
@@ -3635,7 +3704,7 @@
         return 'GitHub PAT (ghp_...) 만료 또는 오류. Classic PAT 재발급 후 wrangler secret put GITHUB_TOKEN 로 갱신하세요.';
       }
       if (/IP allow list/i.test(msg)) {
-        return '🚨 GitHub org IP allow list 로 인한 실패입니다. Worker 가 최대 10회 재시도했지만 모두 미허용 Cloudflare Edge IP 로 나갔어요.\n\n근본 해결 (org admin 액션 · 5분):\n1. https://github.com/organizations/<YOUR-ORG>/settings/security_analysis\n2. IP allow list → 아래 두 소스의 IP 범위 전부 추가:\n   · https://www.cloudflare.com/ips-v4\n   · https://www.cloudflare.com/ips-v6\n3. 저장 후 즉시 반영\n\n임시 우회: 페이지 새로고침 (재시도 시 성공 확률 있음).';
+        return '🚨 GitHub org IP allow list 로 인한 실패입니다. Worker 가 최대 15회 재시도 (jittered backoff ~25s) 했지만 모두 미허용 Cloudflare Edge IP 로 나갔어요.\n\n⚠ 이 오류는 코드로 완전히 못 고칩니다 — org admin 액션 필요:\n1. https://github.com/organizations/<YOUR-ORG>/settings/security_analysis\n2. IP allow list → 아래 두 소스의 IP 범위 전부 추가:\n   · https://www.cloudflare.com/ips-v4\n   · https://www.cloudflare.com/ips-v6\n3. 저장 후 즉시 반영 (10분 이내)\n\n임시 우회: 페이지 새로고침 (한 번이라도 성공한 리소스는 stale-cache fallback 으로 계속 로드됨).';
       }
       if (/GitHub.*404|not found.*repository/i.test(msg)) {
         return 'GitHub 레포·경로 못 찾음. GITHUB_REPO 시크릿 또는 config.yml 의 policies_dir 확인하세요.';

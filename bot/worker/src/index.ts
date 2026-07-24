@@ -158,21 +158,49 @@ const codeCache = new Map<string, CacheEntry<unknown>>();
 function cacheKey(env: Env, path: string): string {
   return `${env.GITHUB_REPO}::${path}`;
 }
+/**
+ * ⚠ Stale-cache fallback 전략:
+ *   TTL 안 → 캐시 hit 즉시 반환
+ *   TTL 초과 → live fetch 시도
+ *     · 성공 → 새 값 캐시 & 반환
+ *     · 실패 → 이전 성공값이 남아있으면 그거라도 반환 (stale-while-error)
+ *         · IP allow list 403 같이 transient 인프라 실패에도 UI 살리기 위함.
+ *         · 캐시 자체가 아예 없을 때만 최종적으로 throw.
+ *   장점: 한 번이라도 성공한 리소스는 이후 IP allow list 실패에도 계속 동작.
+ *   대가: 데이터가 최대 인스턴스 lifetime 만큼 stale 될 수 있음 (Worker 인스턴스
+ *        재시작으로 몇 분~수시간마다 캐시 자연 초기화되므로 실무상 큰 문제 X).
+ */
 async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): Promise<string> {
   const key = cacheKey(env, path);
   const c = textCache.get(key);
   if (c && Date.now() - c.at < ttl) return c.data;
-  const data = await fetchTextFile(env, path);
-  textCache.set(key, { at: Date.now(), data });
-  return data;
+  try {
+    const data = await fetchTextFile(env, path);
+    textCache.set(key, { at: Date.now(), data });
+    return data;
+  } catch (err) {
+    if (c) {
+      console.warn(`[qa-bot] fetchTextFile ${path} 실패 → stale cache fallback (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
+      return c.data;
+    }
+    throw err;
+  }
 }
 async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS): Promise<ContentEntry[]> {
   const key = cacheKey(env, path);
   const c = listCache.get(key);
   if (c && Date.now() - c.at < ttl) return c.data;
-  const data = await fetchDirListing(env, path);
-  listCache.set(key, { at: Date.now(), data });
-  return data;
+  try {
+    const data = await fetchDirListing(env, path);
+    listCache.set(key, { at: Date.now(), data });
+    return data;
+  } catch (err) {
+    if (c) {
+      console.warn(`[qa-bot] fetchDirListing ${path} 실패 → stale cache fallback (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
+      return c.data;
+    }
+    throw err;
+  }
 }
 /** 쓰기 작업 후 관련 캐시 항목 무효화 (예: 새 feedback 저장 → qa/feedback 목록 무효화). */
 function invalidateCache(env: Env, ...paths: string[]) {
@@ -186,7 +214,8 @@ function invalidateCache(env: Env, ...paths: string[]) {
 async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
   const key = env.GITHUB_REPO || '(no-repo)';
   const cached = configCache.get(key);
-  if (cached && Date.now() - cached.at < CONFIG_CACHE_TTL_MS) {
+  // 성공값이 캐시에 있고 TTL 안이면 즉시 반환
+  if (cached && cached.data !== null && Date.now() - cached.at < CONFIG_CACHE_TTL_MS) {
     return cached.data;
   }
   try {
@@ -197,9 +226,14 @@ async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
     return parsed ?? null;
   } catch (err) {
     console.warn('[qa-bot] load config.yml failed:', err instanceof Error ? err.message : String(err));
-    // ⚠ null 을 캐시하지 않음 — transient (IP allow list 403 등) 실패가 캐시되면
-    // 다음 정상 요청도 CONFIG_CACHE_TTL_MS 동안 config 없는 것으로 처리돼서
-    // /list-projects 가 계속 빈 배열 반환 → 사용자 뷰에서 프로젝트 드롭다운 비고 500 에러 유발.
+    // Stale-fallback — 이전에 성공한 config 가 캐시에 남아있으면 그거라도 사용.
+    // TTL 지났어도 IP allow list 403 로 인한 transient 실패보다는 stale config 이 나음
+    // (/list-projects 가 계속 빈 배열 반환 → 프로젝트 드롭다운 empty → 500 헬 케이스 방지).
+    // null 은 캐시하지 않음 (실패 확산 방지).
+    if (cached && cached.data !== null) {
+      console.warn(`[qa-bot] loadTeamConfig — stale config fallback (${Math.round((Date.now() - cached.at) / 1000)}s old)`);
+      return cached.data;
+    }
     return null;
   }
 }
@@ -1475,19 +1509,20 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
 
   // Retry 정책:
   //   · 429/5xx (transient upstream) 또는 네트워크 오류 → 3회 시도, 500·1200ms backoff
-  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → 10회 시도,
-  //     매우 짧은 backoff (100·150·200·250·300·400·500·600·800ms) — 각 시도 마다
-  //     새 edge IP 로 나갈 확률에 걸기 위해 sleep 은 짧게, 시도 횟수는 많게. GitHub
-  //     서버 도달 전 Cloudflare/GitHub Edge 에서 리젝되므로 write 요청도 안전
-  //     (중복 부작용 없음). 10회 총 대기 ~3.3s — 사용자 UX 허용 범위 안.
+  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → 15회 시도,
+  //     jittered backoff — Cloudflare Worker 는 짧은 시간 안 sub-request 를 같은
+  //     outbound IP 로 처리할 확률이 있어서 backoff 을 확실히 흩뿌려야 새 edge IP
+  //     추첨 효과 극대화. base backoff (200·300·500·700·1000·1200·1500·1800·2000·2000·2500·2500·3000·3500ms)
+  //     에 ±20% random jitter 추가. 총 최대 대기 ~25s (실제로는 대부분 초반 성공).
+  //     GitHub 서버 도달 전 Edge 리젝이라 write (PUT/POST) 도 안전 (중복 X).
   //     ⚠ 근본 해결: org GitHub Settings → Authentication security → IP allow list
   //        에 Cloudflare IP 범위 (https://www.cloudflare.com/ips-v4) 를 등록 필요.
   //   · 나머지 오류 (401/403 non-IP/404 등) → 즉시 반환 (재시도해도 결과 동일).
   const isWrite = !isRetryableMethod(init);
   const MAX_REGULAR = 3;
-  const MAX_IP_ALLOW = 10;
+  const MAX_IP_ALLOW = 15;
   const regularBackoff = [500, 1200];
-  const ipAllowBackoff = [100, 150, 200, 250, 300, 400, 500, 600, 800];
+  const ipAllowBackoffBase = [200, 300, 500, 700, 1000, 1200, 1500, 1800, 2000, 2000, 2500, 2500, 3000, 3500];
   let lastRes: Response | null = null;
   let lastErr: unknown = null;
   let attempt = 0;
@@ -1521,8 +1556,16 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
       lastRes = res;
       const label = isIpAllow ? 'IP allow list' : `${res.status}`;
       console.warn(`[qa-bot] ghFetch ${label} ${path} — retry ${attempt}/${effectiveMax}`);
-      const backoff = isIpAllow ? ipAllowBackoff : regularBackoff;
-      await new Promise((r) => setTimeout(r, backoff[attempt - 1] ?? backoff[backoff.length - 1] ?? 1200));
+      let waitMs: number;
+      if (isIpAllow) {
+        const base = ipAllowBackoffBase[attempt - 1] ?? ipAllowBackoffBase[ipAllowBackoffBase.length - 1] ?? 3500;
+        // ±20% jitter — 동시 실패한 요청들이 같은 backoff 로 재시도해서 다시 같은 edge 로 몰리는 걸 흩뿌림
+        const jitter = base * (Math.random() * 0.4 - 0.2);
+        waitMs = Math.max(50, Math.round(base + jitter));
+      } else {
+        waitMs = regularBackoff[attempt - 1] ?? 1200;
+      }
+      await new Promise((r) => setTimeout(r, waitMs));
       continue;
     } catch (err) {
       lastErr = err;
@@ -2391,6 +2434,14 @@ interface GenHtmlResponse {
   url: string;                             // pages 절대 URL 힌트 (프론트가 origin 기준으로 재구성)
   bytes: number;
   modelUsed: string;
+  /** Anthropic API usage — 프론트의 이달 누적 뱃지 (renderMonthlyUsageBadge) 에 반영.
+   *  /qa NDJSON `{ type:'usage' }` 이벤트와 동일한 shape. */
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
   /** GitHub 저장 실패 시 (IP allow list 403 등) HTML 본문 그대로 반환 —
    *  Claude 응답을 이미 소비했으니 사용자에게 결과물은 남겨서 수동 저장·미리보기 가능하게. */
   html?: string;
@@ -2489,7 +2540,14 @@ async function generateHtmlMockup(env: Env, body: GenHtmlRequest, signal?: Abort
   const data = (await upstream.json()) as {
     content?: Array<{ type: string; text?: string }>;
     stop_reason?: string;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
+  const usage = data.usage;
   const textBlocks = (data.content ?? []).filter((b) => b.type === 'text' && b.text);
   const rawHtml = textBlocks.map((b) => b.text!).join('\n').trim();
   if (!rawHtml) throw new Error('Claude 응답에 HTML 없음');
@@ -2552,6 +2610,7 @@ async function generateHtmlMockup(env: Env, body: GenHtmlRequest, signal?: Abort
       url: '',
       bytes: html.length,
       modelUsed: model,
+      usage,
       html,
       saveError,
     };
@@ -2562,6 +2621,7 @@ async function generateHtmlMockup(env: Env, body: GenHtmlRequest, signal?: Abort
     url: `/${targetPath}`,               // 프론트가 origin 기준으로 절대 URL 완성
     bytes: html.length,
     modelUsed: model,
+    usage,
   };
 }
 
