@@ -2718,6 +2718,27 @@
       if (roleEl) roleEl.textContent = '📄 HTML 목업 생성 중';
       if (labelEl) labelEl.textContent = 'Claude 가 정책·코드 근거로 HTML 을 만들고 있어요…';
 
+      // 중지 버튼 — 목업 생성 중에도 사용자가 abort 가능. AbortController 시그널을
+      // fetch + stream reader 양쪽에 전파해 즉시 중단, catch 에서 AbortError 분기.
+      const abortCtrl = new AbortController();
+      const bodyLoading = holder.querySelector('.body.loading-body');
+      const stopBtn = document.createElement('button');
+      stopBtn.type = 'button';
+      stopBtn.className = 'gh-stop-btn';
+      stopBtn.textContent = '🛑 중지';
+      stopBtn.style.cssText = 'margin-left:12px;padding:4px 10px;background:#dc2626;color:white;border:0;border-radius:4px;font-size:11px;font-weight:600;cursor:pointer';
+      stopBtn.addEventListener('click', () => {
+        stopBtn.disabled = true;
+        stopBtn.textContent = '중지 중…';
+        try { abortCtrl.abort(); } catch (_) {}
+      });
+      if (bodyLoading) bodyLoading.appendChild(stopBtn);
+
+      // 최근 대화 목록에 목업 요청 흔적 남기기 — 성공·실패 모두 시도 자체를 sessions 에 기록.
+      // 세션 복원 시엔 이 텍스트로 뜨고, 새 요청은 다이얼로그에서 재개.
+      state.history.push({ role: 'user', content: `📄 HTML 목업 요청: ${prompt}` });
+      saveCurrentSession();
+
       try {
         const currentProjectCfg = (CONFIG?.projects ?? []).find((p) => p.id === state.currentProject);
         const attachments = [];
@@ -2740,6 +2761,7 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
+          signal: abortCtrl.signal,
         });
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
@@ -2823,19 +2845,33 @@
               `<div style="margin-top:8px;font-size:11px;color:#065f46"><code>${escapeHtml(data.savedPath)}</code> · ${sizeKb} KB · GitHub Pages 재빌드 완료 후 (1-2분) 접속 가능</div>` +
             `</div>` +
             `<p style="margin:8px 0 0;font-size:11px;color:var(--muted)">💡 마음에 안 들면 [📄 HTML] 다시 눌러서 프롬프트 더 구체적으로 재시도. 이 파일은 <code>qa/mockups/</code> 폴더에 커밋됨.</p>`;
+          state.history.push({ role: 'assistant', content: `📄 HTML 목업 완료 — [${data.savedPath}](${absoluteUrl}) (${sizeKb} KB)` });
+          saveCurrentSession();
         }
       } catch (err) {
         clearInterval(loadingPh.timer);
         holder.classList.remove('streaming', 'loading-placeholder');
-        holder.querySelector('.role').textContent = '📄 HTML 목업 실패';
+        const isAbort = err?.name === 'AbortError' || /aborted|signal is aborted/i.test(String(err?.message));
+        holder.querySelector('.role').textContent = isAbort ? '📄 HTML 목업 중지됨' : '📄 HTML 목업 실패';
         const bodyEl = holder.querySelector('.body');
         bodyEl.classList.remove('loading-body');
         const rawMsg = err instanceof Error ? err.message : String(err);
+        const errLine = isAbort
+          ? `<p style="color:var(--muted);margin:0 0 8px">🛑 사용자가 중지했어요.</p>`
+          : `<p style="color:var(--error);margin:0 0 8px">${escapeHtml(friendlyError(err))}</p>`;
+        const debugBlock = isAbort
+          ? ''
+          : `<details style="margin:10px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:6px 0 0;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">${escapeHtml(rawMsg)}</pre></details>`;
         bodyEl.innerHTML =
           `<p style="margin:0 0 8px;font-size:12px;color:var(--muted)"><b>요청:</b> ${escapeHtml(prompt)}</p>` +
-          `<p style="color:var(--error);margin:0 0 8px">${escapeHtml(friendlyError(err))}</p>` +
+          errLine +
           `<button type="button" class="gh-retry-btn" style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#2563eb;color:white;border:0;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer">🔁 같은 요청 다시 시도</button>` +
-          `<details style="margin:10px 0 0"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔍 원본 에러 (디버그)</summary><pre style="margin:6px 0 0;padding:8px;background:#f9fafb;border-radius:4px;font-size:11px;overflow:auto;max-height:200px;white-space:pre-wrap">${escapeHtml(rawMsg)}</pre></details>`;
+          debugBlock;
+        state.history.push({
+          role: 'assistant',
+          content: isAbort ? `📄 HTML 목업 중지됨 (사용자 취소)` : `📄 HTML 목업 실패 — ${friendlyError(err)}`,
+        });
+        saveCurrentSession();
         const retryBtn = bodyEl.querySelector('.gh-retry-btn');
         if (retryBtn) {
           retryBtn.addEventListener('click', () => {

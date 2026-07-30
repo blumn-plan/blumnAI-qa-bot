@@ -282,7 +282,7 @@ async function getProjectConfig(env: Env, projectId: string): Promise<ProjectCon
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const origin = req.headers.get('Origin') ?? '';
     // SaaS 모드: 아무 origin 도 허용 (요청 자체의 인증 헤더로 접근 통제).
@@ -369,9 +369,15 @@ export default {
           };
           break;
         }
-        case '/list-docs':
-          result = await listDocs(env, url.searchParams.get('project') || await defaultProjectFallback(env));
+        case '/list-docs': {
+          const listResult = await listDocs(env, url.searchParams.get('project') || await defaultProjectFallback(env));
+          // 백그라운드로 각 문서 본문 프리페치 → L2 edge cache 워밍업.
+          // 사용자가 문서를 클릭할 즈음엔 캐시 히트라 GitHub IP allow list 403 확률 대폭 감소.
+          // waitUntil 이라 응답은 즉시 반환, 프리페치는 응답 후에도 계속 진행.
+          ctx.waitUntil(prefetchDocsInBackground(env, listResult.docs));
+          result = listResult;
           break;
+        }
         case '/doc':
           result = await getDoc(env, url.searchParams.get('path') ?? '');
           break;
@@ -520,6 +526,25 @@ async function safeDirListing(env: Env, path: string, warnLabel: string): Promis
     // rate limit / 5xx / 네트워크 — transient · 상위로 전파해서 /list-docs 가 500 응답
     console.warn(`[qa-bot] ${warnLabel} transient failure: ${msg}`);
     throw err;
+  }
+}
+
+/** /list-docs 응답 직후 백그라운드로 각 문서 본문 fetch → L2 edge cache warm-up.
+ *  ctx.waitUntil 안에서 실행되므로 응답 반환은 즉시, 프리페치는 병렬 4개씩.
+ *  실패해도 무시 (다음 사용자 클릭 시 정상 fetch flow 가 다시 시도). */
+async function prefetchDocsInBackground(env: Env, docs: DocEntry[]): Promise<void> {
+  const CONCURRENCY = 4;
+  const paths = docs.map((d) => d.path);
+  for (let i = 0; i < paths.length; i += CONCURRENCY) {
+    const batch = paths.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(
+      batch.map((p) =>
+        fetchTextFileCached(env, p).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[qa-bot] prefetch ${p} 실패 (다음 사용자 클릭에서 재시도): ${msg.slice(0, 200)}`);
+        }),
+      ),
+    );
   }
 }
 
@@ -2600,6 +2625,8 @@ async function runGenHtmlInner(
       ]
     : body.prompt;
 
+  // stream:true 로 호출 — non-streaming 은 16k 토큰 생성 100s+ 걸려서 Anthropic 쪽 CF 엣지가
+  // 524 던짐 (증상: `Claude API 524: error code: 524`). 스트리밍은 첫 바이트가 수초 내 도착.
   const upstream = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -2612,28 +2639,63 @@ async function runGenHtmlInner(
       max_tokens: 16384,     // HTML 잘림 방지 — 목업은 길어질 수 있음
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent }],
+      stream: true,
     }),
     signal,
   });
 
-  if (!upstream.ok) {
-    const errText = await upstream.text();
+  if (!upstream.ok || !upstream.body) {
+    const errText = await upstream.text().catch(() => '');
     throw new Error(`Claude API ${upstream.status}: ${errText.slice(0, 500)}`);
   }
 
-  const data = (await upstream.json()) as {
-    content?: Array<{ type: string; text?: string }>;
-    stop_reason?: string;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation_input_tokens?: number;
-    };
-  };
-  const usage = data.usage;
-  const textBlocks = (data.content ?? []).filter((b) => b.type === 'text' && b.text);
-  const rawHtml = textBlocks.map((b) => b.text!).join('\n').trim();
+  // SSE 파싱 — content_block_delta.text_delta 텍스트만 누적. usage 는 message_start·message_delta 에서 병합.
+  const decoder = new TextDecoder();
+  const reader = upstream.body.getReader();
+  let sseBuffer = '';
+  let accumulated = '';
+  let usage:
+    | {
+        input_tokens?: number;
+        output_tokens?: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      }
+    | undefined;
+  let streamError: string | null = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    sseBuffer += decoder.decode(value, { stream: true });
+    let nlIdx: number;
+    while ((nlIdx = sseBuffer.indexOf('\n')) >= 0) {
+      const line = sseBuffer.slice(0, nlIdx).trimEnd();
+      sseBuffer = sseBuffer.slice(nlIdx + 1);
+      if (!line.startsWith('data: ')) continue;
+      const jsonStr = line.slice(6).trim();
+      if (!jsonStr || jsonStr === '[DONE]') continue;
+      try {
+        const evt = JSON.parse(jsonStr) as {
+          type: string;
+          message?: { usage?: Record<string, number> };
+          usage?: Record<string, number>;
+          delta?: { type: string; text?: string };
+          error?: { message?: string };
+        };
+        if (evt.type === 'message_start' && evt.message?.usage) {
+          usage = { ...evt.message.usage };
+        } else if (evt.type === 'message_delta' && evt.usage) {
+          usage = { ...(usage ?? {}), ...evt.usage };
+        } else if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta.text) {
+          accumulated += evt.delta.text;
+        } else if (evt.type === 'error') {
+          streamError = evt.error?.message || 'Anthropic stream error';
+        }
+      } catch (_) { /* skip parse error — SSE 라인 조각일 수 있음 */ }
+    }
+  }
+  if (streamError) throw new Error(`Claude API stream error: ${streamError}`);
+  const rawHtml = accumulated.trim();
   if (!rawHtml) throw new Error('Claude 응답에 HTML 없음');
 
   // 응답에 markdown fence 가 섞였다면 stripping (규칙 위반이지만 안전망)
