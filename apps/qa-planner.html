@@ -80,6 +80,15 @@
     main.detail .actions button.copy { background: var(--primary); color: white; border-color: var(--primary); }
     main.detail .actions button.copy:hover { background: #4f46e5; }
     main.detail .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* 눈에 덜 띄게 — "대기 초기화" 같은 파괴적 액션용 */
+    main.detail .actions button.subtle { background: transparent; border-color: transparent; color: var(--muted); font-size: 11px; padding: 4px 8px; text-decoration: underline; text-underline-offset: 2px; }
+    main.detail .actions button.subtle:hover { background: #f1f5f9; color: var(--text); }
+    /* 현재 상태 배지 — 액션 바 좌측 */
+    main.detail .actions .current-status { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 600; border: 1px solid; }
+    main.detail .actions .current-status.pending { background: var(--pending-bg); color: var(--pending-fg); border-color: #fcd34d; }
+    main.detail .actions .current-status.applied { background: var(--applied-bg); color: var(--applied-fg); border-color: #86efac; }
+    main.detail .actions .current-status.rejected { background: var(--rejected-bg); color: var(--rejected-fg); border-color: #fecaca; }
+    main.detail .actions .current-status .meta { font-weight: 400; opacity: 0.85; }
     main.detail article { padding: 20px 28px; overflow-y: auto; flex: 1; }
     main.detail article h1, main.detail article h2, main.detail article h3 { margin-top: 20px; margin-bottom: 8px; }
     main.detail article h1 { font-size: 20px; }
@@ -160,13 +169,18 @@
     <main class="detail">
       <div class="header"><span class="title" id="detail-title">왼쪽에서 변경 요청을 선택하세요</span></div>
       <div class="actions" id="action-bar" style="display:none">
+        <span id="current-status" class="current-status pending" hidden></span>
         <button id="btn-copy-prompt" class="copy" title="CLAUDE.md §B-2 흐름으로 Claude Code (Antigravity) 에 붙여넣어 즉시 정책 본문에 반영할 수 있는 프롬프트 복사">🤖 Antigravity 프롬프트 복사</button>
         <button id="btn-copy-after" class="copy" title="변경 제안의 '✅ 변경 후' 텍스트만 클립보드로 (수동 붙여넣기용)">📋 본문만 복사</button>
         <button id="btn-open-policy" title="관련 정책문서를 qa.html 새 탭으로">📄 관련 정책 열기</button>
         <span style="flex:1"></span>
-        <button id="btn-apply" class="primary">✅ 적용함으로 표시</button>
-        <button id="btn-reject" class="warning">🚫 보류로 표시</button>
-        <button id="btn-pending">↺ 대기로 되돌리기</button>
+        <!-- pending 상태: 신규 처리 버튼 (첫 결정) -->
+        <button id="btn-apply" class="primary" title="이 변경 요청을 적용 완료로 표시하고 메모/이미지를 합의문에 남깁니다">✅ 적용 처리</button>
+        <button id="btn-reject" class="warning" title="이 변경 요청을 보류로 표시하고 사유를 합의문에 남깁니다">🚫 보류 처리</button>
+        <!-- applied/rejected 상태: 메모 수정 · 반대 상태 전환 · 대기 초기화 -->
+        <button id="btn-edit-note" class="primary" hidden title="이미 처리한 메모/사유를 열어 수정합니다">📝 메모 수정</button>
+        <button id="btn-flip-status" class="warning" hidden title="적용↔보류 상태를 바꿉니다">🔀 상태 변경</button>
+        <button id="btn-pending" class="subtle" title="처음 상태(대기)로 되돌립니다 — 실수로 처리한 경우에만 사용">↺ 대기 초기화</button>
       </div>
       <article id="detail-body" class="empty">
         좌측 리스트에서 항목을 클릭하면 여기에 상세가 표시됩니다.<br>
@@ -181,7 +195,7 @@
   <div id="apply-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="apply-modal-title">
     <div class="modal">
       <h3 id="apply-modal-title">✅ 적용 처리</h3>
-      <p class="desc">
+      <p class="desc" id="apply-modal-desc">
         협업자가 요청한 내용과 <b>실제로 적용·배포한 내용이 다르면</b> 아래에 차이를 적어주세요.<br>
         입력한 내용은 합의문 본문에 메모로 남아 협업자가 확인합니다. 비워두면 그대로 적용 처리됩니다.
       </p>
@@ -220,7 +234,7 @@
   <div id="reject-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="reject-modal-title">
     <div class="modal">
       <h3 id="reject-modal-title">🚫 보류 처리</h3>
-      <p class="desc">
+      <p class="desc" id="reject-modal-desc">
         보류 사유를 적어주세요. 입력한 내용은 <b>합의문 상단 박스</b>에 남아 협업자가 확인합니다.
       </p>
       <textarea id="reject-reason" placeholder="예) 카친캠 실측 확인 후 재검토 필요 — 다음 스프린트로 이관"></textarea>
@@ -549,6 +563,7 @@
 
     async function selectDecision(p) {
       state.currentPath = p;
+      state.currentContent = ''; // 이전 문서 메타 잔재 방지 — 로드 후 renderActionBar 재호출
       state.currentIsGuide = false;
       // 가이드 버튼 active 해제
       $('#show-guide').classList.remove('active');
@@ -558,6 +573,8 @@
       $('#detail-body').className = '';
       $('#detail-body').innerHTML = '<p style="color:var(--muted)">로딩 중...</p>';
       $('#action-bar').style.display = 'flex';
+
+      renderActionBar();
 
       try {
         const res = await fetch(`${WORKER_URL}/doc?path=${encodeURIComponent(p)}`);
@@ -571,9 +588,89 @@
         const afterText = extractChangeAfter(data.content);
         $('#btn-copy-after').disabled = !afterText;
         $('#btn-copy-after').dataset.after = afterText || '';
+        // 본문 로드 후 상태 배지에 정확한 메모/사유 유무 반영
+        renderActionBar();
       } catch (err) {
         $('#detail-body').innerHTML = `<p style="color:var(--error)">로드 실패: ${escapeHtml(friendlyError(err))}</p>`;
       }
+    }
+
+    // 상태별로 액션 버튼 노출·라벨을 바꾸고, 좌측에 현재 상태 배지를 렌더한다.
+    //   pending  → [적용 처리 · 보류 처리]
+    //   applied  → [적용 메모 수정 · 보류로 변경 · (subtle) 대기 초기화]
+    //   rejected → [보류 사유 수정 · 적용으로 변경 · (subtle) 대기 초기화]
+    // 상태 배지는 statusText + planner-memo 블록에서 파싱한 담당자/날짜/메모 유무를 표시.
+    function renderActionBar() {
+      const d = state.decisions.find((x) => x.path === state.currentPath);
+      if (!d) return;
+      const status = d.status || 'pending';
+      const badge = $('#current-status');
+      const btnApply = $('#btn-apply');
+      const btnReject = $('#btn-reject');
+      const btnEdit = $('#btn-edit-note');
+      const btnFlip = $('#btn-flip-status');
+      const btnPending = $('#btn-pending');
+
+      // 현재 상태 배지 — statusText 는 "✅ 2026-08-03 적용 (메모 있음)" 등
+      const meta = extractPlannerMemoMeta(state.currentContent, status);
+      badge.className = `current-status ${status}`;
+      badge.hidden = false;
+      if (status === 'applied') {
+        const parts = ['✅ 적용 완료'];
+        if (meta.name || meta.date) parts.push(`<span class="meta">· ${meta.date || ''}${meta.date && meta.name ? ' · ' : ''}${meta.name ? '👤 ' + escapeHtml(meta.name) : ''}</span>`);
+        if (meta.hasNote) parts.push('<span class="meta">· 📝 메모 있음</span>');
+        else parts.push('<span class="meta">· 메모 없음</span>');
+        badge.innerHTML = parts.join(' ');
+      } else if (status === 'rejected') {
+        const parts = ['🚫 보류'];
+        if (meta.name || meta.date) parts.push(`<span class="meta">· ${meta.date || ''}${meta.date && meta.name ? ' · ' : ''}${meta.name ? '👤 ' + escapeHtml(meta.name) : ''}</span>`);
+        if (meta.hasNote) parts.push('<span class="meta">· 📝 사유 있음</span>');
+        badge.innerHTML = parts.join(' ');
+      } else {
+        badge.innerHTML = '📋 대기 — 아직 처리 안 됨';
+      }
+
+      // 버튼 노출 스위칭
+      const showPendingSet = status === 'pending';
+      btnApply.hidden = !showPendingSet;
+      btnReject.hidden = !showPendingSet;
+      btnEdit.hidden = showPendingSet;
+      btnFlip.hidden = showPendingSet;
+      btnPending.hidden = showPendingSet; // pending 상태에선 "대기 초기화" 무의미
+
+      if (status === 'applied') {
+        btnEdit.textContent = '📝 적용 메모 수정';
+        btnEdit.title = '적용 메모를 열어 수정합니다 (내용 확인도 여기서)';
+        btnEdit.dataset.mode = 'applied';
+        btnFlip.textContent = '🚫 보류로 변경';
+        btnFlip.title = '적용 → 보류로 상태를 바꾸고 사유를 새로 남깁니다';
+        btnFlip.dataset.mode = 'to-rejected';
+      } else if (status === 'rejected') {
+        btnEdit.textContent = '📝 보류 사유 수정';
+        btnEdit.title = '보류 사유를 열어 수정합니다';
+        btnEdit.dataset.mode = 'rejected';
+        btnFlip.textContent = '✅ 적용으로 변경';
+        btnFlip.title = '보류 → 적용으로 상태를 바꾸고 메모를 새로 남깁니다';
+        btnFlip.dataset.mode = 'to-applied';
+      }
+    }
+
+    // planner-memo 블록에서 date · 담당자 이름 · 메모 본문 유무를 파싱.
+    // 신 포맷: <div class="planner-memo-head">📝 <b>제목</b> · YYYY-MM-DD · 👤 이름</div>
+    function extractPlannerMemoMeta(md, status) {
+      const empty = { date: '', name: '', hasNote: false };
+      if (!md) return empty;
+      const chunk = md.match(/<!--\s*planner-note:start\s*-->[\s\S]*?<!--\s*planner-note:end\s*-->/);
+      if (!chunk) return empty;
+      const block = chunk[0];
+      const headMatch = block.match(/<div class="planner-memo-head">[^<]*<b>[^<]+<\/b>\s*·\s*([\d-]+)\s*·\s*👤\s*([^<]+?)\s*<\/div>/);
+      const bodyMatch = block.match(/<div class="planner-memo-body">([\s\S]*?)<\/div>/);
+      const bodyText = bodyMatch ? bodyMatch[1].replace(/<[^>]+>/g, '').trim() : '';
+      return {
+        date: headMatch ? headMatch[1] : '',
+        name: headMatch ? headMatch[2].trim() : '',
+        hasNote: bodyText.length > 0,
+      };
     }
 
     // 규칙 안내 (README) 표시 — 상태 변경 액션은 숨김
@@ -694,14 +791,33 @@
 
     $('#btn-apply').addEventListener('click', () => {
       if (!ensurePlannerName()) return;
-      openApplyModal();
+      openApplyModal({ edit: false });
     });
     $('#btn-reject').addEventListener('click', () => {
       if (!ensurePlannerName()) return;
-      openRejectModal();
+      openRejectModal({ edit: false });
+    });
+    // 📝 메모 수정 — 이미 처리한 항목의 메모/사유를 열어 수정 (상태는 유지)
+    $('#btn-edit-note').addEventListener('click', () => {
+      if (!ensurePlannerName()) return;
+      const mode = $('#btn-edit-note').dataset.mode;
+      if (mode === 'applied') openApplyModal({ edit: true });
+      else if (mode === 'rejected') openRejectModal({ edit: true });
+    });
+    // 🔀 상태 변경 — applied ↔ rejected 로 뒤집기 (메모/사유는 새로 입력)
+    $('#btn-flip-status').addEventListener('click', () => {
+      if (!ensurePlannerName()) return;
+      const mode = $('#btn-flip-status').dataset.mode;
+      if (mode === 'to-rejected') {
+        if (!confirm('적용 완료 → 보류 로 상태를 바꿉니다. 사유를 새로 입력하는 창이 열립니다.')) return;
+        openRejectModal({ edit: false });
+      } else if (mode === 'to-applied') {
+        if (!confirm('보류 → 적용 완료 로 상태를 바꿉니다. 메모를 새로 입력하는 창이 열립니다.')) return;
+        openApplyModal({ edit: false });
+      }
     });
     $('#btn-pending').addEventListener('click', () => {
-      if (!confirm('"대기" 로 되돌리시겠습니까? (재검토 표시)')) return;
+      if (!confirm('"대기" 로 초기화하시겠습니까?\n\n기존 메모/사유는 합의문에서 제거되고 처음 상태로 돌아갑니다.\n(실수로 처리한 경우에만 사용)')) return;
       updateStatus('pending');
     });
 
@@ -743,10 +859,30 @@
     renderPlannerName();
 
     /* ────────── 보류 다이얼로그 ────────── */
-    function openRejectModal() {
+    function openRejectModal(opts = { edit: false }) {
       if (!state.currentPath) { toast('항목 선택 안 됨', 'error'); return; }
       const ta = $('#reject-reason');
-      ta.value = '';
+      // 수정 모드 또는 이미 보류 상태면 기존 사유 프리필
+      const d = state.decisions.find((x) => x.path === state.currentPath);
+      const shouldPrefill = opts.edit && d?.status === 'rejected';
+      ta.value = shouldPrefill ? extractExistingPlannerNote(state.currentContent) : '';
+      // 제목/설명/저장 버튼 라벨을 모드에 맞게 갱신
+      const title = $('#reject-modal-title');
+      const desc = $('#reject-modal-desc');
+      const saveBtn = $('#reject-save');
+      if (shouldPrefill) {
+        title.textContent = '📝 보류 사유 수정';
+        desc.innerHTML = '기존에 저장한 보류 사유를 수정합니다. 저장하면 <b>합의문 상단 박스</b>가 갱신됩니다.';
+        saveBtn.textContent = '수정 저장';
+      } else if (d?.status === 'applied') {
+        title.textContent = '🚫 적용 → 보류 로 변경';
+        desc.innerHTML = '적용 완료 상태를 <b>보류</b>로 되돌립니다. 새 사유를 적어주세요.';
+        saveBtn.textContent = '보류로 저장';
+      } else {
+        title.textContent = '🚫 보류 처리';
+        desc.innerHTML = '보류 사유를 적어주세요. 입력한 내용은 <b>합의문 상단 박스</b>에 남아 협업자가 확인합니다.';
+        saveBtn.textContent = '보류로 저장';
+      }
       $('#reject-modal').classList.add('show');
       setTimeout(() => ta.focus(), 0);
     }
@@ -763,12 +899,36 @@
     /* 적용 메모 다이얼로그 — 협업자 요청과 실제 적용 내용 차이를 합의문에 기록 */
     // 이번 세션 첨부 이미지 목록 — [{ id, name, dataUrl }]
     let applyAttachments = [];
-    function openApplyModal() {
+    function openApplyModal(opts = { edit: false }) {
       if (!state.currentPath) { toast('항목 선택 안 됨', 'error'); return; }
       const ta = $('#apply-note');
-      ta.value = extractExistingPlannerNote(state.currentContent);
+      const d = state.decisions.find((x) => x.path === state.currentPath);
+      // 수정 모드 또는 이미 applied 상태면 기존 메모 프리필, 아니면 빈 창
+      const shouldPrefill = opts.edit && d?.status === 'applied';
+      ta.value = shouldPrefill ? extractExistingPlannerNote(state.currentContent) : '';
       applyAttachments = [];
       renderApplyAttachments();
+      // 제목/설명/버튼 라벨을 모드에 맞게 갱신
+      const title = $('#apply-modal-title');
+      const desc = $('#apply-modal-desc');
+      const asIsBtn = $('#apply-as-is');
+      const withNoteBtn = $('#apply-with-note');
+      if (shouldPrefill) {
+        title.textContent = '📝 적용 메모 수정';
+        desc.innerHTML = '기존에 저장한 적용 메모를 수정합니다. 저장하면 <b>합의문 상단 박스</b>가 갱신됩니다.<br>본문을 비우고 "메모 지우고 저장" 을 누르면 메모 블록만 제거됩니다 (상태는 적용 완료 유지).';
+        asIsBtn.textContent = '메모 지우고 저장';
+        withNoteBtn.textContent = '수정 저장';
+      } else if (d?.status === 'rejected') {
+        title.textContent = '✅ 보류 → 적용 완료 로 변경';
+        desc.innerHTML = '보류 상태를 <b>적용 완료</b>로 바꿉니다. 실제 반영 내용/차이를 메모로 남겨주세요.';
+        asIsBtn.textContent = '메모 없이 적용';
+        withNoteBtn.textContent = '메모 저장하고 적용';
+      } else {
+        title.textContent = '✅ 적용 처리';
+        desc.innerHTML = '협업자가 요청한 내용과 <b>실제로 적용·배포한 내용이 다르면</b> 아래에 차이를 적어주세요.<br>입력한 내용은 합의문 본문에 메모로 남아 협업자가 확인합니다. 비워두면 그대로 적용 처리됩니다.';
+        asIsBtn.textContent = '그대로 적용';
+        withNoteBtn.textContent = '메모 저장하고 적용';
+      }
       $('#apply-modal').classList.add('show');
       setTimeout(() => ta.focus(), 0);
     }
@@ -868,6 +1028,12 @@
     $('#apply-cancel').addEventListener('click', closeApplyModal);
     $('#apply-modal').addEventListener('click', (e) => { if (e.target === $('#apply-modal')) closeApplyModal(); });
     $('#apply-as-is').addEventListener('click', () => {
+      // 편집 모드("메모 지우고 저장")에서 프리필된 메모가 있으면 실수 방지 confirm
+      const label = $('#apply-as-is').textContent;
+      const hasExisting = $('#apply-note').value.trim().length > 0;
+      if (label.includes('지우고') && hasExisting) {
+        if (!confirm('입력창의 메모를 지우고 "메모 없음" 상태로 저장합니다. 계속할까요?')) return;
+      }
       closeApplyModal();
       updateStatus('applied', { note: '' });
     });
@@ -875,9 +1041,10 @@
       const btn = $('#apply-with-note');
       const noteText = $('#apply-note').value.trim();
       if (!noteText && applyAttachments.length === 0) {
-        toast('메모를 입력하거나 이미지를 첨부하거나 "그대로 적용" 을 눌러주세요', 'error');
+        toast('메모를 입력하거나 이미지를 첨부하거나 왼쪽 버튼을 눌러주세요', 'error');
         return;
       }
+      const originalLabel = btn.textContent; // 수정/신규/전환 모드에 따라 라벨이 다르므로 원복해야 함
       btn.disabled = true;
       btn.textContent = '업로드 중…';
       try {
@@ -909,7 +1076,7 @@
         toast(friendlyError(err), 'error');
       } finally {
         btn.disabled = false;
-        btn.textContent = '메모 저장하고 적용';
+        btn.textContent = originalLabel;
       }
     });
 

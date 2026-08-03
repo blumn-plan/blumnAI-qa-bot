@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+## v0.3.6 — 2026-08-03
+
+**Highlights** — 🎯 기획자 모드 처리 UX 개선 (상태별 액션 스위칭 · 메모 수정 · 현재 상태 배지) · 🩹 IP allow list retry 축소로 subrequest 한도 초과 방지.
+
+- 🎯 **기획자 모드 · 상태별 액션 버튼 스위칭 + 메모 수정 + 현재 상태 배지** (`apps/qa-planner.html`) — 기존엔 결정이 이미 "적용 완료" 상태여도 [적용/보류/대기] 3버튼이 그대로 노출돼 "다시 처음부터 처리" 하는 UX 였고, 담당자가 자기가 어떤 메모를 남겼는지 확인하려면 본문의 초록 박스를 스크롤로 찾아야 했음. **① 상태별 버튼 스위칭** — pending 은 `[✅ 적용 처리 · 🚫 보류 처리]`, applied 는 `[📝 적용 메모 수정 · 🚫 보류로 변경 · (subtle) ↺ 대기 초기화]`, rejected 는 `[📝 보류 사유 수정 · ✅ 적용으로 변경 · (subtle) ↺ 대기 초기화]`. "대기 초기화" 는 밑줄만 있는 subtle 스타일로 강등 + 파괴 경고 confirm 강화 ("기존 메모/사유는 합의문에서 제거되고 처음 상태로 돌아갑니다"). **② 현재 상태 배지** — 액션 바 좌측에 상시 표시 `✅ 적용 완료 · 2026-08-03 · 👤 정상민 · 📝 메모 있음` — `extractPlannerMemoMeta` 가 `<div class="planner-memo-head">` 에서 담당자·날짜·메모 본문 유무를 파싱해 노출, "누가 언제 어떻게 처리했는지" 한눈에 확인 가능. **③ 메모 수정 모드** — 적용 메모/보류 사유를 열어 수정 (프리필) → 상태는 유지, 메모만 갱신. 백엔드는 이미 멱등 upsert 지원 (`upsertPlannerNote`). 모달 제목/설명/버튼 라벨을 모드별로 갱신: `📝 적용 메모 수정` · `📝 보류 사유 수정` · "그대로 적용" → "메모 지우고 저장" (프리필 있으면 실수 방지 confirm 추가). **④ 적용↔보류 상태 전환** — flip 시엔 새 메모 입력 유도 (프리필 안 함) + confirm 추가. 리팩터: `openApplyModal({edit})` · `openRejectModal({edit})` 파라미터화, `renderActionBar()` 를 `selectDecision` (로드 전 + 로드 후) 에 훅킹, `state.currentContent = ''` 로 이전 문서 메타 잔재 방지, `apply-with-note` 의 finally 라벨 원복 로직도 `originalLabel` 캡처로 수정.
+- 🩹 **IP allow list retry 15회 → 3회 축소** (`bot/worker/src/index.ts`) — `/qa` 한 번에 병렬 fetch 가 10~40개 발생해 IP allow list 403 실패 폭풍 시 subrequest 한도 (무료 50 / 유료 1000) 를 넘겨 `Too many subrequests by single Worker invocation` 500 을 유발하던 문제. L2 edge cache (24h) 가 이미 인스턴스 간 fallback 을 제공하므로 3회면 충분 — 첫 성공 이후는 캐시 서빙. `MAX_IP_ALLOW: 15 → 3`, backoff base `[200·300·500·700·1000·1200·1500·1800·2000·2000·2500·2500·3000·3500ms]` → `[300·800·1500ms]` 로 축소. 총 최대 대기 ~25s → ~2.6s.
+
 ## v0.3.5 — 2026-07-24
 
 **Highlights** — 🚫 스코프 미선택 시 프롬프트 입력창 비활성화 · 🪙 이달 누적 뱃지 극단 간소화 (토큰량 + 1토큰 단가만).
