@@ -813,7 +813,9 @@ async function getDoc(env: Env, path: string): Promise<{ path: string; content: 
   if (!allowed) {
     throw new Error('path must be under projects/, qa/decisions/, qa/feedback/, CLAUDE.md, or a directory declared in blumnAI-qa-bot.config.yml');
   }
-  const content = await fetchTextFile(env, path);
+  // fetchTextFileCached: L1 in-memory + L2 edge cache(24h) fallback →
+  // IP allow list 간헐 실패 시 과거 성공한 본문 재사용. 캐시 없을 때만 throw.
+  const content = await fetchTextFileCached(env, path);
   return { path, content };
 }
 
@@ -1907,7 +1909,11 @@ async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEn
   await Promise.all(
     items.map(async (it) => {
       try {
-        const md = await fetchTextFile(env, it.path);
+        // fetchTextFileCached: L1/L2 캐시 fallback → IP allow list 간헐 실패해도
+        // 과거 성공한 본문으로 status 정확히 파싱. 이전엔 fetchTextFile (uncached)
+        // 을 써서 실패 시 catch 로 넘어가 status='pending' 기본값 주입 →
+        // 실제 applied 항목이 대기로 잘못 표시되는 "상태 업데이트 안됨" 증상.
+        const md = await fetchTextFileCached(env, it.path);
         const { status, statusText } = parseDecisionStatus(md);
         it.status = status;
         it.statusText = statusText;
@@ -1921,8 +1927,10 @@ async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEn
           if (jiraHost) it.jiraUrl = `https://${jiraHost}/browse/${jiraKey}`;
         }
       } catch (_) {
-        it.status = 'pending';
-        it.statusText = '';
+        // 캐시도 없을 때만 도달 — status 를 'unknown' 으로 표시해서 프론트가
+        // 실제 데이터 아닌 fallback 임을 사용자에게 알릴 수 있게 함.
+        it.status = 'unknown';
+        it.statusText = '❔ 상태 조회 실패';
         it.preview = '';
         it.user = '';
       }
@@ -1936,7 +1944,7 @@ async function listFeedbacks(env: Env, limit: number): Promise<{ items: QaFileEn
   await Promise.all(
     items.map(async (it) => {
       try {
-        const md = await fetchTextFile(env, it.path);
+        const md = await fetchTextFileCached(env, it.path);
         const m = md.match(/##\s*개선 요청 사항\s*\n+([^\n]+)/);
         it.improvement = m ? m[1].slice(0, 80) : '';
         const userMatch = md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m);
