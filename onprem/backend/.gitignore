@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+
+# Prisma
+prisma/migrations/**/*.sql.tmp
+
+# Env
+.env
+.env.local
+.env.*.local

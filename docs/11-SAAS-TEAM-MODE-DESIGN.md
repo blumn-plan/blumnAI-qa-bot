@@ -1,14 +1,73 @@
 # 11. SaaS 팀 모드 설계서 (Phase 1)
 
-> **Status**: 📐 설계 · 미구현 · **Revision 3 확정 (2026-08-04, 솔로 바이브코딩 버전)**
+> **Status**: 🚨 **Revision 4 착수 (2026-08-04) — Cloudflare 폐기 · 사내 배포 전환**
 > **작성일**: 2026-08-04
 > **대상 독자**: 기획자(=솔로 구현자, 클로드코드 활용)
-> **관련 문서**: [09-SAAS-MODE.md](09-SAAS-MODE.md) (현재 개인 모드), [00-OVERVIEW.md](00-OVERVIEW.md)
+> **관련 문서**: [09-SAAS-MODE.md](09-SAAS-MODE.md) (현재 개인 모드), [00-OVERVIEW.md](00-OVERVIEW.md), [../onprem/README.md](../onprem/README.md) (Rev 4 실제 코드)
 >
 > **버전 이력**:
 > - Revision 1 (초안): 기본안 8개 · 개발자 팀 전제
 > - Revision 2: 기획자 결정 · 개발자 팀 전제 · 7-8주
-> - **Revision 3 (현재)**: 솔로 바이브코딩 감안 재조정 · 3-4주 · Phase 1a/1b/1c 분할
+> - Revision 3: 솔로 바이브코딩 감안 재조정 · 3-4주 · Phase 1a/1b/1c 분할
+> - **Revision 4 (현재)**: 🚨 IT 답변으로 Cloudflare 방향 폐기. 사내 배포 (형태 Y) 로 전환. Phase 1a D1-D4 코드 (`caf20b9`) 는 legacy 로 보존.
+
+---
+
+## 🚨 Revision 4 — 아키텍처 전환 (2026-08-04)
+
+### 배경
+
+IT 팀 최종 답변으로 Cloudflare 방향 모두 폐기 확정:
+1. GitHub IP allowlist 켜짐 · GitHub App 우회도 불가
+2. Cloudflare IP 대역 등록 요청 → **"Cloudflare 전체 IP 허용 불가"** 답변 (2026-08-04)
+3. Rev 3 의 Cloudflare Worker 기반 SaaS 모델은 사내 GitHub 레포에 접근 불가
+
+### 형태 Y — 완전 사내 배포
+
+Cloudflare 폐기 · 사내 서버에 Docker 배포. 사내 IP 는 이미 GitHub allowlist 에 있음 → IP 문제 원천 해소.
+
+```
+[사내 브라우저] → [사내 서버 Docker 컨테이너] → [GitHub · Anthropic]
+                    ├─ Next.js (프론트)
+                    ├─ NestJS (API)
+                    └─ MySQL (팀 config)
+```
+
+### 스택 (Rev 4 확정)
+
+| 레이어 | 스택 | 이유 |
+|---|---|---|
+| 프론트 | **Next.js 16** (App Router) + **TailwindCSS 4** + **shadcn/ui** | 현대 React 표준 · shadcn 완성도 |
+| 백엔드 | **NestJS 10** (Node.js 20) | 구조화된 API · DI · 파이프 · Prisma 궁합 |
+| DB | **MySQL 8** + **Prisma** ORM | 관계형 · 마이그레이션 자동 · 팀·프로젝트·멤버 정규화 |
+| 배포 | **docker-compose** (mysql + backend + frontend) | 사내 서버 하나에 3 컨테이너 |
+| 시크릿 | **.env** 파일 (배포 시 Vault/K8s Secret 로 승격) | 단순 · Docker 표준 |
+
+### Rev 3 → Rev 4 매핑
+
+| Rev 3 자산 | Rev 4 대응 |
+|---|---|
+| Cloudflare Worker (`bot/worker/`) | NestJS 앱 (`onprem/backend/`) 으로 이식 |
+| KV `TEAM_CONFIG` | MySQL `teams` · `projects` 테이블 |
+| 단일 HTML (`apps/qa-collab.html`) | Next.js 컴포넌트 (`onprem/frontend/src/app/`) |
+| `X-Bot-Team-Slug` 헤더 | URL path 또는 session 기반 |
+| Cloudflare Pages | Docker Nginx / Next standalone |
+
+### Phase Y 로드맵 (Rev 4)
+
+| Phase | 목표 | 소요 |
+|---|---|---|
+| **Y1a** (지금) | 스캐폴딩 · docker-compose · MySQL 스키마 · /health · /team CRUD | 3-5일 |
+| **Y1b** | GitHub API + Anthropic API 이식 · /list-docs · /doc · /qa · /forward | 4-6일 |
+| **Y1c** | Next.js 컴포넌트 (shadcn) 로 프론트 이식 · 첫 실사용 | 5-7일 |
+
+### Rev 3 § 5-14 의 처리
+
+이 문서 §5 이하 (아키텍처 · 데이터모델 · API · UI · 보안 · 롤아웃) 는 **Rev 3 (Cloudflare 시대)** 기준. Rev 4 재작성 대신 **참고용 보존** — 결정 배경·논리 흐름은 유효하고, 재구현 시 스택만 치환하면 됨 (예: KV 스키마 § 6.1 → Prisma schema 로 매핑, Worker /team API § 8 → NestJS controller 로 매핑).
+
+Rev 4 실제 구현 상태는 [../onprem/README.md](../onprem/README.md) 참고.
+
+---
 
 ---
 

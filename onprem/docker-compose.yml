@@ -1,0 +1,78 @@
+# blumnAI QA Bot — 사내 배포 (형태 Y · Phase Y1a)
+#
+# 3 서비스: mysql + backend (NestJS) + frontend (Next.js)
+# 실행: docker compose up -d --build
+# 로그: docker compose logs -f
+# 정지: docker compose down (볼륨은 남김) / down -v (완전 삭제)
+#
+# 환경변수는 .env 파일에서 읽음. .env.example 참고.
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: blumnai-qa-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: blumnai-qa-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: "mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001}
+      # Phase Y1b 에서 사용 예정 (지금은 옵션)
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    # 시작 시 Prisma 마이그레이션 자동 적용 (프로덕션은 deploy · dev 는 별도 실행)
+    command: sh -c "npx prisma migrate deploy && node dist/main"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: blumnai-qa-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      # 프론트 → 백엔드 API base URL (브라우저 관점 · 사용자 접근 URL 기준)
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3000/api}
+    ports:
+      - "${FRONTEND_PORT:-3001}:3001"
+
+volumes:
+  mysql-data:
+    driver: local

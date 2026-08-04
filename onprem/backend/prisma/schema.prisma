@@ -1,0 +1,55 @@
+// blumnAI QA Bot — 사내 배포 MySQL 스키마 (Phase Y1a)
+//
+// Phase Y1a 스코프: teams · projects 만.
+// Phase Y1b 에서 members · sessions · usage_logs 추가.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Team — 팀 config 저장 (기존 Cloudflare KV `TEAM_CONFIG` 대체)
+// slug 는 github_repo 에서 파생 (blumn/repo → blumn-repo).
+// 1 팀 = 1 GitHub 레포 = N 프로젝트.
+// ─────────────────────────────────────────────────────────────
+model Team {
+  id                Int       @id @default(autoincrement())
+  slug              String    @unique @db.VarChar(64)
+  name              String    @db.VarChar(255)
+  githubRepo        String    @map("github_repo") @db.VarChar(255)
+  masterGithubLogin String?   @map("master_github_login") @db.VarChar(64)
+  masterPat         String?   @map("master_pat") @db.Text
+  anthropicKey      String?   @map("anthropic_key") @db.Text
+  plannerPassword   String?   @map("planner_password") @db.VarChar(255)
+  rateLimitPerDay   Int       @default(50) @map("rate_limit_per_day")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  projects          Project[]
+
+  @@map("teams")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Project — 팀 내 서비스 단위 (예: 헤이데어 = admin + backoffice)
+// Rev 3 결정 O6 반영: Phase Y1a 부터 다중 프로젝트 지원.
+// ─────────────────────────────────────────────────────────────
+model Project {
+  id              Int      @id @default(autoincrement())
+  teamId          Int      @map("team_id")
+  slug            String   @db.VarChar(64) // 팀 내 unique (예: "admin", "backoffice")
+  label           String   @db.VarChar(255)
+  policiesDir     String   @default("") @map("policies_dir") @db.VarChar(500)
+  storyboardsDir  String   @default("") @map("storyboards_dir") @db.VarChar(500)
+  codeRepo        String   @default("") @map("code_repo") @db.VarChar(255)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  team            Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, slug])
+  @@map("projects")
+}
