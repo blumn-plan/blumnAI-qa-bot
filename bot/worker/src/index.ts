@@ -1574,20 +1574,23 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
 
   // Retry 정책:
   //   · 429/5xx (transient upstream) 또는 네트워크 오류 → 3회 시도, 500·1200ms backoff
-  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → 3회 시도,
-  //     jittered backoff. 이전엔 15회까지 재시도했으나 /qa 한 번에 병렬 fetch 가 10~40개
-  //     발생해 실패 폭풍 시 subrequest 한도(무료 50 / 유료 1000) 를 넘겨 "Too many
-  //     subrequests by single Worker invocation" 500 유발. L2 edge cache(24h)가 이미
-  //     인스턴스 간 fallback 을 제공하므로 3회면 충분 — 첫 성공 이후는 캐시 서빙.
-  //     GitHub 서버 도달 전 Edge 리젝이라 write (PUT/POST) 도 안전 (중복 X).
+  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → read 3회 / write 12회.
+  //     - Read (GET) 는 L2 edge cache(24h) fallback 이 있고 /qa 한 번에 10~40개 병렬 fetch
+  //       발생 → subrequest 한도(무료 50) 초과 위험 있어 3회 제한 · 실패 시 캐시 서빙.
+  //     - Write (PUT/POST/PATCH/DELETE) 는 캐시 fallback 불가 · 반드시 GitHub 까지 도달해야 함.
+  //       기획자 [적용 처리] · [이미지 첨부] 같은 사용자 단발 액션이라 subrequest 폭발 위험 X.
+  //       12회면 새 edge IP 추첨 확률이 whitelist 커버율 극한까지 감. 총 최대 대기 ~25s.
+  //     jittered backoff — GitHub 서버 도달 전 Edge 리젝이라 write 재시도도 중복 커밋 X (안전).
   //     ⚠ 근본 해결: org GitHub Settings → Authentication security → IP allow list
   //        에 Cloudflare IP 범위 (https://www.cloudflare.com/ips-v4) 를 등록 필요.
   //   · 나머지 오류 (401/403 non-IP/404 등) → 즉시 반환 (재시도해도 결과 동일).
   const isWrite = !isRetryableMethod(init);
   const MAX_REGULAR = 3;
-  const MAX_IP_ALLOW = 3;
+  const MAX_IP_ALLOW = isWrite ? 12 : 3;
   const regularBackoff = [500, 1200];
-  const ipAllowBackoffBase = [300, 800, 1500];
+  const ipAllowBackoffBase = isWrite
+    ? [200, 300, 500, 700, 1000, 1200, 1500, 1800, 2000, 2500, 3000, 3500]
+    : [300, 800, 1500];
   let lastRes: Response | null = null;
   let lastErr: unknown = null;
   let attempt = 0;

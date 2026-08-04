@@ -3798,7 +3798,7 @@
         return 'GitHub PAT (ghp_...) 만료 또는 오류. Classic PAT 재발급 후 wrangler secret put GITHUB_TOKEN 로 갱신하세요.';
       }
       if (/IP allow list/i.test(msg)) {
-        return '🚨 GitHub org IP allow list 로 인한 실패입니다. Worker 가 최대 15회 재시도 (jittered backoff ~25s) 했지만 모두 미허용 Cloudflare Edge IP 로 나갔어요.\n\n⚠ 이 오류는 코드로 완전히 못 고칩니다 — org admin 액션 필요:\n1. https://github.com/organizations/<YOUR-ORG>/settings/security_analysis\n2. IP allow list → 아래 두 소스의 IP 범위 전부 추가:\n   · https://www.cloudflare.com/ips-v4\n   · https://www.cloudflare.com/ips-v6\n3. 저장 후 즉시 반영 (10분 이내)\n\n임시 우회: 페이지 새로고침 (한 번이라도 성공한 리소스는 stale-cache fallback 으로 계속 로드됨).';
+        return '🚨 GitHub org IP allow list 로 인한 실패입니다. Worker 가 재시도 (read 3회 / write 12회 ~25s) 했지만 모두 미허용 Cloudflare Edge IP 로 나갔어요.\n\n⚠ 이 오류는 코드로 완전히 못 고칩니다 — org admin 액션 필요:\n1. https://github.com/organizations/<YOUR-ORG>/settings/security_analysis\n2. IP allow list → 아래 두 소스의 IP 범위 전부 추가:\n   · https://www.cloudflare.com/ips-v4\n   · https://www.cloudflare.com/ips-v6\n3. 저장 후 즉시 반영 (10분 이내)\n\n임시 우회: 페이지 새로고침 (한 번이라도 성공한 리소스는 stale-cache fallback 으로 계속 로드됨).';
       }
       if (/GitHub.*404|not found.*repository/i.test(msg)) {
         return 'GitHub 레포·경로 못 찾음. GITHUB_REPO 시크릿 또는 config.yml 의 policies_dir 확인하세요.';

@@ -1132,6 +1132,7 @@
       if (/HTTP 502/i.test(msg) || /<!DOCTYPE\s+html/i.test(msg)) return 'PC 서버와의 터널 연결이 일시 끊겼어요. 30초~1분 후 다시 시도해 주세요. (해결 안 되면 호스트에게 제이나미봇 재기동 요청)';
       if (/HTTP 522/i.test(msg)) return 'PC 서버가 응답 못 하고 있어요 (멈춤 또는 git 작업 hang). 호스트에게 제이나미봇 재기동 요청 — Origin connection timeout';
       if (/HTTP 503|HTTP 504/i.test(msg)) return '서버가 잠시 응답 못 해요. 잠시 후 다시 시도해 주세요.';
+      if (/IP allow list/i.test(msg)) return '🚨 GitHub org IP allow list 로 인한 실패. Worker 가 write 재시도 12회 (~25s) 를 모두 미허용 Cloudflare Edge IP 로 나갔어요.\n\n대응: (1) 잠시 뒤 다시 [적용 처리] — 다음 요청은 다른 edge IP 에 걸릴 확률 있음. (2) 반복되면 org admin 에게 lunasoft-org GitHub Settings → IP allow list 에 https://www.cloudflare.com/ips-v4 · ips-v6 등록 요청.';
       if (/Failed to fetch|NetworkError/i.test(msg)) return '서버 연결이 안 돼요';
       return msg.slice(0, 200);
     }
