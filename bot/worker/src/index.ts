@@ -240,6 +240,42 @@ async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): P
   }
 }
 
+/** L1 in-memory + L2 edge cache 를 peek 만 하고 (cold miss 여도 GitHub 안 침).
+ *  listDecisions 같은 60+ 병렬 fetch 상황에서 subrequest 폭발 + IP allow list
+ *  대량 rejection 방지용. cache hit → return 즉시. cache miss → null. */
+async function peekCachedTextFile(env: Env, path: string, ttl = TEXT_TTL_MS): Promise<string | null> {
+  const key = cacheKey(env, path);
+  const c = textCache.get(key);
+  if (c && Date.now() - c.at < ttl) return c.data;
+  try {
+    const edgeKey = edgeCacheReqKey(env, 'file', path);
+    const cached = await caches.default.match(edgeKey);
+    if (cached) {
+      const data = await cached.text();
+      textCache.set(key, { at: Date.now(), data });
+      return data;
+    }
+  } catch (_) { /* peek 실패는 miss 로 처리 */ }
+  return null;
+}
+
+/** 지정한 경로들의 L2 edge cache 를 백그라운드로 워밍업. concurrency=4 로 IP allow list
+ *  rejection 완화. ctx.waitUntil 로 응답 반환 후 계속 실행. 실패는 조용히 무시. */
+async function warmupTextFiles(env: Env, paths: string[]): Promise<void> {
+  const CONCURRENCY = 4;
+  for (let i = 0; i < paths.length; i += CONCURRENCY) {
+    const batch = paths.slice(i, i + CONCURRENCY);
+    await Promise.allSettled(
+      batch.map((p) =>
+        fetchTextFileCached(env, p).catch((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[qa-bot] warmup ${p} 실패: ${msg.slice(0, 150)}`);
+        }),
+      ),
+    );
+  }
+}
+
 async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS): Promise<ContentEntry[]> {
   const key = cacheKey(env, path);
   const c = listCache.get(key);
@@ -444,12 +480,23 @@ export default {
         case '/list-projects':
           result = await listProjects(env);
           break;
-        case '/list-decisions':
-          result = await listDecisions(env, parseLimit(url.searchParams.get('limit')));
+        case '/list-decisions': {
+          const dec = await listDecisions(env, parseLimit(url.searchParams.get('limit')));
+          // 캐시 miss 된 항목만 백그라운드 warmup → 다음 폴링(30초 후) 때 정확한 status.
+          if (dec.uncachedPaths.length > 0) {
+            ctx.waitUntil(warmupTextFiles(env, dec.uncachedPaths));
+          }
+          result = { items: dec.items };
           break;
-        case '/list-feedbacks':
-          result = await listFeedbacks(env, parseLimit(url.searchParams.get('limit')));
+        }
+        case '/list-feedbacks': {
+          const fb = await listFeedbacks(env, parseLimit(url.searchParams.get('limit')));
+          if (fb.uncachedPaths.length > 0) {
+            ctx.waitUntil(warmupTextFiles(env, fb.uncachedPaths));
+          }
+          result = { items: fb.items };
           break;
+        }
         case '/update-decision-status':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
           result = await updateDecisionStatus(env, await req.json());
@@ -1903,17 +1950,29 @@ function parseDecisionStatus(md: string): { status: string; statusText: string }
   return { status: 'pending', statusText: text };
 }
 
-async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEntry[] }> {
+async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEntry[]; uncachedPaths: string[] }> {
   const items = await listMdDir(env, 'qa/decisions', limit);
   const jiraHost = (env.JIRA_BASE_URL || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+  const uncachedPaths: string[] = [];
+
+  // 2단계 로드 전략:
+  //   Phase 1 (sync): L1/L2 캐시 peek 만 → 즉시 응답. IP allow list 로 60+ 병렬
+  //     GitHub fetch 폭풍 → subrequest 한도 초과 + 대량 rejection 을 원천 회피.
+  //   Phase 2 (waitUntil): 캐시 miss 된 항목만 백그라운드 warmup (concurrency 4).
+  //     프론트가 30초 뒤 polling 하면 대부분 정확한 status 로 채워짐.
+  //   캐시 miss 항목은 status='loading' 으로 표시 → 프론트 렌더 '⏳ 로드 중'.
   await Promise.all(
     items.map(async (it) => {
+      const md = await peekCachedTextFile(env, it.path);
+      if (md === null) {
+        it.status = 'loading';
+        it.statusText = '⏳ 로드 중';
+        it.preview = '';
+        it.user = '';
+        uncachedPaths.push(it.path);
+        return;
+      }
       try {
-        // fetchTextFileCached: L1/L2 캐시 fallback → IP allow list 간헐 실패해도
-        // 과거 성공한 본문으로 status 정확히 파싱. 이전엔 fetchTextFile (uncached)
-        // 을 써서 실패 시 catch 로 넘어가 status='pending' 기본값 주입 →
-        // 실제 applied 항목이 대기로 잘못 표시되는 "상태 업데이트 안됨" 증상.
-        const md = await fetchTextFileCached(env, it.path);
         const { status, statusText } = parseDecisionStatus(md);
         it.status = status;
         it.statusText = statusText;
@@ -1927,35 +1986,38 @@ async function listDecisions(env: Env, limit: number): Promise<{ items: QaFileEn
           if (jiraHost) it.jiraUrl = `https://${jiraHost}/browse/${jiraKey}`;
         }
       } catch (_) {
-        // 캐시도 없을 때만 도달 — status 를 'unknown' 으로 표시해서 프론트가
-        // 실제 데이터 아닌 fallback 임을 사용자에게 알릴 수 있게 함.
         it.status = 'unknown';
-        it.statusText = '❔ 상태 조회 실패';
+        it.statusText = '❔ 상태 파싱 실패';
         it.preview = '';
         it.user = '';
       }
     }),
   );
-  return { items };
+
+  return { items, uncachedPaths };
 }
 
-async function listFeedbacks(env: Env, limit: number): Promise<{ items: QaFileEntry[] }> {
+async function listFeedbacks(env: Env, limit: number): Promise<{ items: QaFileEntry[]; uncachedPaths: string[] }> {
   const items = await listMdDir(env, 'qa/feedback', limit);
+  const uncachedPaths: string[] = [];
+
   await Promise.all(
     items.map(async (it) => {
-      try {
-        const md = await fetchTextFileCached(env, it.path);
-        const m = md.match(/##\s*개선 요청 사항\s*\n+([^\n]+)/);
-        it.improvement = m ? m[1].slice(0, 80) : '';
-        const userMatch = md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m);
-        it.user = userMatch ? userMatch[1].trim() : '';
-      } catch (_) {
-        it.improvement = '';
+      const md = await peekCachedTextFile(env, it.path);
+      if (md === null) {
+        it.improvement = '(로드 중)';
         it.user = '';
+        uncachedPaths.push(it.path);
+        return;
       }
+      const m = md.match(/##\s*개선 요청 사항\s*\n+([^\n]+)/);
+      it.improvement = m ? m[1].slice(0, 80) : '';
+      const userMatch = md.match(/^\|\s*질문자\s*\|\s*([^|]+?)\s*\|\s*$/m);
+      it.user = userMatch ? userMatch[1].trim() : '';
     }),
   );
-  return { items };
+
+  return { items, uncachedPaths };
 }
 
 /* ────────── /update-decision-status ────────── */
