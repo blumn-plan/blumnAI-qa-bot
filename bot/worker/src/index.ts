@@ -1711,7 +1711,11 @@ function parseQaFileName(name: string, dir: string): QaFileEntry {
 }
 
 async function listMdDir(env: Env, subdir: string, limit: number): Promise<QaFileEntry[]> {
-  const entries = await fetchDirListing(env, subdir).catch(() => [] as ContentEntry[]);
+  // ⚠️ 이전엔 `fetchDirListing().catch(() => [])` 로 조용히 빈 배열을 리턴했지만,
+  //   IP allow list 간헐 실패 시 프론트가 "요청 없음" 으로 오해 → 사용자 혼란.
+  //   fetchDirListingCached 사용: L1 in-memory + L2 edge cache(24h) fallback 활용 →
+  //   과거 성공한 목록이라도 유지. 캐시조차 없으면 throw 해서 프론트 "로드 실패" 표시.
+  const entries = await fetchDirListingCached(env, subdir);
   return entries
     .filter((e) => e.type === 'file' && e.name.endsWith('.md') && !e.name.startsWith('_') && e.name.toLowerCase() !== 'readme.md')
     .map((e) => e.name)
