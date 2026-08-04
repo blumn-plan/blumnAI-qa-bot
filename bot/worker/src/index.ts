@@ -198,13 +198,18 @@ function cacheKey(env: Env, path: string): string {
  *        Worker 재시작 · 서로 다른 리전 인스턴스 · IP allow list 실패에도 관대.
  */
 const EDGE_CACHE_TTL_SEC = 24 * 60 * 60;
-// qa/decisions/ · qa/feedback/ 는 mutable → L2 (Cloudflare Cache API) 완전 스킵.
-// 이유: Cache API 는 데이터센터별(per-colo). 어떤 방식으로도 다른 colo 의 stale 을
-// 확실히 지울 수 없음 → "적용 처리 후 원복" 버그 근본 해결 불가.
-// L2 스킵하면 다른 colo·인스턴스는 miss 시 GitHub 직행 → 항상 최신값 보장.
-// 60개 병렬 fetch 폭풍은 2단계 로드 (peekCachedTextFile + warmup) 로 회피 유지.
+// qa/decisions/ · qa/feedback/ 는 mutable → L2 짧게 (60s, IP allow list fallback 용도만).
+// Cache API 가 데이터센터별(per-colo)이라 stale 원복 버그 방지 위해:
+//   - L2 write: OK (fallback 용 저장)
+//   - L2 primary read: SKIP (peekCachedTextFile 에서 mutable 은 L1 만 확인)
+//   - L2 fallback read: OK (GitHub 실패 시에만) → IP allow list 회피 유지
+// TTL 60s + fallback only 조합 → stale 최대 60초 (그것도 GitHub 실패 시에만).
+const EDGE_CACHE_TTL_MUTABLE_SEC = 60;
 function isMutablePath(path: string): boolean {
   return path.startsWith('qa/decisions') || path.startsWith('qa/feedback');
+}
+function edgeCacheTtlFor(path: string): number {
+  return isMutablePath(path) ? EDGE_CACHE_TTL_MUTABLE_SEC : EDGE_CACHE_TTL_SEC;
 }
 
 function edgeCacheReqKey(env: Env, kind: 'file' | 'dir', path: string): Request {
@@ -218,18 +223,15 @@ async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): P
   if (c && Date.now() - c.at < ttl) return c.data;
 
   const edgeKey = edgeCacheReqKey(env, 'file', path);
-  const skipL2 = isMutablePath(path);
   try {
     const data = await fetchTextFile(env, path);
     textCache.set(key, { at: Date.now(), data });
-    // L2 edge cache put — immutable paths 만 (mutable 은 stale 위험으로 스킵)
-    if (!skipL2) {
-      try {
-        await caches.default.put(edgeKey, new Response(data, {
-          headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
-        }));
-      } catch (_) { /* cache put 실패는 무시 */ }
-    }
+    // L2 write — mutable 은 짧은 TTL (60s), immutable 은 24h. fallback 용.
+    try {
+      await caches.default.put(edgeKey, new Response(data, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
+      }));
+    } catch (_) { /* cache put 실패는 무시 */ }
     return data;
   } catch (err) {
     // L1 stale fallback
@@ -237,18 +239,16 @@ async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): P
       console.warn(`[qa-bot] fetchTextFile ${path} 실패 → L1 stale (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
       return c.data;
     }
-    // L2 edge cache fallback — immutable 만 (mutable 은 stale 위험으로 안 씀)
-    if (!skipL2) {
-      try {
-        const cached = await caches.default.match(edgeKey);
-        if (cached) {
-          const data = await cached.text();
-          console.warn(`[qa-bot] fetchTextFile ${path} 실패 → L2 edge cache hit`);
-          textCache.set(key, { at: Date.now(), data });
-          return data;
-        }
-      } catch (_) { /* cache match 실패 시 정상 throw 로 진행 */ }
-    }
+    // L2 edge cache fallback — mutable/immutable 모두. IP allow list 회피 유지.
+    try {
+      const cached = await caches.default.match(edgeKey);
+      if (cached) {
+        const data = await cached.text();
+        console.warn(`[qa-bot] fetchTextFile ${path} 실패 → L2 edge cache hit`);
+        textCache.set(key, { at: Date.now(), data });
+        return data;
+      }
+    } catch (_) { /* cache match 실패 시 정상 throw 로 진행 */ }
     throw err;
   }
 }
@@ -297,35 +297,32 @@ async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS):
   if (c && Date.now() - c.at < ttl) return c.data;
 
   const edgeKey = edgeCacheReqKey(env, 'dir', path);
-  const skipL2 = isMutablePath(path);
   try {
     const data = await fetchDirListing(env, path);
     listCache.set(key, { at: Date.now(), data });
-    if (!skipL2) {
-      try {
-        await caches.default.put(edgeKey, new Response(JSON.stringify(data), {
-          headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
-        }));
-      } catch (_) { /* ignore */ }
-    }
+    // L2 write — mutable 은 짧은 TTL (60s), immutable 은 24h. fallback 용.
+    try {
+      await caches.default.put(edgeKey, new Response(JSON.stringify(data), {
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
+      }));
+    } catch (_) { /* ignore */ }
     return data;
   } catch (err) {
     if (c) {
       console.warn(`[qa-bot] fetchDirListing ${path} 실패 → L1 stale (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
       return c.data;
     }
-    if (!skipL2) {
-      try {
-        const cached = await caches.default.match(edgeKey);
-        if (cached) {
-          const text = await cached.text();
-          const data = JSON.parse(text) as ContentEntry[];
-          console.warn(`[qa-bot] fetchDirListing ${path} 실패 → L2 edge cache hit`);
-          listCache.set(key, { at: Date.now(), data });
-          return data;
-        }
-      } catch (_) { /* ignore */ }
-    }
+    // L2 edge cache fallback — mutable/immutable 모두. IP allow list 회피 유지.
+    try {
+      const cached = await caches.default.match(edgeKey);
+      if (cached) {
+        const text = await cached.text();
+        const data = JSON.parse(text) as ContentEntry[];
+        console.warn(`[qa-bot] fetchDirListing ${path} 실패 → L2 edge cache hit`);
+        listCache.set(key, { at: Date.now(), data });
+        return data;
+      }
+    } catch (_) { /* ignore */ }
     throw err;
   }
 }
@@ -357,9 +354,9 @@ async function invalidateCacheDeep(env: Env, ctx: ExecutionContext | undefined, 
   }
 }
 
-/** Write-through 캐시 갱신 — write (PUT) 후 L1 캐시를 새 내용으로 즉시 덮어씀.
- *  mutable path (qa/decisions·qa/feedback) 는 L2 자체를 안 쓰므로 L2 조작 X.
- *  다른 인스턴스·colo 는 각자 L1 miss → GitHub 직행 → 항상 최신값 가져감.
+/** Write-through 캐시 갱신 — write (PUT) 후 L1 을 새 내용으로 즉시 덮어씀.
+ *  다른 인스턴스·colo 는 각자 L1 miss → GitHub 직행 → 항상 최신값 (peek 이 L2 mutable 스킵).
+ *  L2 는 fallback 용으로 새 내용 put (다음 GitHub 실패 시 fallback 이 fresh).
  *  parent dir listing L1 도 지워서 리스트가 다시 fresh listing 가져오게 함. */
 async function writeThroughCache(env: Env, ctx: ExecutionContext | undefined, path: string, newContent: string, parentDir?: string) {
   const key = cacheKey(env, path);
@@ -367,6 +364,16 @@ async function writeThroughCache(env: Env, ctx: ExecutionContext | undefined, pa
   if (parentDir) {
     listCache.delete(cacheKey(env, parentDir));
   }
+  // L2 은 fallback 용도만 → mutable 은 짧은 TTL 로 최신값 유지.
+  const put = async () => {
+    try {
+      await caches.default.put(edgeCacheReqKey(env, 'file', path), new Response(newContent, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
+      }));
+    } catch (_) {}
+  };
+  if (ctx) ctx.waitUntil(put());
+  else await put();
 }
 
 async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
