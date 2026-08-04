@@ -198,6 +198,15 @@ function cacheKey(env: Env, path: string): string {
  *        Worker 재시작 · 서로 다른 리전 인스턴스 · IP allow list 실패에도 관대.
  */
 const EDGE_CACHE_TTL_SEC = 24 * 60 * 60;
+// qa/decisions/ · qa/feedback/ 같은 mutable 컨텐츠는 짧은 L2 TTL 사용.
+// Cloudflare Cache API 는 데이터센터별 (per-colo) → delete() 도 전역 무효화 불가.
+// 다른 colo 는 여전히 stale 을 서빙할 수 있어서, TTL 을 60s 로 짧게 두어
+// 최악 60초 안에 자연 만료. IP allow list 회피용 fallback 기능은 유지 (60s면 충분).
+const EDGE_CACHE_TTL_MUTABLE_SEC = 60;
+function edgeCacheTtlFor(path: string): number {
+  if (path.startsWith('qa/decisions') || path.startsWith('qa/feedback')) return EDGE_CACHE_TTL_MUTABLE_SEC;
+  return EDGE_CACHE_TTL_SEC;
+}
 
 function edgeCacheReqKey(env: Env, kind: 'file' | 'dir', path: string): Request {
   // Cache API 는 Request 를 key 로 사용. URL 은 임의 도메인이어도 인스턴스 간 shared.
@@ -216,7 +225,7 @@ async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): P
     // L2 edge cache put — 인스턴스 간 shared, 24h TTL
     try {
       await caches.default.put(edgeKey, new Response(data, {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
       }));
     } catch (_) { /* cache put 실패는 무시 */ }
     return data;
@@ -287,7 +296,7 @@ async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS):
     listCache.set(key, { at: Date.now(), data });
     try {
       await caches.default.put(edgeKey, new Response(JSON.stringify(data), {
-        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
       }));
     } catch (_) { /* ignore */ }
     return data;
@@ -318,15 +327,14 @@ function invalidateCache(env: Env, ...paths: string[]) {
   }
 }
 
-/** L1 + L2 (edge cache) 둘 다 무효화. write (PUT/DELETE) 후 반드시 호출해서
- *  다음 read 요청이 방금 쓴 최신 내용을 다시 가져오게 함.
- *  이전엔 L1 만 지워서 L2 edge cache (24h) stale 데이터가 서빙 → 상태 변경 후
- *  잠시 뒤 원래 상태로 되돌아 보이는 버그 발생. ctx.waitUntil 로 감싸 응답 안 막음. */
+/** L1 + L2 (edge cache) 둘 다 무효화. write (PUT/DELETE) 후 반드시 호출.
+ *  ⚠️ Cloudflare Cache API 는 데이터센터별(per-colo) → delete() 는 이 colo 만
+ *  영향. 다른 colo 는 여전히 stale 서빙 가능. 그래서 qa/decisions·qa/feedback
+ *  은 EDGE_CACHE_TTL_MUTABLE_SEC (60s) 로 짧게 두어 자연 만료 보장 (병행 정책). */
 async function invalidateCacheDeep(env: Env, ctx: ExecutionContext | undefined, ...paths: string[]) {
   invalidateCache(env, ...paths);
   const purge = async () => {
     for (const p of paths) {
-      // file 과 dir 두 형태의 edge key 모두 삭제 시도 (path 가 파일이면 file, 부모 폴더면 dir)
       try { await caches.default.delete(edgeCacheReqKey(env, 'file', p)); } catch (_) {}
       try { await caches.default.delete(edgeCacheReqKey(env, 'dir', p)); } catch (_) {}
     }
@@ -335,6 +343,33 @@ async function invalidateCacheDeep(env: Env, ctx: ExecutionContext | undefined, 
     ctx.waitUntil(purge());
   } else {
     await purge();
+  }
+}
+
+/** Write-through 캐시 갱신 — write (PUT) 후 새 내용을 L1/L2 캐시에 즉시 덮어씀.
+ *  같은 colo 에서 next read 는 새 내용을 바로 서빙 → "상태 원복" 버그 방지 (같은 colo 기준).
+ *  다른 colo 는 EDGE_CACHE_TTL_MUTABLE_SEC (60s) 로 자연 만료 → 최악 60초 후 정확.
+ *  parent dir listing L1 도 지워서 리스트가 다시 fresh listing 가져오게 함. */
+async function writeThroughCache(env: Env, ctx: ExecutionContext | undefined, path: string, newContent: string, parentDir?: string) {
+  const key = cacheKey(env, path);
+  textCache.set(key, { at: Date.now(), data: newContent });
+  if (parentDir) {
+    listCache.delete(cacheKey(env, parentDir));
+  }
+  const put = async () => {
+    try {
+      await caches.default.put(edgeCacheReqKey(env, 'file', path), new Response(newContent, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
+      }));
+    } catch (_) {}
+    if (parentDir) {
+      try { await caches.default.delete(edgeCacheReqKey(env, 'dir', parentDir)); } catch (_) {}
+    }
+  };
+  if (ctx) {
+    ctx.waitUntil(put());
+  } else {
+    await put();
   }
 }
 
@@ -2471,11 +2506,11 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody, ct
     throw new Error(`GitHub update ${putRes.status}: ${text.slice(0, 500)}`);
   }
 
-  // 🧹 write 후 캐시 무효화 필수 — L1 (in-memory) + L2 (edge, 24h) 둘 다.
-  //   dir listing 도 함께 지워야 /list-decisions 폴링이 새 status 를 정확히 파싱.
-  //   이거 안 하면 방금 applied 로 커밋해도 다음 read 는 stale 캐시로 pending 반환 →
-  //   프론트에서 상태가 "applied 로 잠깐 → pending 으로 원복" 되어 보임.
-  await invalidateCacheDeep(env, ctx, body.path, 'qa/decisions');
+  // 🔁 Write-through — 새 내용을 L1/L2 캐시에 즉시 덮어씀 (같은 colo 즉시 반영).
+  //   다른 colo 는 EDGE_CACHE_TTL_MUTABLE_SEC (60s) 자연 만료 → 최악 60초.
+  //   frontend 는 응답의 status 를 로컬 state 에 즉시 반영하므로 폴링 sync 되기 전에도
+  //   버튼·배지 상태는 정확. dir listing 은 무효화 (파일 목록은 안 바뀌므로 재 fetch OK).
+  await writeThroughCache(env, ctx, body.path, replaced, 'qa/decisions');
 
   // 🎫 applied 커밋 성공 → Jira · Teams fire-and-forget 동기 시도
   // (실패해도 적용완료 자체는 이미 커밋됐으므로 사용자 흐름 안 막음)
