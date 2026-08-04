@@ -318,6 +318,26 @@ function invalidateCache(env: Env, ...paths: string[]) {
   }
 }
 
+/** L1 + L2 (edge cache) 둘 다 무효화. write (PUT/DELETE) 후 반드시 호출해서
+ *  다음 read 요청이 방금 쓴 최신 내용을 다시 가져오게 함.
+ *  이전엔 L1 만 지워서 L2 edge cache (24h) stale 데이터가 서빙 → 상태 변경 후
+ *  잠시 뒤 원래 상태로 되돌아 보이는 버그 발생. ctx.waitUntil 로 감싸 응답 안 막음. */
+async function invalidateCacheDeep(env: Env, ctx: ExecutionContext | undefined, ...paths: string[]) {
+  invalidateCache(env, ...paths);
+  const purge = async () => {
+    for (const p of paths) {
+      // file 과 dir 두 형태의 edge key 모두 삭제 시도 (path 가 파일이면 file, 부모 폴더면 dir)
+      try { await caches.default.delete(edgeCacheReqKey(env, 'file', p)); } catch (_) {}
+      try { await caches.default.delete(edgeCacheReqKey(env, 'dir', p)); } catch (_) {}
+    }
+  };
+  if (ctx) {
+    ctx.waitUntil(purge());
+  } else {
+    await purge();
+  }
+}
+
 async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
   const key = env.GITHUB_REPO || '(no-repo)';
   const cached = configCache.get(key);
@@ -499,11 +519,11 @@ export default {
         }
         case '/update-decision-status':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          result = await updateDecisionStatus(env, await req.json());
+          result = await updateDecisionStatus(env, await req.json(), ctx);
           break;
         case '/delete-decision':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          result = await deleteDecision(env, await req.json());
+          result = await deleteDecision(env, await req.json(), ctx);
           break;
         case '/feedback':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
@@ -2395,7 +2415,7 @@ async function runExternalSync(env: Env, path: string, md: string): Promise<Exte
   return result;
 }
 
-async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): Promise<{ path: string; status: string; statusText: string; committed: boolean; externalSync?: ExternalSyncResult }> {
+async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody, ctx?: ExecutionContext): Promise<{ path: string; status: string; statusText: string; committed: boolean; externalSync?: ExternalSyncResult }> {
   if (!body.path || !/^qa\/decisions\/[^/]+\.md$/.test(body.path)) {
     throw new Error('valid qa/decisions/ path required');
   }
@@ -2451,6 +2471,12 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): P
     throw new Error(`GitHub update ${putRes.status}: ${text.slice(0, 500)}`);
   }
 
+  // 🧹 write 후 캐시 무효화 필수 — L1 (in-memory) + L2 (edge, 24h) 둘 다.
+  //   dir listing 도 함께 지워야 /list-decisions 폴링이 새 status 를 정확히 파싱.
+  //   이거 안 하면 방금 applied 로 커밋해도 다음 read 는 stale 캐시로 pending 반환 →
+  //   프론트에서 상태가 "applied 로 잠깐 → pending 으로 원복" 되어 보임.
+  await invalidateCacheDeep(env, ctx, body.path, 'qa/decisions');
+
   // 🎫 applied 커밋 성공 → Jira · Teams fire-and-forget 동기 시도
   // (실패해도 적용완료 자체는 이미 커밋됐으므로 사용자 흐름 안 막음)
   let externalSync: ExternalSyncResult | undefined;
@@ -2468,7 +2494,7 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): P
 
 /* ────────── /delete-decision ────────── */
 
-async function deleteDecision(env: Env, body: { path: string }): Promise<{ path: string; deleted: boolean; committed: boolean }> {
+async function deleteDecision(env: Env, body: { path: string }, ctx?: ExecutionContext): Promise<{ path: string; deleted: boolean; committed: boolean }> {
   if (!body.path || !/^qa\/decisions\/[^/]+\.md$/.test(body.path)) {
     throw new Error('valid qa/decisions/ path required');
   }
@@ -2490,6 +2516,7 @@ async function deleteDecision(env: Env, body: { path: string }): Promise<{ path:
     const text = await delRes.text();
     throw new Error(`GitHub delete ${delRes.status}: ${text.slice(0, 500)}`);
   }
+  await invalidateCacheDeep(env, ctx, body.path, 'qa/decisions');
   return { path: body.path, deleted: true, committed: true };
 }
 
