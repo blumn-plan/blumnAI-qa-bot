@@ -54,23 +54,54 @@ export interface Env {
   /** (옵션) Teams Incoming Webhook — decision "적용완료" 처리 시 채널에 카드 전송.
    *  Teams 채널 · Connectors · Incoming Webhook 에서 URL 발급. */
   TEAMS_WEBHOOK_URL?: string;
+  /** SaaS 팀 모드 (Phase 1a+) — 팀별 config 저장 KV.
+   *  key: team:{team_slug}  value: 팀 config JSON (설계서 §6.1 스키마)
+   *  바인딩: wrangler.toml 의 [[kv_namespaces]] binding = "TEAM_CONFIG"
+   *  SaaS 팀 모드 미배포 시엔 undefined. */
+  TEAM_CONFIG?: KVNamespace;
 }
 
 /** 요청 헤더에 SaaS 모드용 인증 값이 있으면 env 를 override 해서 반환.
- *  - X-Bot-GitHub-Repo    : 팀 정책 레포 (org/repo)
- *  - X-Bot-GitHub-Token   : 팀 접근용 PAT
- *  - X-Bot-Anthropic-Key  : 팀 Anthropic API key
- *  값 없으면 env 그대로 반환 (하위 호환 팀 배포는 영향 X). */
-function scopeEnvFromRequest(env: Env, req: Request): Env {
+ *  두 가지 소스 지원 (우선순위 순):
+ *  1. X-Bot-Team-Slug  → KV(TEAM_CONFIG) 에서 팀 config 조회 후 secrets 주입 (Phase 1a KV 팀 모드)
+ *  2. X-Bot-{GitHub-Repo|GitHub-Token|Anthropic-Key} → 헤더 값 그대로 (기존 SaaS 개인 모드)
+ *  개별 X-Bot-* 헤더가 있으면 KV 값 대신 헤더 값 우선 (명시적 override).
+ *  값 없으면 env 그대로 반환 (하위 호환 팀 파일 배포는 영향 X). */
+async function scopeEnvFromRequest(env: Env, req: Request): Promise<Env> {
   const reqRepo = req.headers.get('X-Bot-GitHub-Repo');
   const reqToken = req.headers.get('X-Bot-GitHub-Token');
   const reqAnthropic = req.headers.get('X-Bot-Anthropic-Key');
-  if (!reqRepo && !reqToken && !reqAnthropic) return env;
+  const reqTeamSlug = req.headers.get('X-Bot-Team-Slug');
+
+  // 아무 SaaS 헤더도 없으면 기존 env 그대로 (팀 파일 모드)
+  if (!reqRepo && !reqToken && !reqAnthropic && !reqTeamSlug) return env;
+
+  // Phase 1a — KV 팀 config lookup (X-Bot-Team-Slug 있을 때)
+  let kvRepo: string | undefined;
+  let kvToken: string | undefined;
+  let kvAnthropic: string | undefined;
+  if (reqTeamSlug && env.TEAM_CONFIG) {
+    // slug 형식 검증 (KV 조회 전) — 잘못된 값은 조용히 무시하고 계속 진행
+    if (/^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/.test(reqTeamSlug)) {
+      try {
+        const raw = await env.TEAM_CONFIG.get(`team:${reqTeamSlug}`);
+        if (raw) {
+          const team = JSON.parse(raw) as Record<string, unknown>;
+          if (typeof team.github_repo === 'string') kvRepo = team.github_repo;
+          if (typeof team.master_pat === 'string') kvToken = team.master_pat;
+          if (typeof team.anthropic_key === 'string') kvAnthropic = team.anthropic_key;
+        }
+      } catch (err) {
+        console.warn(`[qa-bot] KV team lookup failed for slug "${reqTeamSlug}":`, err);
+      }
+    }
+  }
+
   return {
     ...env,
-    GITHUB_REPO: reqRepo || env.GITHUB_REPO,
-    GITHUB_TOKEN: reqToken || env.GITHUB_TOKEN,
-    ANTHROPIC_API_KEY: reqAnthropic || env.ANTHROPIC_API_KEY,
+    GITHUB_REPO: reqRepo || kvRepo || env.GITHUB_REPO,
+    GITHUB_TOKEN: reqToken || kvToken || env.GITHUB_TOKEN,
+    ANTHROPIC_API_KEY: reqAnthropic || kvAnthropic || env.ANTHROPIC_API_KEY,
   };
 }
 
@@ -293,8 +324,9 @@ export default {
     const corsHeaders: HeadersInit = {
       'Access-Control-Allow-Origin': allowOrigin,
       // SaaS 모드는 사용자 세션별 인증 헤더를 받으므로 Allow-Headers 확장 필요
-      'Access-Control-Allow-Headers': 'Content-Type, X-Bot-GitHub-Repo, X-Bot-GitHub-Token, X-Bot-Anthropic-Key',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      // Phase 1a: X-Bot-Team-Slug 추가 (KV 팀 모드용) · Method 에 PUT/DELETE 추가 (/team/{slug} API)
+      'Access-Control-Allow-Headers': 'Content-Type, X-Bot-GitHub-Repo, X-Bot-GitHub-Token, X-Bot-Anthropic-Key, X-Bot-Team-Slug',
+      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Max-Age': '86400',
       Vary: 'Origin',
     };
@@ -304,8 +336,8 @@ export default {
     }
 
     // 🔑 SaaS 모드 지원 — 요청 헤더의 값이 있으면 env 오버라이드 (하위 호환 유지)
-    // 이렇게 하면 다중 팀이 같은 Worker 를 공유하되 각자의 GitHub 레포·토큰·API 키로 동작
-    env = scopeEnvFromRequest(env, req);
+    // Phase 1a: X-Bot-Team-Slug 지원 추가 → KV 조회로 async 됨
+    env = await scopeEnvFromRequest(env, req);
 
     // C 모드: TUNNEL_URL 설정되어 있으면 모든 요청을 로컬 서버로 proxy.
     // /health 같은 자체 진단 엔드포인트는 예외로 두어 운영 가시성 유지.
@@ -315,6 +347,12 @@ export default {
 
     try {
       let result: unknown;
+      // Phase 1a D2 — 동적 라우트 /team/{slug}
+      //   switch 로는 slug 파라미터를 못 잡으므로 별도 처리.
+      //   ⚠️ 인증 없음 (Phase 1a 스코프) · Phase 1b 에서 세션 gate 추가
+      if (url.pathname.startsWith('/team/')) {
+        return await handleTeamRoute(env, url, req, corsHeaders);
+      }
       switch (url.pathname) {
         case '/':
         case '/health': {
@@ -357,10 +395,25 @@ export default {
           } catch (err) {
             configReport = { loaded: false, error: err instanceof Error ? err.message : String(err) };
           }
+          // Phase 1a — SaaS 팀 config KV 상태
+          const teamConfigKV: Record<string, unknown> = {
+            bound: !!env.TEAM_CONFIG,
+          };
+          if (env.TEAM_CONFIG) {
+            try {
+              const listed = await env.TEAM_CONFIG.list({ prefix: 'team:', limit: 100 });
+              teamConfigKV.teamCount = listed.keys.length;
+              teamConfigKV.teamSlugs = listed.keys.map((k) => k.name.replace(/^team:/, ''));
+              teamConfigKV.listComplete = !listed.list_complete ? '(100+ teams, listing truncated)' : true;
+            } catch (err) {
+              teamConfigKV.error = err instanceof Error ? err.message : String(err);
+            }
+          }
           result = {
             ...base,
             secrets,
             config: configReport,
+            teamConfigKV,
             cache: {
               textFileEntries: textCache.size,
               dirListingEntries: listCache.size,
@@ -451,6 +504,121 @@ export default {
     }
   },
 };
+
+/* ────────── 0-a. Phase 1a — SaaS 팀 config KV API ──────────
+ *  현재 스코프 (D2):
+ *   - GET    /team/{slug}   → 팀 config 조회 (secrets 마스킹)
+ *   - PUT    /team/{slug}   → 팀 config 저장 (신규 or 갱신, upsert)
+ *   - DELETE /team/{slug}   → 팀 config 삭제 (관리용 · 인증 없음 → Phase 1b 에 gate)
+ *
+ *  Phase 1a 는 인증 없음. Phase 1b 에서 GitHub OAuth 세션 gate 추가.
+ *  KV 응답은 캐시되면 안 되므로 Cache-Control: no-store 필수.
+ */
+
+/** slug 유효성: 소문자·숫자·하이픈만 · 3-64자 · 하이픈으로 시작/끝 금지. */
+function isValidTeamSlug(slug: string): boolean {
+  return /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/.test(slug);
+}
+
+/** 시크릿 값을 마스킹 (앞 4자 + `***` + 뒤 2자). 8자 미만이면 전체 마스킹. */
+function maskSecret(value: unknown): string {
+  if (typeof value !== 'string') return '***';
+  if (value.length < 8) return '***';
+  return `${value.slice(0, 4)}***${value.slice(-2)}`;
+}
+
+/** GET 응답 반환 전 팀 config 내 시크릿 필드 마스킹. */
+function maskTeamConfigSecrets(config: unknown): unknown {
+  if (!config || typeof config !== 'object') return config;
+  const masked: Record<string, unknown> = { ...(config as Record<string, unknown>) };
+  const secretFields = [
+    'master_pat', 'anthropic_key', 'planner_password',
+    'master_pat_encrypted', 'anthropic_key_encrypted',
+    'github_token', 'anthropic_api_key',
+  ];
+  for (const field of secretFields) {
+    if (masked[field]) masked[field] = maskSecret(masked[field]);
+  }
+  return masked;
+}
+
+async function handleTeamRoute(
+  env: Env,
+  url: URL,
+  req: Request,
+  corsHeaders: HeadersInit,
+): Promise<Response> {
+  const noCacheHeaders = { ...corsHeaders, 'Cache-Control': 'no-store' };
+  if (!env.TEAM_CONFIG) {
+    return jsonResponse(
+      { error: 'TEAM_CONFIG KV binding 미설정 · wrangler.toml [[kv_namespaces]] 확인' },
+      503, noCacheHeaders,
+    );
+  }
+  const match = url.pathname.match(/^\/team\/([^/]+)$/);
+  if (!match) {
+    return jsonResponse({ error: 'Invalid /team route · 형식: /team/{slug}' }, 400, noCacheHeaders);
+  }
+  const slug = match[1];
+  if (!isValidTeamSlug(slug)) {
+    return jsonResponse(
+      { error: 'Invalid team slug · 소문자·숫자·하이픈만 · 3-64자' },
+      400, noCacheHeaders,
+    );
+  }
+  const kvKey = `team:${slug}`;
+
+  if (req.method === 'GET') {
+    const raw = await env.TEAM_CONFIG.get(kvKey);
+    if (!raw) return jsonResponse({ error: 'Team not found', slug }, 404, noCacheHeaders);
+    try {
+      const parsed = JSON.parse(raw);
+      return jsonResponse(maskTeamConfigSecrets(parsed), 200, noCacheHeaders);
+    } catch (err) {
+      return jsonResponse(
+        { error: 'Team config JSON parse failed', slug, detail: err instanceof Error ? err.message : String(err) },
+        500, noCacheHeaders,
+      );
+    }
+  }
+
+  if (req.method === 'PUT') {
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return jsonResponse({ error: 'Body must be valid JSON' }, 400, noCacheHeaders);
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return jsonResponse({ error: 'Body must be a JSON object' }, 400, noCacheHeaders);
+    }
+    const now = new Date().toISOString();
+    // upsert — 기존 있으면 created_at 유지
+    let createdAt = now;
+    const existingRaw = await env.TEAM_CONFIG.get(kvKey);
+    if (existingRaw) {
+      try {
+        const existing = JSON.parse(existingRaw) as { created_at?: string };
+        if (existing.created_at) createdAt = existing.created_at;
+      } catch { /* 기존 데이터 손상 — 새로 씀 */ }
+    }
+    const enriched = {
+      ...(body as Record<string, unknown>),
+      team_slug: slug,
+      created_at: createdAt,
+      updated_at: now,
+    };
+    await env.TEAM_CONFIG.put(kvKey, JSON.stringify(enriched));
+    return jsonResponse(maskTeamConfigSecrets(enriched), 200, noCacheHeaders);
+  }
+
+  if (req.method === 'DELETE') {
+    await env.TEAM_CONFIG.delete(kvKey);
+    return jsonResponse({ ok: true, deleted: slug }, 200, noCacheHeaders);
+  }
+
+  return jsonResponse({ error: 'Method not allowed · GET/PUT/DELETE only' }, 405, noCacheHeaders);
+}
 
 /* ────────── 0. C 모드 proxy ────────── */
 

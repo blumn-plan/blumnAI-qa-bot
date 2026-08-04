@@ -793,31 +793,68 @@
     /* ────────── 컨피그 로드 ──────────
        blumnAI-qa-bot.config.yml 의 deployment.worker_url 에서 자동 로드.
        사용자 레포 루트에 yml 이 있어야 동작. */
-    /** 모든 Worker 요청 앞에 붙는 fetch wrapper — SaaS 모드에선 인증 헤더 자동 첨부.
-     *  워커 side 에서 X-Bot-{GitHub-Repo|GitHub-Token|Anthropic-Key} 를 읽어 env 오버라이드.
-     *  팀 모드 (SAAS_MODE=false) 에선 헤더 없이 그대로 통과 → 하위 호환. */
+    /** 모든 Worker 요청 앞에 붙는 fetch wrapper.
+     *  Phase 1a KV 팀 모드 (TEAM_SLUG 있음): X-Bot-Team-Slug 하나만 전송 → Worker 가 KV 조회
+     *  SaaS 개인 모드 (SAAS_CONFIG 만): X-Bot-{GitHub-Repo|Token|Anthropic-Key} 전송 (기존)
+     *  팀 파일 모드 (SAAS_MODE=false): 헤더 없이 통과 (하위 호환) */
     function botFetch(url, opts = {}) {
-      if (!SAAS_MODE || !SAAS_CONFIG) return fetch(url, opts);
+      if (!SAAS_MODE) return fetch(url, opts);
       const headers = new Headers(opts.headers || {});
-      if (SAAS_CONFIG.github_repo)   headers.set('X-Bot-GitHub-Repo',   SAAS_CONFIG.github_repo);
-      if (SAAS_CONFIG.github_token)  headers.set('X-Bot-GitHub-Token',  SAAS_CONFIG.github_token);
-      if (SAAS_CONFIG.anthropic_key) headers.set('X-Bot-Anthropic-Key', SAAS_CONFIG.anthropic_key);
+      // KV 팀 모드 우선 — slug 하나만 보내면 secrets 는 서버에서 조회
+      if (TEAM_SLUG) {
+        headers.set('X-Bot-Team-Slug', TEAM_SLUG);
+      } else if (SAAS_CONFIG) {
+        // SaaS 개인 모드 — localStorage 의 secrets 를 헤더로
+        if (SAAS_CONFIG.github_repo)   headers.set('X-Bot-GitHub-Repo',   SAAS_CONFIG.github_repo);
+        if (SAAS_CONFIG.github_token)  headers.set('X-Bot-GitHub-Token',  SAAS_CONFIG.github_token);
+        if (SAAS_CONFIG.anthropic_key) headers.set('X-Bot-Anthropic-Key', SAAS_CONFIG.anthropic_key);
+      }
       return fetch(url, { ...opts, headers });
     }
 
-    /* ────────── 컨피그 로드 — 팀 모드 or SaaS 모드 자동 감지 ──────────
-     *  1. 팀 모드 (레거시): 팀 정책 레포에 config.yml 이 있음 → 즉시 사용
-     *  2. SaaS 모드 (신규): config.yml 없음 → localStorage 의 사용자 설정 사용
-     *     ↳ 저장된 설정 없으면 첫 방문 wizard 자동 실행 */
+    /* ────────── 컨피그 로드 — 4가지 소스 우선순위 (Phase 1a D3) ──────────
+     *  1. 🆕 KV 팀 모드: URL ?team={slug} → GET /team/{slug} → 팀 공유 config
+     *  2. 팀 파일 모드 (레거시): 팀 정책 레포 config.yml
+     *  3. SaaS 개인 모드: localStorage 저장된 사용자 wizard 값
+     *  4. 첫 방문: wizard 자동 실행
+     *  1번은 secrets 을 브라우저로 안 보냄 (Worker 가 KV 에서 조회) → 팀 공유 안전 */
     const SAAS_CONFIG_KEY = 'blumnai-qa-saas-config-v1';
     let WORKER_URL = null;
     let CONFIG = null;
     let SAAS_MODE = false;
     let SAAS_CONFIG = null;
+    let TEAM_SLUG = null;  // 🆕 KV 팀 모드에서 활성 — X-Bot-Team-Slug 헤더로 전송
 
     async function getConfig() {
       if (CONFIG) return CONFIG;
-      // 팀 모드 시도 — 정책 레포 안 config.yml
+      const urlParams = new URLSearchParams(location.search);
+      // 🆕 1. KV 팀 모드 — URL ?team={slug} (최우선)
+      const teamParam = urlParams.get('team');
+      if (teamParam) {
+        SAAS_MODE = true;
+        // Worker URL 결정: ?worker= 있으면 그것, 없으면 location.origin
+        const workerBase = urlParams.get('worker') || location.origin;
+        try {
+          const res = await fetch(`${workerBase}/team/${encodeURIComponent(teamParam)}`);
+          if (res.ok) {
+            const teamData = await res.json();
+            TEAM_SLUG = teamParam;
+            WORKER_URL = workerBase;
+            // 팀 KV 데이터 → CONFIG 구조 변환 (secrets 는 마스킹돼 있어도 상관없음 · botFetch 는 slug 만 보냄)
+            CONFIG = kvTeamToConfig(teamData, workerBase);
+            return CONFIG;
+          }
+          if (res.status === 404) {
+            console.warn(`[bot] team "${teamParam}" 이 KV 에 없음 — 다른 소스로 fallback`);
+          } else {
+            console.error(`[bot] GET /team/${teamParam} → ${res.status}`);
+          }
+        } catch (err) {
+          console.error(`[bot] KV 팀 config 로드 실패:`, err);
+        }
+        // fallthrough — 다른 소스 시도
+      }
+      // 2. 팀 파일 모드 시도 — 정책 레포 안 config.yml
       const tryPaths = ['../../blumnAI-qa-bot.config.yml', './blumnAI-qa-bot.config.yml', '/blumnAI-qa-bot.config.yml'];
       for (const p of tryPaths) {
         try {
@@ -828,7 +865,7 @@
           }
         } catch (e) {}
       }
-      // SaaS 모드 fallback — localStorage 우선
+      // 3. SaaS 개인 모드 fallback — localStorage 우선
       SAAS_MODE = true;
       const stored = localStorage.getItem(SAAS_CONFIG_KEY);
       if (stored) {
@@ -838,8 +875,34 @@
           return CONFIG;
         } catch (_) { localStorage.removeItem(SAAS_CONFIG_KEY); }
       }
-      // 첫 방문 — wizard 필요
+      // 4. 첫 방문 — wizard 필요
       return null;
+    }
+
+    /** 🆕 KV 팀 config → 앱 내부 CONFIG 구조로 변환.
+     *  saasToTeamConfig 와 유사하지만 secrets 는 이미 서버측에 있어 전달 X. */
+    function kvTeamToConfig(team, workerBase) {
+      return {
+        ui: {
+          brand_name: team.team_name || '팀',
+          team_name: team.team_name || '',
+          planner_password: team.planner_password || '',
+        },
+        deployment: {
+          worker_url: workerBase,
+          github_repo: team.github_repo,
+          core_repo: 'blumn-plan/blumnAI-qa-bot',
+          team_slug: team.team_slug,   // 참조용
+        },
+        projects: (team.projects && team.projects.length ? team.projects : [{
+          id: 'default',
+          label: '기본 프로젝트',
+          policies_dir: team.policies_dir || '',
+          storyboards_dir: team.storyboards_dir || '',
+          code_repo: team.code_repo || '',
+        }]),
+        bot: { inject_doc_catalog: true, include_all_docs: false, claude_model: 'claude-sonnet-4-6' },
+      };
     }
 
     /** SaaS 사용자 입력 → 팀 모드 config 구조로 변환. downstream 은 동일 코드 재사용 */
@@ -949,7 +1012,8 @@
 
         const close = () => overlay.remove();
         modal.querySelector('#sw-cancel').addEventListener('click', () => { close(); resolve(null); });
-        modal.querySelector('#sw-save').addEventListener('click', () => {
+        modal.querySelector('#sw-save').addEventListener('click', async () => {
+          const saveBtn = modal.querySelector('#sw-save');
           const saas = {
             team_name: modal.querySelector('#sw-team').value.trim(),
             github_repo: modal.querySelector('#sw-repo').value.trim(),
@@ -969,16 +1033,153 @@
             alert('GitHub 레포는 "org/repo" 형식이어야 합니다');
             return;
           }
+
+          // 🆕 Phase 1a D4 — KV 저장 시도 → 팀원 공유 가능하게
+          // Worker URL 결정: URL 에 ?worker= 있으면 그것, 없으면 location.origin
+          const urlParams = new URLSearchParams(location.search);
+          const workerUrl = urlParams.get('worker') || location.origin;
+          const teamSlug = deriveTeamSlug(saas.github_repo);
+          saveBtn.disabled = true;
+          saveBtn.textContent = '⏳ 저장 중...';
+          let kvSaveResult = null;
+          if (teamSlug) {
+            kvSaveResult = await saveTeamToKV(workerUrl, teamSlug, saas);
+          }
+
+          // localStorage 항상 저장 (개인 캐시 · KV 성공 여부 무관)
           localStorage.setItem(SAAS_CONFIG_KEY, JSON.stringify(saas));
           SAAS_CONFIG = saas;
           CONFIG = saasToTeamConfig(saas);
           close();
+
+          // KV 저장 성공 시 팀 URL 안내 · 실패 시 개인 모드 안내
+          if (kvSaveResult && kvSaveResult.ok) {
+            const teamUrl = buildTeamUrl(teamSlug, workerUrl);
+            showTeamUrlModal(teamUrl, teamSlug);
+          } else if (kvSaveResult) {
+            console.warn('[bot] KV 저장 실패:', kvSaveResult.error);
+            // 조용히 실패 · 개인 모드로 진행 (마스터 세션은 정상 동작)
+          }
           resolve(CONFIG);
         });
       });
     }
 
     // (escapeHtml 은 하단 utility 로 이미 정의됨)
+
+    /* ────────── 🆕 Phase 1a D4 — 팀 KV 저장 helpers ──────────
+     *  wizard 저장 성공 시 KV 에 팀 config 저장 → 팀 URL 안내.
+     *  실패해도 localStorage 개인 모드는 정상 동작 (마스터 세션 보호). */
+
+    /** github_repo → team slug 파생. 소문자 · 알파벳/숫자/하이픈만.
+     *  예: "blumn/ad-team-policies" → "blumn-ad-team-policies"
+     *      "lunasoft-org/heythere_planer" → "lunasoft-org-heythere-planer" */
+    function deriveTeamSlug(githubRepo) {
+      if (!githubRepo) return null;
+      const slug = githubRepo
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')  // 슬래시·언더스코어·점 → 하이픈
+        .replace(/-+/g, '-')            // 연속 하이픈 압축
+        .replace(/^-|-$/g, '');         // 앞뒤 하이픈 제거
+      // Worker 의 isValidTeamSlug 와 동일 규칙 (3-64자, 시작/끝 하이픈 X)
+      if (!/^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/.test(slug)) return null;
+      return slug;
+    }
+
+    /** Worker 의 PUT /team/{slug} 호출. 성공 시 { ok:true }, 실패 시 { ok:false, error }. */
+    async function saveTeamToKV(workerUrl, slug, saas) {
+      // saas (wizard 값) → Worker 팀 스키마 변환
+      const teamPayload = {
+        team_name: saas.team_name,
+        github_repo: saas.github_repo,
+        policies_dir: saas.policies_dir || '',
+        storyboards_dir: saas.storyboards_dir || '',
+        code_repo: saas.code_repo || '',
+        master_pat: saas.github_token,        // wizard 의 github_token → 스키마 master_pat
+        anthropic_key: saas.anthropic_key,
+        planner_password: saas.planner_password || '',
+        projects: [{
+          id: 'default',
+          label: '기본 프로젝트',
+          policies_dir: saas.policies_dir || '',
+          storyboards_dir: saas.storyboards_dir || '',
+          code_repo: saas.code_repo || '',
+        }],
+      };
+      try {
+        const res = await fetch(`${workerUrl}/team/${encodeURIComponent(slug)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(teamPayload),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          return { ok: false, error: `HTTP ${res.status} · ${text.slice(0, 200)}` };
+        }
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err && err.message ? err.message : String(err) };
+      }
+    }
+
+    /** 팀 공유 URL 조립. workerUrl 이 location.origin 과 다르면 ?worker= 도 붙임. */
+    function buildTeamUrl(slug, workerUrl) {
+      const url = new URL(location.href);
+      // 기존 query params 정리 · team/worker 만 남김
+      url.search = '';
+      url.searchParams.set('team', slug);
+      if (workerUrl && workerUrl !== location.origin) {
+        url.searchParams.set('worker', workerUrl);
+      }
+      return url.toString();
+    }
+
+    /** 마스터에게 팀 URL 안내 모달. 복사 버튼 · 팀원 공유 유도. */
+    function showTeamUrlModal(teamUrl, slug) {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.75);z-index:10002;display:flex;align-items:center;justify-content:center;padding:20px';
+      const modal = document.createElement('div');
+      modal.style.cssText = 'background:white;border-radius:12px;max-width:540px;width:100%;padding:24px 28px;box-shadow:0 20px 60px rgba(0,0,0,0.3);font-family:-apple-system,BlinkMacSystemFont,sans-serif';
+      modal.innerHTML = `
+        <div style="text-align:center;margin-bottom:16px">
+          <div style="font-size:36px">🎉</div>
+          <h2 style="margin:8px 0 4px;font-size:18px;color:#1f2937">팀 저장 완료</h2>
+          <p style="margin:0;color:#6b7280;font-size:13px">아래 URL 을 팀원에게 공유하면 이 봇을 함께 쓸 수 있어요</p>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">팀 슬러그</label>
+          <div style="font-family:monospace;font-size:12px;padding:6px 10px;background:#f3f4f6;border-radius:4px;color:#374151">${escapeHtml(slug)}</div>
+        </div>
+        <div style="margin-bottom:16px">
+          <label style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">팀 공유 URL</label>
+          <input id="tu-url" readonly value="${escapeHtml(teamUrl)}" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:monospace;background:#f9fafb;color:#111827">
+        </div>
+        <div style="background:#eff6ff;border:1px solid #dbeafe;border-radius:6px;padding:12px;margin-bottom:16px;font-size:12px;color:#1e40af;line-height:1.6">
+          💡 팀원이 이 URL 로 접속하면 자동으로 이 팀 설정으로 봇 사용 가능.<br>
+          팀원마다 GitHub PAT·Anthropic Key 따로 발급 안 해도 됨.<br>
+          <b>이 창은 언제든 [⚙️ 설정] 버튼으로 재확인 가능.</b>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button id="tu-copy" type="button" style="padding:8px 16px;border:0;background:#6366f1;color:white;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600">📋 URL 복사</button>
+          <button id="tu-close" type="button" style="padding:8px 16px;border:1px solid #d1d5db;background:white;border-radius:6px;cursor:pointer;font-size:13px">닫기</button>
+        </div>
+      `;
+      overlay.appendChild(modal);
+      document.body.appendChild(overlay);
+      const copyBtn = modal.querySelector('#tu-copy');
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(teamUrl);
+          copyBtn.textContent = '✅ 복사됨';
+          copyBtn.style.background = '#059669';
+        } catch (e) {
+          modal.querySelector('#tu-url').select();
+          try { document.execCommand('copy'); copyBtn.textContent = '✅ 복사됨'; }
+          catch { alert('복사 실패 · URL 을 수동으로 선택해서 복사해주세요'); }
+        }
+      });
+      modal.querySelector('#tu-close').addEventListener('click', () => overlay.remove());
+    }
 
     /* ────────── 🎬 데모 모드 — Worker fetch 를 mock 응답으로 대체 ──────────
      *  ?demo=1 URL 쿼리로 활성. 팀 담당자·개발자가 wrangler dev 없이도
