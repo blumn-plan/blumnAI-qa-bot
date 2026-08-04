@@ -13,3 +13,9 @@ dist/
 # 로컬 dev 미리보기용 (repo root — 실제 팀 config 는 팀 레포에)
 /blumnAI-qa-bot.config.yml
 /version
+
+# Worker 로컬 wrangler config — 팀별 배포명·KV ID·GITHUB_REPO 등 포함.
+# 프로덕션 · staging 배포 세팅은 wrangler.toml.template 참고.
+# 파생 config (wrangler.saas-dev.toml 등) 도 함께 무시.
+bot/worker/wrangler*.toml
+!bot/worker/wrangler.toml.template
