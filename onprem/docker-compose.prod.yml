@@ -1,0 +1,78 @@
+# blumnAI QA Bot — 사내 서버 프로덕션 배포용
+#
+# 로컬 dev (docker-compose.yml) 와 차이:
+#   - build: 대신 image: 사용 (registry 에서 pull)
+#   - port 는 사내 방화벽·리버스프록시 정책에 맞춰 조정 필요
+#
+# 사용 (서버에서):
+#   IMAGE_TAG=v0.1.0 REGISTRY=registry.lunacode.dev/qa-bot \
+#     docker compose -f docker-compose.prod.yml up -d
+#
+# .env 파일은 서버측 /opt/blumnai-qa/.env 등에 배치 → docker compose 가 자동 로드.
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: blumnai-qa-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    # 사내망 안에선 외부 포트 노출 X · 다른 컨테이너만 접근
+    expose:
+      - "3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  backend:
+    # registry 에서 pull. IMAGE_TAG · REGISTRY 는 env 나 CLI 로 주입.
+    image: ${REGISTRY:-blumnai}/blumnai-qa-backend:${IMAGE_TAG:-latest}
+    container_name: blumnai-qa-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: "mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+    # 리버스프록시 뒤에서 서비스 · 필요 시만 host 포트 노출
+    expose:
+      - "3000"
+    command: sh -c "npx prisma migrate deploy && node dist/main"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    image: ${REGISTRY:-blumnai}/blumnai-qa-frontend:${IMAGE_TAG:-latest}
+    container_name: blumnai-qa-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+    # 사내 도메인 리버스프록시 (예: qa-bot.blumn.internal → 3001) 로 노출
+    ports:
+      - "${FRONTEND_HOST_PORT:-3001}:3001"
+
+volumes:
+  mysql-data:
+    driver: local
