@@ -1849,9 +1849,10 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
 
   // Retry 정책:
   //   · 429/5xx (transient upstream) 또는 네트워크 오류 → 3회 시도, 500·1200ms backoff
-  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → read 3회 / write 12회.
-  //     - Read (GET) 는 L2 edge cache(24h) fallback 이 있고 /qa 한 번에 10~40개 병렬 fetch
-  //       발생 → subrequest 한도(무료 50) 초과 위험 있어 3회 제한 · 실패 시 캐시 서빙.
+  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → read 6회 / write 12회.
+  //     - Read (GET): 이전에 3회였다가 콜드캐시+실패 시 프론트 500 폭탄 → 6회로 상향.
+  //       /list-decisions 은 dir listing 1회 + warmup (concurrency 4) → subrequest 최대 28 안전.
+  //       /qa 는 fetchTextFileCached 로 대부분 캐시 히트, GitHub 직접 호출은 소수 → 안전.
   //     - Write (PUT/POST/PATCH/DELETE) 는 캐시 fallback 불가 · 반드시 GitHub 까지 도달해야 함.
   //       기획자 [적용 처리] · [이미지 첨부] 같은 사용자 단발 액션이라 subrequest 폭발 위험 X.
   //       12회면 새 edge IP 추첨 확률이 whitelist 커버율 극한까지 감. 총 최대 대기 ~25s.
@@ -1861,11 +1862,11 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
   //   · 나머지 오류 (401/403 non-IP/404 등) → 즉시 반환 (재시도해도 결과 동일).
   const isWrite = !isRetryableMethod(init);
   const MAX_REGULAR = 3;
-  const MAX_IP_ALLOW = isWrite ? 12 : 3;
+  const MAX_IP_ALLOW = isWrite ? 12 : 6;
   const regularBackoff = [500, 1200];
   const ipAllowBackoffBase = isWrite
     ? [200, 300, 500, 700, 1000, 1200, 1500, 1800, 2000, 2500, 3000, 3500]
-    : [300, 800, 1500];
+    : [300, 500, 800, 1200, 1800, 2500];
   let lastRes: Response | null = null;
   let lastErr: unknown = null;
   let attempt = 0;
