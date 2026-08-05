@@ -198,6 +198,19 @@ function cacheKey(env: Env, path: string): string {
  *        Worker 재시작 · 서로 다른 리전 인스턴스 · IP allow list 실패에도 관대.
  */
 const EDGE_CACHE_TTL_SEC = 24 * 60 * 60;
+// qa/decisions/ · qa/feedback/ 는 mutable → L2 짧게 (60s, IP allow list fallback 용도만).
+// Cache API 가 데이터센터별(per-colo)이라 stale 원복 버그 방지 위해:
+//   - L2 write: OK (fallback 용 저장)
+//   - L2 primary read: SKIP (peekCachedTextFile 에서 mutable 은 L1 만 확인)
+//   - L2 fallback read: OK (GitHub 실패 시에만) → IP allow list 회피 유지
+// TTL 60s + fallback only 조합 → stale 최대 60초 (그것도 GitHub 실패 시에만).
+const EDGE_CACHE_TTL_MUTABLE_SEC = 60;
+function isMutablePath(path: string): boolean {
+  return path.startsWith('qa/decisions') || path.startsWith('qa/feedback');
+}
+function edgeCacheTtlFor(path: string): number {
+  return isMutablePath(path) ? EDGE_CACHE_TTL_MUTABLE_SEC : EDGE_CACHE_TTL_SEC;
+}
 
 function edgeCacheReqKey(env: Env, kind: 'file' | 'dir', path: string): Request {
   // Cache API 는 Request 를 key 로 사용. URL 은 임의 도메인이어도 인스턴스 간 shared.
@@ -213,10 +226,10 @@ async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): P
   try {
     const data = await fetchTextFile(env, path);
     textCache.set(key, { at: Date.now(), data });
-    // L2 edge cache put — 인스턴스 간 shared, 24h TTL
+    // L2 write — mutable 은 짧은 TTL (60s), immutable 은 24h. fallback 용.
     try {
       await caches.default.put(edgeKey, new Response(data, {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
       }));
     } catch (_) { /* cache put 실패는 무시 */ }
     return data;
@@ -226,13 +239,13 @@ async function fetchTextFileCached(env: Env, path: string, ttl = TEXT_TTL_MS): P
       console.warn(`[qa-bot] fetchTextFile ${path} 실패 → L1 stale (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
       return c.data;
     }
-    // L2 edge cache fallback — 이전에 어떤 인스턴스라도 성공했으면 유효
+    // L2 edge cache fallback — mutable/immutable 모두. IP allow list 회피 유지.
     try {
       const cached = await caches.default.match(edgeKey);
       if (cached) {
         const data = await cached.text();
         console.warn(`[qa-bot] fetchTextFile ${path} 실패 → L2 edge cache hit`);
-        textCache.set(key, { at: Date.now(), data }); // L1 prime
+        textCache.set(key, { at: Date.now(), data });
         return data;
       }
     } catch (_) { /* cache match 실패 시 정상 throw 로 진행 */ }
@@ -247,6 +260,8 @@ async function peekCachedTextFile(env: Env, path: string, ttl = TEXT_TTL_MS): Pr
   const key = cacheKey(env, path);
   const c = textCache.get(key);
   if (c && Date.now() - c.at < ttl) return c.data;
+  // mutable path (qa/decisions·qa/feedback) 는 L2 peek 스킵 — stale 위험
+  if (isMutablePath(path)) return null;
   try {
     const edgeKey = edgeCacheReqKey(env, 'file', path);
     const cached = await caches.default.match(edgeKey);
@@ -285,9 +300,10 @@ async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS):
   try {
     const data = await fetchDirListing(env, path);
     listCache.set(key, { at: Date.now(), data });
+    // L2 write — mutable 은 짧은 TTL (60s), immutable 은 24h. fallback 용.
     try {
       await caches.default.put(edgeKey, new Response(JSON.stringify(data), {
-        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${EDGE_CACHE_TTL_SEC}` },
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
       }));
     } catch (_) { /* ignore */ }
     return data;
@@ -296,6 +312,7 @@ async function fetchDirListingCached(env: Env, path: string, ttl = LIST_TTL_MS):
       console.warn(`[qa-bot] fetchDirListing ${path} 실패 → L1 stale (${Math.round((Date.now() - c.at) / 1000)}s old): ${err instanceof Error ? err.message : String(err)}`);
       return c.data;
     }
+    // L2 edge cache fallback — mutable/immutable 모두. IP allow list 회피 유지.
     try {
       const cached = await caches.default.match(edgeKey);
       if (cached) {
@@ -316,6 +333,47 @@ function invalidateCache(env: Env, ...paths: string[]) {
     textCache.delete(k);
     listCache.delete(k);
   }
+}
+
+/** L1 + L2 (edge cache) 둘 다 무효화. write (PUT/DELETE) 후 반드시 호출.
+ *  ⚠️ Cloudflare Cache API 는 데이터센터별(per-colo) → delete() 는 이 colo 만
+ *  영향. 다른 colo 는 여전히 stale 서빙 가능. 그래서 qa/decisions·qa/feedback
+ *  은 EDGE_CACHE_TTL_MUTABLE_SEC (60s) 로 짧게 두어 자연 만료 보장 (병행 정책). */
+async function invalidateCacheDeep(env: Env, ctx: ExecutionContext | undefined, ...paths: string[]) {
+  invalidateCache(env, ...paths);
+  const purge = async () => {
+    for (const p of paths) {
+      try { await caches.default.delete(edgeCacheReqKey(env, 'file', p)); } catch (_) {}
+      try { await caches.default.delete(edgeCacheReqKey(env, 'dir', p)); } catch (_) {}
+    }
+  };
+  if (ctx) {
+    ctx.waitUntil(purge());
+  } else {
+    await purge();
+  }
+}
+
+/** Write-through 캐시 갱신 — write (PUT) 후 L1 을 새 내용으로 즉시 덮어씀.
+ *  다른 인스턴스·colo 는 각자 L1 miss → GitHub 직행 → 항상 최신값 (peek 이 L2 mutable 스킵).
+ *  L2 는 fallback 용으로 새 내용 put (다음 GitHub 실패 시 fallback 이 fresh).
+ *  parent dir listing L1 도 지워서 리스트가 다시 fresh listing 가져오게 함. */
+async function writeThroughCache(env: Env, ctx: ExecutionContext | undefined, path: string, newContent: string, parentDir?: string) {
+  const key = cacheKey(env, path);
+  textCache.set(key, { at: Date.now(), data: newContent });
+  if (parentDir) {
+    listCache.delete(cacheKey(env, parentDir));
+  }
+  // L2 은 fallback 용도만 → mutable 은 짧은 TTL 로 최신값 유지.
+  const put = async () => {
+    try {
+      await caches.default.put(edgeCacheReqKey(env, 'file', path), new Response(newContent, {
+        headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': `max-age=${edgeCacheTtlFor(path)}` },
+      }));
+    } catch (_) {}
+  };
+  if (ctx) ctx.waitUntil(put());
+  else await put();
 }
 
 async function loadTeamConfig(env: Env): Promise<TeamConfig | null> {
@@ -499,11 +557,11 @@ export default {
         }
         case '/update-decision-status':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          result = await updateDecisionStatus(env, await req.json());
+          result = await updateDecisionStatus(env, await req.json(), ctx);
           break;
         case '/delete-decision':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
-          result = await deleteDecision(env, await req.json());
+          result = await deleteDecision(env, await req.json(), ctx);
           break;
         case '/feedback':
           if (req.method !== 'POST') return jsonResponse({ error: 'POST only' }, 405, corsHeaders);
@@ -1791,9 +1849,10 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
 
   // Retry 정책:
   //   · 429/5xx (transient upstream) 또는 네트워크 오류 → 3회 시도, 500·1200ms backoff
-  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → read 3회 / write 12회.
-  //     - Read (GET) 는 L2 edge cache(24h) fallback 이 있고 /qa 한 번에 10~40개 병렬 fetch
-  //       발생 → subrequest 한도(무료 50) 초과 위험 있어 3회 제한 · 실패 시 캐시 서빙.
+  //   · 403 IP allow list (org 가 whitelist 로 CF Edge 일부 IP 만 허용) → read 6회 / write 12회.
+  //     - Read (GET): 이전에 3회였다가 콜드캐시+실패 시 프론트 500 폭탄 → 6회로 상향.
+  //       /list-decisions 은 dir listing 1회 + warmup (concurrency 4) → subrequest 최대 28 안전.
+  //       /qa 는 fetchTextFileCached 로 대부분 캐시 히트, GitHub 직접 호출은 소수 → 안전.
   //     - Write (PUT/POST/PATCH/DELETE) 는 캐시 fallback 불가 · 반드시 GitHub 까지 도달해야 함.
   //       기획자 [적용 처리] · [이미지 첨부] 같은 사용자 단발 액션이라 subrequest 폭발 위험 X.
   //       12회면 새 edge IP 추첨 확률이 whitelist 커버율 극한까지 감. 총 최대 대기 ~25s.
@@ -1803,11 +1862,11 @@ async function ghFetch(env: Env, path: string, init: RequestInit = {}): Promise<
   //   · 나머지 오류 (401/403 non-IP/404 등) → 즉시 반환 (재시도해도 결과 동일).
   const isWrite = !isRetryableMethod(init);
   const MAX_REGULAR = 3;
-  const MAX_IP_ALLOW = isWrite ? 12 : 3;
+  const MAX_IP_ALLOW = isWrite ? 12 : 6;
   const regularBackoff = [500, 1200];
   const ipAllowBackoffBase = isWrite
     ? [200, 300, 500, 700, 1000, 1200, 1500, 1800, 2000, 2500, 3000, 3500]
-    : [300, 800, 1500];
+    : [300, 500, 800, 1200, 1800, 2500];
   let lastRes: Response | null = null;
   let lastErr: unknown = null;
   let attempt = 0;
@@ -2395,7 +2454,7 @@ async function runExternalSync(env: Env, path: string, md: string): Promise<Exte
   return result;
 }
 
-async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): Promise<{ path: string; status: string; statusText: string; committed: boolean; externalSync?: ExternalSyncResult }> {
+async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody, ctx?: ExecutionContext): Promise<{ path: string; status: string; statusText: string; committed: boolean; externalSync?: ExternalSyncResult }> {
   if (!body.path || !/^qa\/decisions\/[^/]+\.md$/.test(body.path)) {
     throw new Error('valid qa/decisions/ path required');
   }
@@ -2451,6 +2510,12 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): P
     throw new Error(`GitHub update ${putRes.status}: ${text.slice(0, 500)}`);
   }
 
+  // 🔁 Write-through — 새 내용을 L1/L2 캐시에 즉시 덮어씀 (같은 colo 즉시 반영).
+  //   다른 colo 는 EDGE_CACHE_TTL_MUTABLE_SEC (60s) 자연 만료 → 최악 60초.
+  //   frontend 는 응답의 status 를 로컬 state 에 즉시 반영하므로 폴링 sync 되기 전에도
+  //   버튼·배지 상태는 정확. dir listing 은 무효화 (파일 목록은 안 바뀌므로 재 fetch OK).
+  await writeThroughCache(env, ctx, body.path, replaced, 'qa/decisions');
+
   // 🎫 applied 커밋 성공 → Jira · Teams fire-and-forget 동기 시도
   // (실패해도 적용완료 자체는 이미 커밋됐으므로 사용자 흐름 안 막음)
   let externalSync: ExternalSyncResult | undefined;
@@ -2468,7 +2533,7 @@ async function updateDecisionStatus(env: Env, body: UpdateDecisionStatusBody): P
 
 /* ────────── /delete-decision ────────── */
 
-async function deleteDecision(env: Env, body: { path: string }): Promise<{ path: string; deleted: boolean; committed: boolean }> {
+async function deleteDecision(env: Env, body: { path: string }, ctx?: ExecutionContext): Promise<{ path: string; deleted: boolean; committed: boolean }> {
   if (!body.path || !/^qa\/decisions\/[^/]+\.md$/.test(body.path)) {
     throw new Error('valid qa/decisions/ path required');
   }
@@ -2490,6 +2555,7 @@ async function deleteDecision(env: Env, body: { path: string }): Promise<{ path:
     const text = await delRes.text();
     throw new Error(`GitHub delete ${delRes.status}: ${text.slice(0, 500)}`);
   }
+  await invalidateCacheDeep(env, ctx, body.path, 'qa/decisions');
   return { path: body.path, deleted: true, committed: true };
 }
 
