@@ -5,6 +5,9 @@ import { PrismaService } from './prisma/prisma.service';
 import { TeamModule } from './team/team.module';
 import { DocsModule } from './docs/docs.module';
 import { GitHubModule } from './github/github.module';
+import { AnthropicModule } from './anthropic/anthropic.module';
+import { QaModule } from './qa/qa.module';
+import { DecisionsModule } from './decisions/decisions.module';
 
 @Module({
   imports: [
@@ -13,8 +16,11 @@ import { GitHubModule } from './github/github.module';
       envFilePath: ['.env.local', '.env'],
     }),
     GitHubModule,
+    AnthropicModule,
     TeamModule,
     DocsModule,
+    QaModule,
+    DecisionsModule,
   ],
   controllers: [HealthController],
   providers: [PrismaService],
