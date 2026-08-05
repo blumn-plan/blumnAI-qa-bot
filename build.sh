@@ -26,14 +26,14 @@ echo "→ backend"
 docker build \
   -t "${REGISTRY}/blumnai-qa-backend:${TAG}" \
   -t "${REGISTRY}/blumnai-qa-backend:latest" \
-  ./backend
+  ./src/backend
 
 # 프론트
 echo "→ frontend"
 docker build \
   -t "${REGISTRY}/blumnai-qa-frontend:${TAG}" \
   -t "${REGISTRY}/blumnai-qa-frontend:latest" \
-  ./frontend
+  ./src/frontend
 
 echo ""
 echo "✅ 빌드 완료 · 이미지 목록:"

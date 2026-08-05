@@ -25,7 +25,7 @@
 
 1. **로컬에서 이미지 빌드**
    ```bash
-   cd onprem
+   # 레포 루트에서
    ./build.sh v0.1.0   # tag 지정
    ```
 2. **이미지를 사내 registry 로 push** ⚠️ 확인: registry URL 필요
@@ -65,7 +65,7 @@ registry 접근 안 될 때 fallback.
 
 1. **로컬 빌드 + tar 저장**
    ```bash
-   cd onprem
+   # 레포 루트에서
    ./build.sh v0.1.0
    docker save blumnai/blumnai-qa-backend:v0.1.0 | gzip > backend-v0.1.0.tar.gz
    docker save blumnai/blumnai-qa-frontend:v0.1.0 | gzip > frontend-v0.1.0.tar.gz
@@ -93,7 +93,7 @@ registry 접근 안 될 때 fallback.
 
 ## 환경변수 사전 채우기 (배포 시 반드시)
 
-`onprem/.env` 파일에 다음 값 실제로 채워야 함:
+레포 루트의 `.env` 파일에 다음 값 실제로 채워야 함:
 
 ```
 MYSQL_ROOT_PASSWORD=       # 강력 랜덤 (32자+)
