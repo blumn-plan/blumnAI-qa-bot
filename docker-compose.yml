@@ -1,11 +1,12 @@
 # blumnAI QA Bot — 사내 배포 (형태 Y · Phase Y1a)
 #
-# 3 서비스: mysql + backend (NestJS) + frontend (Next.js)
+# 사용자 접속 URL은 http://localhost:3001 하나만.
+# 백엔드는 프론트 Next.js rewrites 로 /api 프록시 → 브라우저는 3001 로만 통신.
+# (백엔드 3000 은 디버깅용 · 브라우저 접속 X)
+#
 # 실행: docker compose up -d --build
 # 로그: docker compose logs -f
 # 정지: docker compose down (볼륨은 남김) / down -v (완전 삭제)
-#
-# 환경변수는 .env 파일에서 읽음. .env.example 참고.
 
 services:
   mysql:
@@ -41,13 +42,14 @@ services:
       NODE_ENV: production
       PORT: 3000
       DATABASE_URL: "mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}"
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001}
-      # Phase Y1b 에서 사용 예정 (지금은 옵션)
+      # 프록시 방식이라 브라우저는 직접 백엔드 호출 X.
+      # frontend 컨테이너 이름만 허용하면 되지만, 개발 편의상 localhost:3001 도 허용.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://frontend:3001}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    # 백엔드 외부 노출 (디버깅용 · 브라우저는 이 포트 안 씀)
     ports:
       - "${BACKEND_PORT:-3000}:3000"
-    # 시작 시 Prisma 마이그레이션 자동 적용 (프로덕션은 deploy · dev 는 별도 실행)
     command: sh -c "npx prisma migrate deploy && node dist/main"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
@@ -68,8 +70,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
-      # 프론트 → 백엔드 API base URL (브라우저 관점 · 사용자 접근 URL 기준)
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:3000/api}
+      # Next.js rewrites 로 /api → backend 컨테이너 프록시 (Docker 네트워크 내부)
+      BACKEND_INTERNAL_URL: http://backend:3000
+      # 브라우저측 API base URL은 상대 경로 (/api) — 같은 origin 이라 CORS 없음
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+    # ⭐ 사용자 접속 URL — 이 포트 하나만 사용
     ports:
       - "${FRONTEND_PORT:-3001}:3001"
 

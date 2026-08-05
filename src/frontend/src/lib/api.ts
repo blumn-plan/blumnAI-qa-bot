@@ -3,7 +3,9 @@
  * NEXT_PUBLIC_API_BASE_URL 로 base URL 주입 (기본 http://localhost:3000/api).
  */
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:3000/api";
+// 기본값 "/api" — 같은 origin (3001) 에서 Next.js rewrites 로 백엔드 프록시.
+// 다른 origin 이 필요하면 NEXT_PUBLIC_API_BASE_URL 로 override.
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 export interface TeamPayload {
   team_slug?: string;
@@ -138,6 +140,26 @@ export function listDecisions(team: string, limit = 50) {
   return req<{ items: Array<{ path: string; name: string; sha?: string }>; total: number }>(
     `/list-decisions?team=${encodeURIComponent(team)}&limit=${limit}`,
   );
+}
+
+export function listFeedbacks(team: string, limit = 50) {
+  return req<{ items: Array<{ path: string; name: string; sha?: string }>; total: number }>(
+    `/list-feedbacks?team=${encodeURIComponent(team)}&limit=${limit}`,
+  );
+}
+
+export function deleteDecision(team: string, path: string) {
+  return req<{ ok: true; deleted: string }>(`/delete-decision?team=${encodeURIComponent(team)}`, {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+}
+
+export function deleteFeedback(team: string, path: string) {
+  return req<{ ok: true; deleted: string }>(`/delete-feedback?team=${encodeURIComponent(team)}`, {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
 }
 
 // ─── QA (streaming NDJSON) ──────────────────────────

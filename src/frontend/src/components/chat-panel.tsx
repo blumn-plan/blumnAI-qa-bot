@@ -13,6 +13,12 @@ interface ChatMessage {
   streaming?: boolean;
   error?: string;
   attachments?: Array<{ mediaType: string; data: string }>;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 }
 
 interface ChatPanelProps {
@@ -73,6 +79,13 @@ export function ChatPanel({ teamSlug, activeDoc }: ChatPanelProps) {
               const next = [...prev];
               const last = next[next.length - 1];
               if (last?.role === "assistant") last.content += evt.content;
+              return next;
+            });
+          } else if (evt.type === "usage" && evt.usage) {
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last?.role === "assistant") last.usage = evt.usage as ChatMessage["usage"];
               return next;
             });
           } else if (evt.type === "done") {
@@ -233,6 +246,18 @@ export function ChatPanel({ teamSlug, activeDoc }: ChatPanelProps) {
             {msg.error && (
               <div className="text-xs text-red-600 mt-2 border-t pt-2">
                 ⚠️ 에러: {msg.error}
+              </div>
+            )}
+            {msg.usage && (
+              <div className="text-[10px] text-slate-400 mt-2 pt-2 border-t flex gap-2 flex-wrap font-mono">
+                <span>in: {msg.usage.input_tokens ?? 0}</span>
+                <span>out: {msg.usage.output_tokens ?? 0}</span>
+                {(msg.usage.cache_read_input_tokens ?? 0) > 0 && (
+                  <span className="text-green-600">cache↺ {msg.usage.cache_read_input_tokens}</span>
+                )}
+                {(msg.usage.cache_creation_input_tokens ?? 0) > 0 && (
+                  <span className="text-amber-600">cache+ {msg.usage.cache_creation_input_tokens}</span>
+                )}
               </div>
             )}
           </div>

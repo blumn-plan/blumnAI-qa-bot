@@ -68,8 +68,12 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
-    # 사내 도메인 리버스프록시 (예: qa-bot.blumn.internal → 3001) 로 노출
+      # Next.js rewrites 로 /api → backend 프록시 (Docker 네트워크)
+      BACKEND_INTERNAL_URL: http://backend:3000
+      # 브라우저는 상대 /api 사용 (같은 origin)
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+    # ⭐ 사내 도메인 리버스프록시 (예: qa-bot.blumn.internal → 3001) 로 노출
+    # 사용자는 이 포트/도메인 하나만 사용
     ports:
       - "${FRONTEND_HOST_PORT:-3001}:3001"
 

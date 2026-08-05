@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TeamWizard } from "@/components/team-wizard";
@@ -70,6 +71,13 @@ export default function Home() {
             "팀 미설정"
           )}
         </div>
+        {team && (
+          <Link href={`/planner?team=${encodeURIComponent(team.team_slug)}`}>
+            <Button size="sm" variant="outline" className="bg-transparent text-white border-slate-600 hover:bg-slate-800">
+              🎯 기획자 →
+            </Button>
+          </Link>
+        )}
         <Button
           size="sm"
           variant="outline"
