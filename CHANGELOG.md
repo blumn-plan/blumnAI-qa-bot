@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 🩹 **`buildAllDocsBundle` · `fetchRecentFeedback` 무제한 병렬 fetch → CONCURRENCY=4 배치** (`bot/worker/src/index.ts`) — 🌐 종합 모드 (`useAllDocs`) `/qa` 에서 `Promise.all(policies.map(fetch))` 로 정책 문서 N 개를 한 방에 병렬 GitHub fetch 하던 게 원인. 콜드 캐시에서 N=10~30 + 각 fetch 가 IP allow list 재시도 최대 6회면 subrequest 총량이 워커 한도 (무료 50 / 유료 1000) 를 넘겨 `Too many subrequests by single Worker invocation` 500 발생 (제이나미봇 답변 실패로 재현). fix: (1) `CONCURRENCY = 4` 배치 순회로 워커 한도 안쪽 유지, (2) 각 배치 실행 전 `peekCachedTextFile` 로 캐시 hit 은 subrequest 0회로 처리 (fetch 대상은 cold miss 로만 축소), (3) 이미 누적 크기가 `MAX_BUNDLE_CHARS(200K)` 를 넘겼으면 이후 배치는 아예 실행하지 않고 skip 표시 — subrequest 낭비 방지. `fetchRecentFeedback` 도 최대 10개를 병렬 fetch 하던 것을 같은 CONCURRENCY=4 배치로 완화. 실패 항목 표시 UX (missing 안내) 는 그대로 유지.
+
 ## v0.3.6 — 2026-08-03
 
 **Highlights** — 🎯 기획자 모드 처리 UX 개선 (상태별 액션 스위칭 · 메모 수정 · 현재 상태 배지) · 🩹 IP allow list retry 축소로 subrequest 한도 초과 방지.

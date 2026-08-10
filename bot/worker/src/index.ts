@@ -1356,37 +1356,96 @@ async function buildDocCatalog(env: Env, project: string): Promise<string> {
  *  ⚠ 개별 문서 fetch 가 IP allow list 403 등으로 실패해도 그 사실을 번들에 명시.
  *    기존엔 `.catch(() => '')` 로 조용히 skip → Claude 는 그 문서가 아예 없다고
  *    오해해 "번들에 포함되지 않음 · 직접 선택 필요" 답변. 이제 존재는 알리되
- *    본문이 없음을 표시해서 정확한 안내 유도. */
+ *    본문이 없음을 표시해서 정확한 안내 유도.
+ *
+ *  ⚠ Subrequest 예산 관리 (Worker 무료 50 / 유료 1000):
+ *    이전엔 `Promise.all(policies.map(fetch))` 로 정책 문서 N 개를 한 방에 병렬 fetch
+ *    했음. 콜드 캐시에서 N=20~30 + 각 fetch 가 IP allow list 재시도 최대 6회면
+ *    subrequest 폭발 → `Too many subrequests by single Worker invocation` 500.
+ *    fix: (1) CONCURRENCY=4 배치, (2) 이미 캐시된 것만 먼저 골라 원격 fetch 대상
+ *    최소화, (3) 번들 상한 초과 감지 시 이후 배치는 건너뛰어 subrequest 낭비 방지. */
 async function buildAllDocsBundle(env: Env, project: string, focusedDocPath?: string): Promise<string> {
   const { docs } = await listDocs(env, project);
   const policies = docs.filter((d) => d.kind === 'policy' && d.path !== focusedDocPath);
   if (policies.length === 0) return '';
-  // 병렬 fetch (N 개 문서 순차 fetch 시 IP-allow-list 재시도 backoff 이 N 배로 누적됨)
-  const fetched = await Promise.all(
-    policies.map(async (d) => {
-      try {
-        return { path: d.path, raw: await fetchTextFileCached(env, d.path), ok: true as const };
-      } catch (e) {
-        return { path: d.path, raw: '', ok: false as const, err: e instanceof Error ? e.message : String(e) };
+
+  const MAX_BUNDLE_CHARS = 200_000; // ~50K token
+  const CONCURRENCY = 4;
+
+  // 캐시된 것 먼저 (원격 subrequest 0회) → cold miss 는 배치 fetch.
+  // policies 원래 순서를 보존해야 하므로 결과는 index 기반으로 담고 나중에 순회.
+  type FetchResult = { path: string } & (
+    | { ok: true; raw: string }
+    | { ok: false; err: string }
+  );
+  const results: (FetchResult | null)[] = new Array(policies.length).fill(null);
+
+  // 1) 캐시 peek — hit 은 즉시 채움. miss 는 cold 목록으로.
+  const coldIdx: number[] = [];
+  await Promise.all(
+    policies.map(async (d, i) => {
+      const cached = await peekCachedTextFile(env, d.path).catch(() => null);
+      if (cached !== null) {
+        results[i] = { path: d.path, ok: true, raw: cached };
+      } else {
+        coldIdx.push(i);
       }
     }),
   );
-  const MAX_BUNDLE_CHARS = 200_000; // ~50K token
+
+  // 2) cold miss 를 CONCURRENCY 배치로 fetch. 매 배치 후 누적 크기를 재계산해
+  //    MAX_BUNDLE_CHARS 초과가 확정되면 이후 배치는 skip (subrequest 절약).
+  //    skip 된 문서는 missing 이 아니라 별도 "번들 상한 초과 생략" 으로 표시.
+  const skipped: string[] = [];
+  const isOverBudget = () => {
+    let sum = 0;
+    for (const r of results) {
+      if (r?.ok) {
+        sum += r.raw.length + r.path.length + 10;
+        if (sum > MAX_BUNDLE_CHARS) return true;
+      }
+    }
+    return false;
+  };
+  for (let i = 0; i < coldIdx.length; i += CONCURRENCY) {
+    if (isOverBudget()) {
+      for (let j = i; j < coldIdx.length; j++) skipped.push(policies[coldIdx[j]].path);
+      break;
+    }
+    const batch = coldIdx.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (idx) => {
+        const d = policies[idx];
+        try {
+          results[idx] = { path: d.path, ok: true, raw: await fetchTextFileCached(env, d.path) };
+        } catch (e) {
+          results[idx] = { path: d.path, ok: false, err: e instanceof Error ? e.message : String(e) };
+        }
+      }),
+    );
+  }
+
+  // 3) 원래 policies 순서대로 번들 조립 + 상한 재확인 (엄격).
   const chunks: string[] = [];
   const missing: Array<{ path: string; err: string }> = [];
   let total = 0;
-  for (const r of fetched) {
+  let truncated = false;
+  for (const r of results) {
+    if (!r) continue; // 상한 초과로 fetch 도 하지 않은 항목 → skipped 에 이미 등록됨
     if (!r.ok) {
       missing.push({ path: r.path, err: r.err });
       continue;
     }
     const block = `\n=== ${r.path} ===\n${r.raw}`;
     if (total + block.length > MAX_BUNDLE_CHARS) {
-      chunks.push(`\n[⚠️ 전체 문서 번들 크기 상한 (${MAX_BUNDLE_CHARS}자) 초과 — 이후 문서 생략]`);
+      truncated = true;
       break;
     }
     chunks.push(block);
     total += block.length;
+  }
+  if (truncated || skipped.length > 0) {
+    chunks.push(`\n[⚠️ 전체 문서 번들 크기 상한 (${MAX_BUNDLE_CHARS}자) 초과 — 이후 문서 생략]`);
   }
   if (missing.length > 0) {
     // Claude 가 "이 문서가 없다" 라고 오해하지 않도록 존재+실패 사실을 명시.
@@ -1646,9 +1705,17 @@ async function fetchRecentFeedback(env: Env): Promise<string> {
     .sort((a, b) => b.name.localeCompare(a.name))
     .slice(0, 10);
   if (mdFiles.length === 0) return '';
-  const contents = await Promise.all(
-    mdFiles.map(async (f) => `\n=== ${f.path} ===\n${await fetchTextFileCached(env, f.path)}`),
-  );
+  // CONCURRENCY=4 배치 (buildAllDocsBundle 와 동일 이유 — subrequest 예산 절약).
+  // 실패한 항목은 조용히 skip (최근 피드백은 참고용이라 결측이 답변 품질에 치명적 X).
+  const CONCURRENCY = 4;
+  const contents: string[] = [];
+  for (let i = 0; i < mdFiles.length; i += CONCURRENCY) {
+    const batch = mdFiles.slice(i, i + CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map(async (f) => `\n=== ${f.path} ===\n${await fetchTextFileCached(env, f.path)}`),
+    );
+    for (const r of settled) if (r.status === 'fulfilled') contents.push(r.value);
+  }
   return contents.join('\n');
 }
 
