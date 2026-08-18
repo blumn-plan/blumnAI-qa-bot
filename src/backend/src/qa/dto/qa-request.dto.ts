@@ -18,6 +18,10 @@ export class QaRequestDto {
   @IsOptional() @IsString()
   docPath?: string;
 
+  /** 명시적 다중 선택 · 비어있지 않으면 docPath 무시하고 이 리스트 전체 로드해서 답변 근거로 사용 */
+  @IsOptional() @IsArray() @IsString({ each: true })
+  docPaths?: string[];
+
   @IsOptional() @IsString()
   project?: string;
 

@@ -155,6 +155,27 @@ export class TeamService {
     return { ok: true, deleted: slug };
   }
 
+  /** 기획자 모드 비번 검증. plainText 비교 (Y1a MVP · 사내망).
+   *  응답 shape:
+   *  - { ok: true } → 통과
+   *  - { ok: false, reason: 'no-password' } → 팀에 planner_password 미설정 → 기획자 모드 비활성화
+   *  - { ok: false, reason: 'wrong' } → 비번 틀림 */
+  async verifyPlannerPassword(
+    slug: string,
+    password: string,
+  ): Promise<{ ok: true } | { ok: false; reason: 'no-password' | 'wrong' }> {
+    const team = await this.prisma.team.findUnique({
+      where: { slug },
+      select: { plannerPassword: true },
+    });
+    if (!team) throw new NotFoundException({ error: 'Team not found', slug });
+    if (!team.plannerPassword || team.plannerPassword.trim() === '') {
+      return { ok: false, reason: 'no-password' };
+    }
+    if (team.plannerPassword.trim() === password.trim()) return { ok: true };
+    return { ok: false, reason: 'wrong' };
+  }
+
   async listSlugs(limit = 100): Promise<{ teamCount: number; teamSlugs: string[] }> {
     const teams = await this.prisma.team.findMany({
       select: { slug: true },

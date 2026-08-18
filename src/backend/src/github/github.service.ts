@@ -135,6 +135,47 @@ export class GitHubService {
     };
   }
 
+  /** 바이너리 파일 저장. writeFile 은 utf-8 → base64 로 재인코딩하므로 이미지에는 부적합.
+   *  이미 base64 로 인코딩된 payload 를 그대로 GitHub 에 PUT. 기존 파일 sha 자동 조회. */
+  async writeFileRawBase64(
+    ctx: GitHubContext,
+    path: string,
+    base64Content: string,
+    message: string,
+    branch?: string,
+  ): Promise<{ sha: string; commitSha: string; htmlUrl: string }> {
+    let existingSha: string | undefined;
+    const head = await this.apiFetch(ctx, `/repos/${ctx.repo}/contents/${this.encodePath(path)}${branch ? `?ref=${branch}` : ''}`);
+    if (head.ok) {
+      const info = (await head.json()) as { sha?: string };
+      existingSha = info.sha;
+    }
+    const body: Record<string, unknown> = { message, content: base64Content };
+    if (branch) body.branch = branch;
+    if (existingSha) body.sha = existingSha;
+
+    const res = await this.apiFetch(ctx, `/repos/${ctx.repo}/contents/${this.encodePath(path)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new InternalServerErrorException({ error: await this.errorMessage(res, `write file ${path}`) });
+    const result = (await res.json()) as {
+      content: { sha: string; html_url: string };
+      commit: { sha: string; html_url: string };
+    };
+    return {
+      sha: result.content.sha,
+      commitSha: result.commit.sha,
+      htmlUrl: result.content.html_url,
+    };
+  }
+
+  /** 파일 존재 여부. getFile 이 throw 하면 false. */
+  async fileExists(ctx: GitHubContext, path: string): Promise<boolean> {
+    const res = await this.apiFetch(ctx, `/repos/${ctx.repo}/contents/${this.encodePath(path)}`);
+    return res.ok;
+  }
+
   /** 파일 삭제 (DELETE /repos/.../contents/{path}). sha 필수. */
   async deleteFile(ctx: GitHubContext, path: string, message: string, branch?: string): Promise<void> {
     const head = await this.apiFetch(ctx, `/repos/${ctx.repo}/contents/${this.encodePath(path)}${branch ? `?ref=${branch}` : ''}`);

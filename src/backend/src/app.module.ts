@@ -8,6 +8,8 @@ import { GitHubModule } from './github/github.module';
 import { AnthropicModule } from './anthropic/anthropic.module';
 import { QaModule } from './qa/qa.module';
 import { DecisionsModule } from './decisions/decisions.module';
+import { MockupsModule } from './mockups/mockups.module';
+import { ImagesModule } from './images/images.module';
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { DecisionsModule } from './decisions/decisions.module';
     DocsModule,
     QaModule,
     DecisionsModule,
+    MockupsModule,
+    ImagesModule,
   ],
   controllers: [HealthController],
   providers: [PrismaService],

@@ -6,6 +6,7 @@ import {
   Get,
   Header,
   Param,
+  Post,
   Put,
 } from '@nestjs/common';
 import { TeamService } from './team.service';
@@ -37,6 +38,20 @@ export class TeamController {
   async remove(@Param('slug') slug: string) {
     this.assertValidSlug(slug);
     return this.teamService.deleteBySlug(slug);
+  }
+
+  /** 기획자 모드 비번 검증. body: { password: string } */
+  @Post(':slug/verify-planner')
+  @Header('Cache-Control', 'no-store')
+  async verifyPlanner(
+    @Param('slug') slug: string,
+    @Body() body: { password?: string },
+  ) {
+    this.assertValidSlug(slug);
+    if (typeof body?.password !== 'string') {
+      throw new BadRequestException({ error: 'password (string) 필수' });
+    }
+    return this.teamService.verifyPlannerPassword(slug, body.password);
   }
 
   private assertValidSlug(slug: string) {

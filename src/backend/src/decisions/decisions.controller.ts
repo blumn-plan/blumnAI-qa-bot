@@ -21,6 +21,15 @@ interface DeleteBody {
   path: string;
 }
 
+interface UpdateStatusBody {
+  path: string;
+  status: 'pending' | 'applied' | 'hold';
+  /** 기획자 메모 (선택). applied/hold 에서만 md 상단에 blockquote 로 삽입됨. */
+  note?: string;
+  /** 기획자 이름 (선택 · 표시용) */
+  plannerName?: string;
+}
+
 @Controller()
 export class DecisionsController {
   constructor(
@@ -72,5 +81,20 @@ export class DecisionsController {
     if (!body?.path) throw new BadRequestException({ error: 'path 필수' });
     const resolved = await this.teamContext.resolve(team);
     return this.decisionsService.deleteFeedback(resolved, body.path);
+  }
+
+  @Post('update-decision-status')
+  @Header('Cache-Control', 'no-store')
+  async updateStatus(@Query('team') team: string | undefined, @Body() body: UpdateStatusBody) {
+    if (!body?.path) throw new BadRequestException({ error: 'path 필수' });
+    if (!body?.status) throw new BadRequestException({ error: 'status 필수' });
+    const resolved = await this.teamContext.resolve(team);
+    return this.decisionsService.updateDecisionStatus(
+      resolved,
+      body.path,
+      body.status,
+      body.note,
+      body.plannerName,
+    );
   }
 }

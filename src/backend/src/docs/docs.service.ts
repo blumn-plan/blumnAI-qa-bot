@@ -25,24 +25,39 @@ export class DocsService {
   }
 
   /** 프로젝트의 policies + storyboards 목록.
-   *  각 md 파일에서 첫 # 헤딩을 title 로 · 파일명에서 화면명 추출. */
+   *  policies_dir · storyboards_dir 필드는 줄바꿈으로 여러 폴더 지정 가능.
+   *  각 폴더별로 listDir 후 병합 · 같은 path 는 dedupe. */
   async listDocs(team: ResolvedTeam, projectSlug?: string) {
     const project = this.teamContext.resolveProject(team, projectSlug);
     const ctx = this.teamContext.toGitHubContext(team);
 
-    const [policies, storyboards] = await Promise.all([
-      project.policiesDir
-        ? this.github.listDir(ctx, project.policiesDir).then((entries) => this.filterMd(entries, 'policy'))
-        : Promise.resolve([] as DocEntry[]),
-      project.storyboardsDir
-        ? this.github.listDir(ctx, project.storyboardsDir).then((entries) => this.filterMd(entries, 'storyboard'))
-        : Promise.resolve([] as DocEntry[]),
+    const policyDirs = this.splitDirs(project.policiesDir);
+    const storyDirs = this.splitDirs(project.storyboardsDir);
+
+    const [policyLists, storyLists] = await Promise.all([
+      Promise.all(policyDirs.map((d) => this.github.listDir(ctx, d).then((e) => this.filterMd(e, 'policy')))),
+      Promise.all(storyDirs.map((d) => this.github.listDir(ctx, d).then((e) => this.filterMd(e, 'storyboard')))),
     ]);
 
-    return {
-      project: project.slug,
-      docs: [...policies, ...storyboards],
-    };
+    const merged = [...policyLists.flat(), ...storyLists.flat()];
+    // 같은 path 중복 제거 (여러 폴더가 같은 파일을 가리키는 실수 대비)
+    const seen = new Set<string>();
+    const docs = merged.filter((d) => {
+      if (seen.has(d.path)) return false;
+      seen.add(d.path);
+      return true;
+    });
+
+    return { project: project.slug, docs };
+  }
+
+  /** 줄바꿈 · 쉼표 로 폴더 여러개 분리 · 빈 값 제거. */
+  private splitDirs(raw: string | null | undefined): string[] {
+    if (!raw) return [];
+    return raw
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
 
   async getDoc(team: ResolvedTeam, path: string): Promise<{ path: string; content: string }> {
