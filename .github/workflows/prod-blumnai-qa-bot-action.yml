@@ -1,0 +1,74 @@
+name: Prod blumnAI QA Bot
+
+# main 브랜치 push -> :prod 이미지 빌드/푸시 -> Rancher blumnai-qa-bot-prod 스택 재배포
+#
+# 접속 URL: https://blumnai-qa-bot-prod.lunacode.dev
+#
+# backend 컨테이너는 기동 시 `npx prisma migrate deploy` 를 먼저 돌린다.
+# 따라서 스키마 변경은 이 워크플로우가 배포하는 것만으로 DB 에 반영된다.
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build & Push
+    runs-on: self-hosted
+    steps:
+      - name: Check Out The Repository
+        uses: actions/checkout@v3
+
+      - name: Rancher Login
+        run: sudo docker login devtool-registry.lunacode.dev -u lunadev -p lunadev
+
+      - name: Docker Build (backend)
+        run: |
+          sudo DOCKER_BUILDKIT=1 docker build \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --cache-from devtool-registry.lunacode.dev/blumnai-qa-bot-backend:prod \
+            -f src/backend/Dockerfile \
+            -t devtool-registry.lunacode.dev/blumnai-qa-bot-backend:prod src/backend
+
+      - name: Docker Build (frontend)
+        run: |
+          sudo DOCKER_BUILDKIT=1 docker build \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            --cache-from devtool-registry.lunacode.dev/blumnai-qa-bot-frontend:prod \
+            -f src/frontend/Dockerfile \
+            -t devtool-registry.lunacode.dev/blumnai-qa-bot-frontend:prod src/frontend
+
+      - name: Docker Image Push
+        run: |
+          sudo docker push devtool-registry.lunacode.dev/blumnai-qa-bot-backend:prod
+          sudo docker push devtool-registry.lunacode.dev/blumnai-qa-bot-frontend:prod
+
+      - name: Build Summary
+        run: |
+          {
+            echo "### ✅ 이미지 빌드 & Push 완료"
+            echo ""
+            echo "\`devtool-registry.lunacode.dev/blumnai-qa-bot-backend:prod\`"
+            echo "\`devtool-registry.lunacode.dev/blumnai-qa-bot-frontend:prod\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Rancher Redeploy
+    needs: build
+    runs-on: self-hosted
+    steps:
+      - name: Check Out The Repository
+        uses: actions/checkout@v3
+
+      # Rancher 자격증명은 러너 호스트의 /etc/rancher-deploy/creds.env 에 있고,
+      # 스크립트가 docker.sock 을 통해 job 실행 시점에 읽는다.
+      # GitHub Secrets / Variables 및 이 파일에는 값을 두지 않는다.
+
+      # backend 를 먼저 올린다. 기동 시 prisma migrate deploy 가 돌아
+      # frontend 가 붙기 전에 스키마가 최신이 된다.
+      - name: Rancher Redeploy (backend)
+        run: ./.github/scripts/rancher-redeploy.sh blumnai-qa-bot-prod backend
+
+      - name: Rancher Redeploy (frontend)
+        run: ./.github/scripts/rancher-redeploy.sh blumnai-qa-bot-prod frontend
