@@ -194,7 +194,12 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
               <Label htmlFor="tw-name">
                 팀 이름 <span className="text-red-500">*</span>
               </Label>
-              <Input id="tw-name" placeholder="예: 광고팀" value={teamName} onChange={(e) => setTeamName(e.target.value)} />
+              <Input
+                id="tw-name"
+                placeholder={isEdit && existingTeam?.team_name ? existingTeam.team_name : "예: 광고팀"}
+                value={teamName}
+                onChange={(e) => setTeamName(e.target.value)}
+              />
             </div>
             <div className="space-y-1">
               <Label htmlFor="tw-repo">
@@ -203,7 +208,7 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
               </Label>
               <Input
                 id="tw-repo"
-                placeholder="예: blumn/ad-team-policies"
+                placeholder={isEdit && existingTeam?.github_repo ? existingTeam.github_repo : "예: blumn/ad-team-policies"}
                 className="font-mono"
                 value={githubRepo}
                 onChange={(e) => setGithubRepo(e.target.value)}
@@ -246,7 +251,11 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
                     id={`tw-p-label-${idx}`}
                     value={p.label}
                     onChange={(e) => updateProject(idx, { label: e.target.value })}
-                    placeholder="예: 어드민 v1, 마케팅, 백오피스..."
+                    placeholder={
+                      isEdit && existingTeam?.projects[idx]?.label
+                        ? existingTeam.projects[idx].label
+                        : "예: 어드민 v1, 마케팅, 백오피스..."
+                    }
                     className="text-xs"
                   />
                 </div>
@@ -258,7 +267,11 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
                     id={`tw-p-pol-${idx}`}
                     value={p.policiesDir}
                     onChange={(e) => updateProject(idx, { policiesDir: e.target.value })}
-                    placeholder={"예:\ndocs/policies\nprojects/admin/docs/policies"}
+                    placeholder={
+                      isEdit && existingTeam?.projects[idx]?.policies_dir
+                        ? existingTeam.projects[idx].policies_dir
+                        : "예:\ndocs/policies\nprojects/admin/docs/policies"
+                    }
                     className="font-mono text-xs min-h-[54px]"
                   />
                 </div>
@@ -270,7 +283,11 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
                     id={`tw-p-story-${idx}`}
                     value={p.storyboardsDir}
                     onChange={(e) => updateProject(idx, { storyboardsDir: e.target.value })}
-                    placeholder={"예:\ndocs/storyboards"}
+                    placeholder={
+                      isEdit && existingTeam?.projects[idx]?.storyboards_dir
+                        ? existingTeam.projects[idx].storyboards_dir
+                        : "예:\ndocs/storyboards"
+                    }
                     className="font-mono text-xs min-h-[54px]"
                   />
                 </div>
@@ -282,7 +299,11 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
                     id={`tw-p-code-${idx}`}
                     value={p.codeRepo}
                     onChange={(e) => updateProject(idx, { codeRepo: e.target.value })}
-                    placeholder={"예:\nblumn/admin-frontend\nblumn/admin-backend"}
+                    placeholder={
+                      isEdit && existingTeam?.projects[idx]?.code_repo
+                        ? existingTeam.projects[idx].code_repo
+                        : "예:\nblumn/admin-frontend\nblumn/admin-backend"
+                    }
                     className="font-mono text-xs min-h-[54px]"
                   />
                 </div>
@@ -300,7 +321,7 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
             <div>
               <h3 className="text-sm font-semibold text-slate-700">3. 인증 정보</h3>
               <p className="text-xs text-muted-foreground mt-1">
-                🔒 백엔드 서버 DB 에 <b>암호화 없이</b> 저장됨 (Phase Y1a MVP · 사내망 안). 담당자만 세팅하세요.
+                🔐 DB 저장 시 <b>AES-256-GCM 암호화</b> · 기획자 비번은 <b>bcrypt 해싱</b> (ISMS 대응). 담당자만 세팅하세요.
               </p>
             </div>
 

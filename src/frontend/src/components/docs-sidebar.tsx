@@ -480,10 +480,11 @@ function RecentSection({
 }) {
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  // viewMode 필터 → mine 이면 requester === userName 만 (userName 미설정 시 무시)
+  // viewMode 필터 → mine 이면 requester === userName · requester 미기재된 레거시 세션은 항상 노출.
+  //  (구버전에는 requester 저장 로직이 누락돼 있어서 다 undefined · 필터로 사라지면 UX 손실이라 legacy 는 살림)
   const scoped = useMemo(() => {
     if (viewMode === "all" || !userName.trim()) return sessions;
-    return sessions.filter((s) => s.requester === userName);
+    return sessions.filter((s) => !s.requester || s.requester === userName);
   }, [sessions, viewMode, userName]);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

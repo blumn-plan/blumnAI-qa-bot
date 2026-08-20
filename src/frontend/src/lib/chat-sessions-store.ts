@@ -75,6 +75,7 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
                       messages: input.messages,
                       title: input.title || s.title,
                       scope: input.scope ?? s.scope,
+                      requester: input.requester ?? s.requester,
                       updatedAt: now,
                     }
                   : s,
@@ -88,6 +89,7 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
             title: input.title || "(제목 없음)",
             messages: input.messages,
             scope: input.scope,
+            requester: input.requester,
             createdAt: now,
             updatedAt: now,
           };

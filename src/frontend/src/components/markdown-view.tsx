@@ -76,6 +76,7 @@ export function MarkdownView({
   onCitation,
   assignHeadingIds,
   stripImages,
+  stripChangeProposal,
 }: {
   content: string;
   /** 내부 문서 링크 클릭 콜백. path 는 fragment 없는 경로, hash 는 있으면 '#4-2-1' 형태 */
@@ -87,8 +88,27 @@ export function MarkdownView({
   /** AI 답변 렌더링용 · true 면 이미지 마크다운 (`![](...)`) 을 안전하게 텍스트로 대체.
    *  · 정책 문서 안 이미지 링크가 답변에 딸려 나오는 것을 프론트에서 방어. */
   stripImages?: boolean;
+  /** AI 답변 렌더링용 · true 면 「### 📋 변경 제안」 블록을 화면에서 숨김.
+   *  · 이 블록은 파싱 전용 (기획전달 초안 채우기) 이라 사용자에게 노출 불필요.
+   *  · 원문 content 는 그대로 · parseChangeProposal 은 정상 동작. */
+  stripChangeProposal?: boolean;
 }) {
-  const rawContent = stripImages ? content.replace(/!\[([^\]]*)\]\([^)]*\)/g, "") : content;
+  let rawContent = content;
+  if (stripChangeProposal) {
+    // fenced form: ```...### 📋 변경 제안...```
+    rawContent = rawContent.replace(/```[a-zA-Z]*\s*\n?[\s\S]*?### 📋 변경 제안[\s\S]*?\n?```\s*/g, "");
+    // bare form: ### 📋 변경 제안 ... (until next ## / ### heading or end)
+    rawContent = rawContent.replace(/### 📋 변경 제안[\s\S]*?(?=\n##\s|\n###\s|$)/g, "").trimEnd();
+  }
+  if (stripImages) {
+    rawContent = rawContent
+      // ![alt](url "title") — 표준 markdown 이미지
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "")
+      // ![alt][ref] — reference-style
+      .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, "")
+      // <img ...> · <img ... /> · HTML 이미지 태그
+      .replace(/<img\b[^>]*>/gi, "");
+  }
   const processed = onCitation ? autoLinkCitations(rawContent) : rawContent;
   const headingRenderer = assignHeadingIds
     ? (level: 1 | 2 | 3 | 4 | 5 | 6) =>
@@ -101,6 +121,8 @@ export function MarkdownView({
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
+          // stripImages=true 시 최종 방어선 · remark/rehype 를 통과한 어떤 img 도 렌더 X.
+          ...(stripImages ? { img: () => null } : {}),
           a: ({ href, children }) => {
             if (onCitation && href?.startsWith("#cite-")) {
               const anchor = href.slice("#cite-".length);

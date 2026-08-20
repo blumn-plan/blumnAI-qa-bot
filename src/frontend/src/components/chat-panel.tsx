@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { streamQa, DocEntry, ApiError } from "@/lib/api";
 import { MarkdownView } from "@/components/markdown-view";
 import { ForwardDialog, FeedbackDialog } from "@/components/action-dialogs";
@@ -510,7 +511,7 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
             ) : (
               <>
                 {msg.content ? (
-                  <MarkdownView content={msg.content} onDocLink={onOpenDoc} onCitation={onCitation} stripImages />
+                  <MarkdownView content={msg.content} onDocLink={onOpenDoc} onCitation={onCitation} stripImages stripChangeProposal />
                 ) : msg.streaming ? (
                   <span className="inline-flex items-center gap-1.5 text-muted-foreground text-xs">
                     <span className="inline-flex gap-1">
@@ -893,19 +894,23 @@ function IconOnlyButton({
   );
 }
 
-/** 📝 답변 규칙 설명 툴팁 · hover · focus 시 노출 */
+/** 📝 답변 규칙 설명 툴팁 · hover · focus 시 노출 (Portal 렌더 → 항상 최상위) */
 function FeedbackHelpTooltip() {
   return (
-    <div className="relative group">
-      <button
-        type="button"
-        tabIndex={0}
-        className="w-6 h-6 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 focus:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-400 inline-flex items-center justify-center"
-        aria-label="답변 규칙 도움말"
-      >
-        <HelpCircle className="w-3.5 h-3.5" />
-      </button>
-      <div className="absolute bottom-full right-0 mb-2 w-72 p-3 bg-white border border-slate-200 rounded-lg shadow-lg text-xs text-slate-700 opacity-0 pointer-events-none group-hover:opacity-100 group-focus-within:opacity-100 group-hover:pointer-events-auto group-focus-within:pointer-events-auto transition-opacity z-20">
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            tabIndex={0}
+            className="w-6 h-6 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 focus:bg-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-400 inline-flex items-center justify-center"
+            aria-label="답변 규칙 도움말"
+          >
+            <HelpCircle className="w-3.5 h-3.5" />
+          </button>
+        }
+      />
+      <TooltipContent side="top" align="end" className="w-72">
         <div className="font-semibold text-slate-900 mb-1.5">📝 답변 규칙이란?</div>
         <p className="mb-2 text-slate-600">
           AI 답변의 <b>규칙·톤·길이</b>를 정해서 원하는 형태로 받는 기능.
@@ -922,7 +927,7 @@ function FeedbackHelpTooltip() {
         <div className="text-[10px] text-slate-500">
           작동: qa/feedback/ 에 누적 저장 → 다음 답변에 자동 주입
         </div>
-      </div>
-    </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
