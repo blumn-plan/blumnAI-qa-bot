@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { EncryptionService } from '../crypto/encryption.service';
 import { GitHubContext } from '../github/github.service';
 
 export interface ResolvedTeam {
@@ -22,8 +23,13 @@ export interface ResolvedTeam {
  *  대부분의 read/write 엔드포인트가 team 을 기준으로 동작 → 공통 유틸. */
 @Injectable()
 export class TeamContextService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly encryption: EncryptionService,
+  ) {}
 
+  /** slug 로 팀 로드 · 시크릿 복호화 (AES-256-GCM).
+   *  ISMS: 시크릿은 서비스 경계 안에서만 평문. 응답으로 나가는 경로는 TeamService.toResponse 가 마스킹. */
   async resolve(teamSlug: string | undefined): Promise<ResolvedTeam> {
     if (!teamSlug) throw new BadRequestException({ error: 'team query 필수' });
     const team = await this.prisma.team.findUnique({
@@ -36,8 +42,8 @@ export class TeamContextService {
       slug: team.slug,
       name: team.name,
       githubRepo: team.githubRepo,
-      masterPat: team.masterPat,
-      anthropicKey: team.anthropicKey ?? '',
+      masterPat: this.encryption.decrypt(team.masterPat),
+      anthropicKey: team.anthropicKey ? this.encryption.decrypt(team.anthropicKey) : '',
       rateLimitPerDay: team.rateLimitPerDay,
       projects: team.projects.map((p) => ({
         slug: p.slug,

@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { EncryptionService } from '../crypto/encryption.service';
+import { PasswordService } from '../crypto/password.service';
 import { UpsertTeamDto, ProjectPayloadDto } from './dto/team-payload.dto';
 
 /** 응답 shape — Worker /team/{slug} GET/PUT 응답과 동일한 필드 이름 유지 (프론트 호환). */
@@ -25,7 +27,11 @@ export interface TeamResponse {
 
 @Injectable()
 export class TeamService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly encryption: EncryptionService,
+    private readonly password: PasswordService,
+  ) {}
 
   /** slug 검증: 소문자·숫자·하이픈만 · 3-64자.
    *  ex) blumn/ad-team-policies → blumn-ad-team-policies (프론트에서 파생) */
@@ -33,12 +39,13 @@ export class TeamService {
     return /^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$/.test(slug);
   }
 
-  /** master_pat/anthropic_key/planner_password 시크릿 마스킹.
-   *  8자 미만이면 '***' · 그 외엔 앞 4자 + '***' + 뒤 2자. */
-  static maskSecret(value: string | null | undefined): string {
-    if (!value || typeof value !== 'string') return '';
-    if (value.length < 8) return '***';
-    return `${value.slice(0, 4)}***${value.slice(-2)}`;
+  /** DB 저장 값 (암호문/해시) → UI 응답용 마스킹.
+   *  ISMS: 시크릿 원본은 절대 응답으로 나가지 않음.
+   *  암호문 (`v1:...`) → `enc:***` · bcrypt 해시 → `hash:***` · 미설정 → 빈 문자열.
+   *  이 마스킹은 순전히 "설정 완료 여부" 를 화면에 표시하기 위함. */
+  private maskStored(kind: 'enc' | 'hash', value: string | null | undefined): string {
+    if (!value) return '';
+    return kind === 'enc' ? 'enc:***' : 'hash:***';
   }
 
   private toResponse(team: any): TeamResponse {
@@ -47,9 +54,9 @@ export class TeamService {
       team_name: team.name,
       github_repo: team.githubRepo,
       master_github_login: team.masterGithubLogin,
-      master_pat: TeamService.maskSecret(team.masterPat),
-      anthropic_key: TeamService.maskSecret(team.anthropicKey),
-      planner_password: TeamService.maskSecret(team.plannerPassword),
+      master_pat: this.maskStored('enc', team.masterPat),
+      anthropic_key: this.maskStored('enc', team.anthropicKey),
+      planner_password: this.maskStored('hash', team.plannerPassword),
       rate_limit_per_day: team.rateLimitPerDay,
       projects: (team.projects ?? []).map((p: any) => ({
         slug: p.slug,
@@ -72,10 +79,11 @@ export class TeamService {
     return this.toResponse(team);
   }
 
-  /** upsert. 신규 생성 시엔 name + github_repo 필수. 존재하면 partial update. */
+  /** upsert. 신규 생성 시엔 name + github_repo 필수. 존재하면 partial update.
+   *  ISMS: master_pat / anthropic_key 는 AES-256-GCM 암호화 후 저장 · planner_password 는 bcrypt 해싱 후 저장. */
   async upsertBySlug(slug: string, dto: UpsertTeamDto): Promise<TeamResponse> {
     // wizard 호환: github_token 이 오면 master_pat 로 매핑
-    const masterPat = dto.master_pat ?? dto.github_token;
+    const masterPatPlain = dto.master_pat ?? dto.github_token;
 
     // 단일 프로젝트 wizard 호환: projects[] 없고 policies_dir 등만 있으면 default 프로젝트 만듦
     let projects: ProjectPayloadDto[] | undefined = dto.projects;
@@ -97,6 +105,11 @@ export class TeamService {
       if (!dto.github_repo) throw new NotFoundException({ error: 'github_repo 필수 (신규 생성)' });
     }
 
+    // 시크릿 사전 변환 (평문 → 암호문/해시). undefined 는 "변경 없음" 이므로 그대로 undefined.
+    const masterPatStored = masterPatPlain !== undefined ? this.encryption.encrypt(masterPatPlain) : undefined;
+    const anthropicKeyStored = dto.anthropic_key !== undefined ? this.encryption.encrypt(dto.anthropic_key) : undefined;
+    const plannerPasswordStored = dto.planner_password !== undefined ? await this.password.hash(dto.planner_password) : undefined;
+
     // upsert 는 relation nested write 가 까다로워서 transaction 으로 처리.
     const result = await this.prisma.$transaction(async (tx) => {
       const team = await tx.team.upsert({
@@ -106,18 +119,18 @@ export class TeamService {
           name: dto.team_name!,
           githubRepo: dto.github_repo!,
           masterGithubLogin: dto.master_github_login,
-          masterPat: masterPat ?? null,
-          anthropicKey: dto.anthropic_key ?? null,
-          plannerPassword: dto.planner_password ?? null,
+          masterPat: masterPatStored ?? null,
+          anthropicKey: anthropicKeyStored ?? null,
+          plannerPassword: plannerPasswordStored ?? null,
           rateLimitPerDay: dto.rate_limit_per_day ?? 50,
         },
         update: {
           ...(dto.team_name !== undefined && { name: dto.team_name }),
           ...(dto.github_repo !== undefined && { githubRepo: dto.github_repo }),
           ...(dto.master_github_login !== undefined && { masterGithubLogin: dto.master_github_login }),
-          ...(masterPat !== undefined && { masterPat }),
-          ...(dto.anthropic_key !== undefined && { anthropicKey: dto.anthropic_key }),
-          ...(dto.planner_password !== undefined && { plannerPassword: dto.planner_password }),
+          ...(masterPatStored !== undefined && { masterPat: masterPatStored }),
+          ...(anthropicKeyStored !== undefined && { anthropicKey: anthropicKeyStored }),
+          ...(plannerPasswordStored !== undefined && { plannerPassword: plannerPasswordStored }),
           ...(dto.rate_limit_per_day !== undefined && { rateLimitPerDay: dto.rate_limit_per_day }),
         },
       });
@@ -155,7 +168,7 @@ export class TeamService {
     return { ok: true, deleted: slug };
   }
 
-  /** 기획자 모드 비번 검증. plainText 비교 (Y1a MVP · 사내망).
+  /** 기획자 모드 비번 검증. bcrypt.compare 로 상수시간 비교.
    *  응답 shape:
    *  - { ok: true } → 통과
    *  - { ok: false, reason: 'no-password' } → 팀에 planner_password 미설정 → 기획자 모드 비활성화
@@ -172,8 +185,8 @@ export class TeamService {
     if (!team.plannerPassword || team.plannerPassword.trim() === '') {
       return { ok: false, reason: 'no-password' };
     }
-    if (team.plannerPassword.trim() === password.trim()) return { ok: true };
-    return { ok: false, reason: 'wrong' };
+    const ok = await this.password.verify(password.trim(), team.plannerPassword);
+    return ok ? { ok: true } : { ok: false, reason: 'wrong' };
   }
 
   async listSlugs(limit = 100): Promise<{ teamCount: number; teamSlugs: string[] }> {

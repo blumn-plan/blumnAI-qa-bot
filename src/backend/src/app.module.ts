@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { HealthController } from './health/health.controller';
 import { PrismaService } from './prisma/prisma.service';
+import { CryptoModule } from './crypto/crypto.module';
+import { SecretsMigrationService } from './crypto/secrets-migration.service';
 import { TeamModule } from './team/team.module';
 import { DocsModule } from './docs/docs.module';
 import { GitHubModule } from './github/github.module';
@@ -17,6 +19,7 @@ import { ImagesModule } from './images/images.module';
       isGlobal: true,
       envFilePath: ['.env.local', '.env'],
     }),
+    CryptoModule,
     GitHubModule,
     AnthropicModule,
     TeamModule,
@@ -27,6 +30,6 @@ import { ImagesModule } from './images/images.module';
     ImagesModule,
   ],
   controllers: [HealthController],
-  providers: [PrismaService],
+  providers: [PrismaService, SecretsMigrationService],
 })
 export class AppModule {}

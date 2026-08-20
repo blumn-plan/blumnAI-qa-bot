@@ -47,6 +47,8 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://frontend:3001}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # 🔐 AES-256-GCM KEK · 팀 시크릿 암호화 (ISMS 대응 · 필수)
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?MASTER_ENCRYPTION_KEY 미설정 · 부팅 불가}
     # 백엔드 외부 노출 (디버깅용 · 브라우저는 이 포트 안 씀)
     ports:
       - "${BACKEND_PORT:-3000}:3000"

@@ -104,11 +104,85 @@ ANTHROPIC_API_KEY=sk-ant-  # Anthropic Console 발급
 GITHUB_TOKEN=ghp_          # GitHub Classic PAT (repo scope)
 ALLOWED_ORIGINS=https://qa-bot.blumn.internal  # 사내 도메인
 NEXT_PUBLIC_API_BASE_URL=https://qa-bot.blumn.internal/api
+MASTER_ENCRYPTION_KEY=     # 아래 "🔐 KEK 관리" 섹션 참고 (필수)
 ```
 
 ⚠️ 이 파일은 **절대 커밋 X** (`.gitignore` 에 등록됨).
 
 배포 시엔 서버 관리자가 Vault/K8s Secret 로 승격 권장.
+
+---
+
+## 🔐 KEK (Master Encryption Key) 관리 · ISMS 대응
+
+이 시스템은 팀별 **GitHub PAT · Anthropic API Key** 를 DB 에 저장할 때 **AES-256-GCM** 으로 암호화하고, **기획자 비밀번호** 는 **bcrypt** 로 단방향 해싱합니다. 암호화 키(KEK) 는 서버 환경변수 `MASTER_ENCRYPTION_KEY` 로 관리합니다.
+
+### 발급 (최초 1회)
+
+배포 서버에서 아래 명령으로 32-byte 랜덤 키 생성:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+# 예시 출력: 7WxAf8ABK+Se8b226S2rYfxCyv3D+KIP5v5bJdUWMcs=
+```
+
+이 값을 서버 `.env` 의 `MASTER_ENCRYPTION_KEY` 에 넣고 다시는 코드/커밋/채팅/이슈에 노출하지 마세요.
+
+### 보관 원칙
+
+| 규칙 | 근거 |
+|---|---|
+| **KEK 는 서버 관리자만 소지** | DB 접근 가능자 ≠ KEK 접근 가능자 (관리 분리) |
+| **오프라인 백업 1부 별도 금고 보관** | KEK 소실 = 모든 팀 시크릿 복호화 불가 (재입력 필요) |
+| **평문으로 로그·모니터링·백업에 남지 않도록** | Portainer 환경변수 화면·CloudWatch 등 노출 지점 점검 |
+| **Git 커밋 금지** (`.env` 는 `.gitignore` 등록됨) | secret scanning 대응 |
+| **KEK 변경 시 재-암호화 절차 필수** (아래 "회전" 참고) | 회전 없이 KEK 만 바꾸면 기존 시크릿 못 읽음 |
+
+### 최초 부팅 자동 마이그레이션
+
+기존에 평문으로 저장된 시크릿이 있으면 백엔드 부팅 시 `SecretsMigrationService` 가 자동으로 in-place 암호화·해싱합니다. 로그:
+
+```
+[EncryptionService] EncryptionService ready (AES-256-GCM · KEK loaded)
+[SecretsMigrationService] team <slug>: encrypted=master_pat,anthropic_key hashed=planner_password
+[SecretsMigrationService] secrets migration done · scanned=N encrypted=X hashed=Y
+```
+
+이 로그가 나오지 않으면 KEK 가 잘못 설정되었거나 마이그레이션이 실패한 것이니 즉시 조치.
+
+### KEK 회전 (권장 주기: 매 6-12 개월 · ISMS 감사 대비)
+
+1. **사전 준비**: MySQL 데이터 볼륨 백업
+   ```bash
+   docker exec blumnai-qa-mysql mysqldump -u root -p<root_pw> blumnai_qa > backup-$(date +%Y%m%d).sql
+   ```
+2. **모든 팀 담당자에게 사전 공지** — 회전 실행 순간부터 재입력 완료까지 QA 봇 사용 불가
+3. **새 KEK 발급** (위 발급 명령)
+4. **회전 스크립트 실행** (Phase Y1b 이후 제공 예정)
+   ```bash
+   # 임시 절차: 기존 팀 GET → 시크릿 다시 받아옴 → 새 KEK 로 다시 저장
+   # (또는 팀 관리자가 UI 에서 재입력)
+   ```
+5. **모든 팀 담당자에게 UI 재입력 요청**
+6. **회전 감사 로그 남기기** — 회전 일시 · 담당자 · 대상 팀 목록 별도 문서 기록
+
+### KEK 유출 시 비상 대응
+
+1. **즉시** 서비스 중지 (`docker compose stop backend`)
+2. **모든 팀의 GitHub PAT · Anthropic Key 를 발급처에서 폐기(revoke)**
+3. 새 KEK 로 회전 절차 재실행
+4. 유출 시각 이후 GitHub · Anthropic 접근 로그 감사
+5. ISMS 침해대응 절차에 따라 보고
+
+### DB 저장 포맷 요약
+
+| 컬럼 | 저장 형태 | 예시 |
+|---|---|---|
+| `master_pat` | `v1:<iv_b64>:<ct_b64>:<tag_b64>` (AES-256-GCM) | `v1:0K1p...:R3xL...:Z9tM...` |
+| `anthropic_key` | 동일 | 동일 |
+| `planner_password` | bcrypt hash | `$2b$10$abc...` |
+
+API 응답에서는 원본이 나가지 않고 각각 `enc:***`, `hash:***` 로 마스킹됩니다.
 
 ---
 
