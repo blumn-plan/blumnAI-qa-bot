@@ -87,6 +87,16 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
     onDocSelect(doc);
     addDocSelected(doc.path);
   }
+  // 체크박스 토글 · 체크(추가) 시 뷰어가 비어있으면 그 문서를 자동으로 뷰어에 열기.
+  //  · 사용자가 "체크했는데 왜 문서 안 보이지?" 하는 혼란 방지.
+  //  · 이미 다른 문서가 뷰어에 열려있으면 그대로 유지 (사용자 컨텍스트 안 뺏음).
+  function handleToggleSelected(doc: DocEntry) {
+    const willBeChecked = !selectedDocPaths.includes(doc.path);
+    toggleDocSelected(doc.path);
+    if (willBeChecked && !activeDocPath) {
+      onDocSelect(doc);
+    }
+  }
   const recentSessions = useMemo(
     () =>
       allSessions
@@ -388,7 +398,7 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
                   activeDocPath={activeDocPath}
                   onDocSelect={handleDocRowSelect}
                   selectedPaths={selectedDocPaths}
-                  onToggleSelected={toggleDocSelected}
+                  onToggleSelected={handleToggleSelected}
                 />
                 <DocSection
                   title="화면설계서"
@@ -400,7 +410,7 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
                   activeDocPath={activeDocPath}
                   onDocSelect={handleDocRowSelect}
                   selectedPaths={selectedDocPaths}
-                  onToggleSelected={toggleDocSelected}
+                  onToggleSelected={handleToggleSelected}
                 />
                 {docSearch && filteredPolicies.length === 0 && filteredStories.length === 0 && (
                   <div className="p-4 text-xs text-muted-foreground">
@@ -1085,7 +1095,7 @@ function DocSection({
   activeDocPath: string | null;
   onDocSelect: (doc: DocEntry) => void;
   selectedPaths: string[];
-  onToggleSelected: (path: string) => void;
+  onToggleSelected: (doc: DocEntry) => void;
 }) {
   const IconComp = kind === "policy" ? BookOpen : LayoutTemplate;
   const iconColorCls = kind === "policy" ? "text-sky-600" : "text-slate-500";
@@ -1140,7 +1150,7 @@ function DocSection({
                     type="checkbox"
                     className="w-3.5 h-3.5 accent-emerald-600 cursor-pointer shrink-0"
                     checked={isChecked}
-                    onChange={() => onToggleSelected(doc.path)}
+                    onChange={() => onToggleSelected(doc)}
                     title={
                       isChecked
                         ? "QA 참고 대상에서 제외"

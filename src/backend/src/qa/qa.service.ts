@@ -33,8 +33,10 @@ export class QaService {
     const explicitDocPaths = (body.docPaths ?? []).filter(Boolean);
     let focusedDoc = '';
     let focusedDocFailed = false;
+    let focusedDocFailedReason = '';
     let selectedDocsBundle = '';
-    let selectedDocsFailedPaths: string[] = [];
+    // 실패 케이스는 path + 원인(401 PAT 만료 · 403 IP allow list 등) 함께 캐리 → 프롬프트 주입 시 Claude 가 원인까지 안내
+    let selectedDocsFailures: Array<{ path: string; error: string }> = [];
 
     if (explicitDocPaths.length > 0) {
       const fetched = await Promise.all(
@@ -43,12 +45,15 @@ export class QaService {
             const content = await this.github.getFile(ctx, p);
             return { path: p, content, ok: true as const };
           } catch (err) {
-            this.logger.warn(`selected doc fetch failed: ${p} — ${err instanceof Error ? err.message : String(err)}`);
-            return { path: p, content: '', ok: false as const };
+            const errMsg = err instanceof Error ? err.message : String(err);
+            this.logger.warn(`selected doc fetch failed: ${p} — ${errMsg}`);
+            return { path: p, content: '', ok: false as const, error: errMsg };
           }
         }),
       );
-      selectedDocsFailedPaths = fetched.filter((f) => !f.ok).map((f) => f.path);
+      selectedDocsFailures = fetched
+        .filter((f) => !f.ok)
+        .map((f) => ({ path: f.path, error: (f as { error?: string }).error ?? 'unknown' }));
       const okDocs = fetched.filter((f) => f.ok);
       if (okDocs.length > 0) {
         selectedDocsBundle = [
@@ -62,7 +67,8 @@ export class QaService {
         focusedDoc = await this.github.getFile(ctx, body.docPath);
       } catch (err) {
         focusedDocFailed = true;
-        this.logger.warn(`focusedDoc fetch failed: ${body.docPath} — ${err instanceof Error ? err.message : String(err)}`);
+        focusedDocFailedReason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`focusedDoc fetch failed: ${body.docPath} — ${focusedDocFailedReason}`);
       }
     }
 
@@ -131,16 +137,16 @@ export class QaService {
         text: selectedDocsBundle,
         cache_control: { type: 'ephemeral' },
       });
-      if (selectedDocsFailedPaths.length > 0) {
+      if (selectedDocsFailures.length > 0) {
         systemBlocks.push({
           type: 'text',
-          text: `[⚠️ 아래 사용자 선택 문서는 로드 실패 · 답변 서두에 이 사실 언급]\n${selectedDocsFailedPaths.map((p) => `  - ${p}`).join('\n')}`,
+          text: `[⚠️ 아래 사용자 선택 문서는 로드 실패 · 답변 서두에 사실과 원인을 명시하고 사용자가 조치할 수 있게 안내]\n${selectedDocsFailures.map((f) => `  - ${f.path}\n    원인: ${f.error}`).join('\n')}`,
         });
       }
-    } else if (explicitDocPaths.length > 0 && selectedDocsFailedPaths.length === explicitDocPaths.length) {
+    } else if (explicitDocPaths.length > 0 && selectedDocsFailures.length === explicitDocPaths.length) {
       systemBlocks.push({
         type: 'text',
-        text: `[⚠️ 사용자가 선택한 참고 문서 ${explicitDocPaths.length}개 모두 로드 실패 — 이 사실 명시 후 일반 안내로 진행]`,
+        text: `[⚠️ 사용자가 선택한 참고 문서 ${explicitDocPaths.length}개 모두 로드 실패 — 원인 포함해서 서두에 명시하고 조치 안내]\n${selectedDocsFailures.map((f) => `  - ${f.path}\n    원인: ${f.error}`).join('\n')}`,
       });
     } else if (focusedDoc) {
       systemBlocks.push({
@@ -151,7 +157,7 @@ export class QaService {
     } else if (focusedDocFailed) {
       systemBlocks.push({
         type: 'text',
-        text: `[⚠️ 문서 로드 실패: ${body.docPath} — 이 사실을 답변 서두에 명시하고 일반적인 안내로 진행]`,
+        text: `[⚠️ 문서 로드 실패: ${body.docPath}\n원인: ${focusedDocFailedReason}\n답변 서두에 사실과 원인을 명시하고 사용자가 조치할 수 있게 안내]`,
       });
     } else {
       // 종합모드: docPath 없음 → 프로젝트의 모든 policy md 를 로드해서 주입
