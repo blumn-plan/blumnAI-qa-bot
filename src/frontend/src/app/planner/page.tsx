@@ -21,7 +21,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useTeamStore, syncTeamFromUrl } from "@/lib/team-store";
+import { useTeamStore } from "@/lib/team-store";
 import { usePlannerAuthStore } from "@/lib/planner-auth-store";
 import {
   getTeam,
@@ -44,14 +44,21 @@ import { BookOpen, User as UserIcon } from "lucide-react";
 
 export default function PlannerPage() {
   const activeTeamSlug = useTeamStore((s) => s.activeTeamSlug);
+  const setActiveTeam = useTeamStore((s) => s.setActiveTeam);
   const hasHydrated = useTeamStore((s) => s._hasHydrated);
   const [team, setTeam] = useState<TeamResponse | null>(null);
   const [teamLoadError, setTeamLoadError] = useState<string | null>(null);
 
-  useEffect(() => { if (hasHydrated) syncTeamFromUrl(); }, [hasHydrated]);
-
+  // URL ?team=X 우선 (초대 링크) → localStorage 값 override. 팀 로드도 같은 effect 에서 처리해
+  //  URL 반영 전에 "팀 미선택" 안내 화면이 flash 되는 문제 방지.
   useEffect(() => {
-    if (!hasHydrated || !activeTeamSlug) return;
+    if (!hasHydrated) return;
+    const urlTeam = new URLSearchParams(window.location.search).get("team");
+    if (urlTeam && urlTeam !== activeTeamSlug) {
+      setActiveTeam(urlTeam);
+      return;
+    }
+    if (!activeTeamSlug) return;
     let cancelled = false;
     getTeam(activeTeamSlug)
       .then((t) => { if (!cancelled) setTeam(t); })
@@ -59,7 +66,7 @@ export default function PlannerPage() {
         if (!cancelled) setTeamLoadError(err instanceof ApiError ? err.message : String(err));
       });
     return () => { cancelled = true; };
-  }, [hasHydrated, activeTeamSlug]);
+  }, [hasHydrated, activeTeamSlug, setActiveTeam]);
 
   if (!hasHydrated) {
     return (

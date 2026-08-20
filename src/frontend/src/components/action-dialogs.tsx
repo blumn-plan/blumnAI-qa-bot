@@ -83,8 +83,9 @@ export function ForwardDialog({
 
   return (
     <Dialog open={open} onOpenChange={preventCasualDismiss(onOpenChange)}>
-      <DialogContent className="sm:max-w-[640px]">
-        <DialogHeader>
+      {/* max-h-[90vh] + grid rows: 헤더·풋터 고정, 가운데 body 만 스크롤 → 긴 초안에도 [기획자에게 전달] 버튼 항상 노출 */}
+      <DialogContent className="sm:max-w-[640px] max-h-[90vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 overflow-hidden">
+        <DialogHeader className="p-4 pb-2">
           <DialogTitle className="flex items-center gap-2">
             📤 기획전달
             {hasProposal && (
@@ -99,44 +100,47 @@ export function ForwardDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {/* 언제 · 무엇 · 어떻게 가이드 스트립 */}
-        <div className="text-[11px] bg-slate-50 border border-slate-200 rounded p-2.5 space-y-1 leading-relaxed">
-          <div><b>💡 언제 누르나요?</b> 답변에서 <b>정책 미정의</b> 라고 나오거나, 답변 내용이 실무와 안 맞아 <b>정책을 바꿔야겠다</b> 싶을 때.</div>
-          <div><b>📝 아래 「합의 요약」 은 자동으로 채워집니다.</b> {hasProposal
-            ? "AI 답변에 「📋 변경 제안」 이 있어서 6항목(대상 파일 · 위치 · 변경 전/후 · 근거) 이 구조화됐어요."
-            : "AI 답변에 「📋 변경 제안」 이 없어서 최근 대화를 요약했어요 · 필요하면 편집하세요."}</div>
-          <div><b>✔ 그대로 전달해도 되고, 편집 후 전달해도 됩니다.</b> 전달되면 기획자 모드 사이드바의 「기획자 전달이력」 에 나타나요.</div>
+        <div className="overflow-y-auto px-4 pb-2 space-y-3">
+          {/* 언제 · 무엇 · 어떻게 가이드 스트립 */}
+          <div className="text-[11px] bg-slate-50 border border-slate-200 rounded p-2.5 space-y-1 leading-relaxed">
+            <div><b>💡 언제 누르나요?</b> 답변에서 <b>정책 미정의</b> 라고 나오거나, 답변 내용이 실무와 안 맞아 <b>정책을 바꿔야겠다</b> 싶을 때.</div>
+            <div><b>📝 아래 「합의 요약」 은 자동으로 채워집니다.</b> {hasProposal
+              ? "AI 답변에 「📋 변경 제안」 이 있어서 6항목(대상 파일 · 위치 · 변경 전/후 · 근거) 이 구조화됐어요."
+              : "AI 답변에 「📋 변경 제안」 이 없어서 최근 대화를 요약했어요 · 필요하면 편집하세요."}</div>
+            <div><b>✔ 그대로 전달해도 되고, 편집 후 전달해도 됩니다.</b> 전달되면 기획자 모드 사이드바의 「기획자 전달이력」 에 나타나요.</div>
+          </div>
+
+          <div className="space-y-3 py-1">
+            <div className="space-y-1">
+              <Label htmlFor="fw-title">요청 제목 <span className="text-red-500">*</span></Label>
+              <Input id="fw-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 결제 실패 재시도 정책 신설" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="fw-body">
+                합의 요약 <span className="text-slate-400 font-normal">— 기획자가 이것만 봐도 판단 가능하게</span> <span className="text-red-500">*</span>
+              </Label>
+              <Textarea
+                id="fw-body"
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder="변경 전/후 · 근거 · 대상 파일 위치 등"
+                className="min-h-[200px] font-mono text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="fw-questioner">요청자 (선택 · @없이)</Label>
+              <Input id="fw-questioner" value={questioner} onChange={(e) => setQuestioner(e.target.value)} placeholder="예: alice" />
+            </div>
+            {activeDocPath && (
+              <div className="text-xs text-muted-foreground font-mono">
+                관련 문서: {activeDocPath}
+              </div>
+            )}
+            {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">⚠️ {error}</div>}
+          </div>
         </div>
 
-        <div className="space-y-3 py-2">
-          <div className="space-y-1">
-            <Label htmlFor="fw-title">요청 제목 <span className="text-red-500">*</span></Label>
-            <Input id="fw-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 결제 실패 재시도 정책 신설" />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="fw-body">
-              합의 요약 <span className="text-slate-400 font-normal">— 기획자가 이것만 봐도 판단 가능하게</span> <span className="text-red-500">*</span>
-            </Label>
-            <Textarea
-              id="fw-body"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="변경 전/후 · 근거 · 대상 파일 위치 등"
-              className="min-h-[200px] font-mono text-xs"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="fw-questioner">요청자 (선택 · @없이)</Label>
-            <Input id="fw-questioner" value={questioner} onChange={(e) => setQuestioner(e.target.value)} placeholder="예: alice" />
-          </div>
-          {activeDocPath && (
-            <div className="text-xs text-muted-foreground font-mono">
-              관련 문서: {activeDocPath}
-            </div>
-          )}
-          {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">⚠️ {error}</div>}
-        </div>
-        <DialogFooter>
+        <DialogFooter className="m-0 rounded-b-xl">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>취소</Button>
           <Button onClick={handleSubmit} disabled={saving}>
             {saving ? "전달 중..." : "📤 기획자에게 전달"}
@@ -195,37 +199,40 @@ export function FeedbackDialog({
 
   return (
     <Dialog open={open} onOpenChange={preventCasualDismiss(onOpenChange)}>
-      <DialogContent className="sm:max-w-[560px]">
-        <DialogHeader>
+      {/* max-h-[90vh] + grid rows: 헤더·풋터 고정, 가운데 body 만 스크롤 → 긴 본문에도 [규칙 저장] 버튼 항상 노출 */}
+      <DialogContent className="sm:max-w-[560px] max-h-[90vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 overflow-hidden">
+        <DialogHeader className="p-4 pb-2">
           <DialogTitle>📝 답변 규칙 추가</DialogTitle>
           <DialogDescription>
             AI 답변 톤·형식·강조점 등 답변 규칙을 <code className="text-xs">qa/feedback/</code> 폴더에 md 로 저장.
             이후 QA 답변에 자동 반영됨.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 py-2">
-          <div className="space-y-1">
-            <Label htmlFor="fb-title">규칙 제목 <span className="text-red-500">*</span></Label>
-            <Input id="fb-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 답변 톤 · 짧고 명확하게" />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="fb-body">규칙 내용 (마크다운) <span className="text-red-500">*</span></Label>
-            <Textarea
-              id="fb-body"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="예: 답변은 3문장 이내로 · 근거 §번호 필수"
-              className="min-h-[150px] font-mono text-xs"
-            />
-          </div>
-          {activeDocPath && (
-            <div className="text-xs text-muted-foreground font-mono">
-              관련 문서: {activeDocPath}
+        <div className="overflow-y-auto px-4 pb-2 space-y-3">
+          <div className="space-y-3 py-1">
+            <div className="space-y-1">
+              <Label htmlFor="fb-title">규칙 제목 <span className="text-red-500">*</span></Label>
+              <Input id="fb-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="예: 답변 톤 · 짧고 명확하게" />
             </div>
-          )}
-          {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">⚠️ {error}</div>}
+            <div className="space-y-1">
+              <Label htmlFor="fb-body">규칙 내용 (마크다운) <span className="text-red-500">*</span></Label>
+              <Textarea
+                id="fb-body"
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder="예: 답변은 3문장 이내로 · 근거 §번호 필수"
+                className="min-h-[150px] font-mono text-xs"
+              />
+            </div>
+            {activeDocPath && (
+              <div className="text-xs text-muted-foreground font-mono">
+                관련 문서: {activeDocPath}
+              </div>
+            )}
+            {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">⚠️ {error}</div>}
+          </div>
         </div>
-        <DialogFooter>
+        <DialogFooter className="m-0 rounded-b-xl">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>취소</Button>
           <Button onClick={handleSubmit} disabled={saving}>
             {saving ? "저장 중..." : "📝 규칙 저장"}

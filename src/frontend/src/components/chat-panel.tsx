@@ -59,13 +59,14 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
   const useAllDocs = useUiStore((s) => s.useAllDocs);
   const setUseAllDocs = useUiStore((s) => s.setUseAllDocs);
   const activeProject = useUiStore((s) => s.activeProject);
+  const setActiveProject = useUiStore((s) => s.setActiveProject);
   const selectedDocPaths = useUiStore((s) => s.selectedDocPaths);
+  const setSelectedDocs = useUiStore((s) => s.setSelectedDocs);
   const clearSelectedDocs = useUiStore((s) => s.clearSelectedDocs);
   const addUsage = useUsageStore((s) => s.add);
   const userName = useUserStore((s) => s.name);
   const upsertSession = useChatSessionsStore((s) => s.upsert);
   const currentSessionId = useChatSessionsStore((s) => s.currentSessionId);
-  const setCurrentSession = useChatSessionsStore((s) => s.setCurrent);
   const allSessions = useChatSessionsStore((s) => s.sessions);
   const newChatNonce = useChatSessionsStore((s) => s.newChatNonce);
   const requestNewChat = useChatSessionsStore((s) => s.requestNewChat);
@@ -87,9 +88,10 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
   const scope: "all" | "multi" | "none" =
     useAllDocs ? "all" : selectedDocPaths.length > 0 ? "multi" : "none";
 
-  // 새 메시지가 오면 자동 스크롤
+  // 새 메시지가 오면 자동 스크롤 (instant · 세션 로드 시 smooth 애니메이션으로 상단부터 훑고 내려오는 문제 방지)
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // 성공 배너 3초 후 자동 사라짐
@@ -99,7 +101,10 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
     return () => clearTimeout(t);
   }, [successBanner]);
 
-  // 사이드바에서 최근 대화 클릭 → currentSessionId 변경 → 여기서 messages 로드
+  // 사이드바에서 최근 대화 클릭 → currentSessionId 변경 → 여기서 messages + 참고 스코프 복원
+  //  · 새 세션 (필드 저장됨) → 저장된 useAllDocs/docPaths/project 그대로 복원
+  //  · 옛 세션 (필드 없음, undefined) → 대화 내용 있으면 useAllDocs=true fallback (챗 패널 뜨고 이어서 질문 가능)
+  //  · 옛 빈 세션 (messages 0개) → fallback 없음 · 사용자가 사이드바에서 명시적으로 선택
   useEffect(() => {
     if (!currentSessionId) return;
     if (currentSessionId === sessionId) return; // 이미 로드된 세션
@@ -114,6 +119,15 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
     );
     setSessionId(currentSessionId);
     setPendingAttachments([]);
+    // 참고 스코프 복원
+    if (target.project !== undefined) setActiveProject(target.project);
+    if (target.useAllDocs !== undefined) {
+      setUseAllDocs(target.useAllDocs);
+    } else if (target.messages.length > 0) {
+      // 옛 세션 fallback: 스코프 정보 없지만 대화 있음 → 종합모드 켜서 챗 패널 노출 + 이어서 질문 가능
+      setUseAllDocs(true);
+    }
+    if (target.docPaths !== undefined) setSelectedDocs(target.docPaths);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId, teamSlug]);
 
@@ -139,6 +153,9 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
       title,
       messages: persistable,
       scope: scopeLabel,
+      useAllDocs,
+      docPaths: selectedDocPaths,
+      project: activeProject ?? undefined,
       requester: userName || undefined,
     });
     if (!sessionId) setSessionId(id);
@@ -277,14 +294,14 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
   }
 
   /** 「새 문의」 — 사이드바 · 헤더 · 인라인 버튼이 모두 이 흐름으로 통합.
-   *  store.requestNewChat() 만 호출 → newChatNonce 증가 → 아래 useEffect 가 실제 리셋 담당.
-   *  chat-panel: messages/attachments/sessionId + 참고 문서 선택 리셋 + 안내 배너
-   *  page.tsx: activeDoc 리셋 (같은 nonce 를 구독) */
+   *  store.requestNewChat() 이 빈 세션 생성 + current 로 설정 → 아래 currentSessionId useEffect 가 messages/sessionId 갱신.
+   *  이 useEffect (newChatNonce) 는 세션과 무관한 상태만 리셋 (참고 문서·종합모드·배너). */
   function handleNewChat() {
-    requestNewChat();
+    requestNewChat({ teamSlug, requester: userName || undefined });
   }
 
-  // newChatNonce 증가 → 세션·참고 문서·종합모드 완전 리셋 + 안내 배너
+  // newChatNonce 증가 → 참고 문서 · 종합모드 리셋 + 안내 배너.
+  //  · messages/sessionId 리셋은 store 가 currentSessionId 를 새 빈 세션으로 바꾸므로 currentSessionId useEffect 가 담당.
   //  · 초기 mount 시엔 nonce=0 이라 useRef 로 첫 실행 무시
   const firstNonceRun = useRef(true);
   useEffect(() => {
@@ -292,10 +309,6 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
       firstNonceRun.current = false;
       return;
     }
-    setMessages([]);
-    setPendingAttachments([]);
-    setSessionId(null);
-    setCurrentSession(null);
     clearSelectedDocs();
     setUseAllDocs(false);
     setSuccessBanner("새 문의를 시작했어요 · 왼쪽에서 참고 문서를 다시 골라 질문하세요");

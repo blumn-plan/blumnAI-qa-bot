@@ -24,6 +24,8 @@ interface UiState {
   /** 문서 클릭 시 참고 문서로 idempotent 추가 (이미 있으면 skip · 절대 uncheck 안 됨).
    *  체크박스 uncheck 는 toggleDocSelected 로만 가능. */
   addDocSelected: (path: string) => void;
+  /** 세션 복원 등 여러 문서를 한 번에 세팅 (기존 선택 대체). */
+  setSelectedDocs: (paths: string[]) => void;
   clearSelectedDocs: () => void;
 }
 
@@ -51,6 +53,7 @@ export const useUiStore = create<UiState>()(
         }),
       addDocSelected: (path) =>
         set((s) => (s.selectedDocPaths.includes(path) ? s : { selectedDocPaths: [...s.selectedDocPaths, path] })),
+      setSelectedDocs: (paths) => set({ selectedDocPaths: Array.from(new Set(paths)) }),
       clearSelectedDocs: () => set({ selectedDocPaths: [] }),
     }),
     {

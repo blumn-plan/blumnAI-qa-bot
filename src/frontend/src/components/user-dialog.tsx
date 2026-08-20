@@ -39,18 +39,19 @@ export function UserDialog({ open, onOpenChange }: UserDialogProps) {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2 py-2">
-          <Label htmlFor="ud-name">이름</Label>
+          <Label htmlFor="ud-name">이름 · <span className="text-muted-foreground font-normal">닉네임/맡은업무</span></Label>
           <Input
             id="ud-name"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="예: 제이 · 홍길동 · CS팀"
+            placeholder="예: 제이/기획팀"
             onKeyDown={(e) => {
               if (e.key === "Enter" && draft.trim()) handleSave();
             }}
           />
           <p className="text-xs text-muted-foreground">
-            비워두면 &quot;게스트&quot; 로 표시됩니다.
+            <b>닉네임/맡은업무</b> 형식으로 통일해주세요 (예: <span className="font-mono">제이/기획팀</span> · <span className="font-mono">루시/프론트개발</span> · <span className="font-mono">이반/QA</span>).
+            <br />비워두면 &quot;게스트&quot; 로 표시됩니다.
           </p>
         </div>
         <DialogFooter>

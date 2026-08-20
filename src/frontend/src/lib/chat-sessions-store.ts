@@ -18,8 +18,14 @@ export interface ChatSession {
   messages: ChatSessionMessage[];
   createdAt: string; // ISO
   updatedAt: string; // ISO
-  /** 참고: 답변 근거 · 종합모드 또는 특정 문서 title */
+  /** 참고: 답변 근거 · 종합모드 또는 특정 문서 title (사이드바 표시 라벨) */
   scope?: string;
+  /** 사이드바 상태 복원용 실제 값 — 세션 클릭 시 종합모드·선택 문서 복원.
+   *  옛 세션은 없음 (undefined) → 복원 skip 하고 현재 사이드바 상태 유지. */
+  useAllDocs?: boolean;
+  docPaths?: string[];
+  /** 세션 문의 시점 프로젝트 slug (프로젝트가 여러개인 팀에서 세션별로 다를 수 있음) */
+  project?: string;
   /** 문의한 사용자 이름 (user-store 의 userName) · 「내것만」 필터용 */
   requester?: string;
 }
@@ -39,8 +45,10 @@ interface ChatSessionsState {
   clearForTeam: (teamSlug: string) => void;
   /** 사이드바에서 세션 클릭 → chat panel 이 이 값 구독해서 load */
   setCurrent: (id: string | null) => void;
-  /** 새 문의 요청 · currentSessionId null 리셋 + nonce 증가 */
-  requestNewChat: () => void;
+  /** 새 문의 요청 · 즉시 빈 세션 생성해서 리스트에 쌓기 + current 로 설정 + nonce 증가.
+   *  · 대화하지 않아도 리스트에 영구 표시 (사용자가 다른 세션으로 넘어가도 유지).
+   *  · 첫 질문 upsert 시 이 세션이 갱신됨 (title/messages) — 새 세션이 또 만들어지지 않음. */
+  requestNewChat: (opts: { teamSlug: string; requester?: string }) => string;
   /** 팀 필터 · updatedAt desc 정렬 */
   listByTeam: (teamSlug: string) => ChatSession[];
 }
@@ -75,6 +83,9 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
                       messages: input.messages,
                       title: input.title || s.title,
                       scope: input.scope ?? s.scope,
+                      useAllDocs: input.useAllDocs ?? s.useAllDocs,
+                      docPaths: input.docPaths ?? s.docPaths,
+                      project: input.project ?? s.project,
                       requester: input.requester ?? s.requester,
                       updatedAt: now,
                     }
@@ -89,6 +100,9 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
             title: input.title || "(제목 없음)",
             messages: input.messages,
             scope: input.scope,
+            useAllDocs: input.useAllDocs,
+            docPaths: input.docPaths,
+            project: input.project,
             requester: input.requester,
             createdAt: now,
             updatedAt: now,
@@ -112,8 +126,32 @@ export const useChatSessionsStore = create<ChatSessionsState>()(
           currentSessionId: null,
         })),
       setCurrent: (id) => set({ currentSessionId: id }),
-      requestNewChat: () =>
-        set((state) => ({ currentSessionId: null, newChatNonce: state.newChatNonce + 1 })),
+      requestNewChat: (opts) => {
+        const now = new Date().toISOString();
+        const id = genId();
+        const newSession: ChatSession = {
+          id,
+          teamSlug: opts.teamSlug,
+          title: "🆕 새 문의",
+          messages: [],
+          requester: opts.requester,
+          createdAt: now,
+          updatedAt: now,
+        };
+        set((state) => {
+          // 팀별 상한 (100건) 유지
+          const forThis = state.sessions.filter((s) => s.teamSlug === opts.teamSlug);
+          const others = state.sessions.filter((s) => s.teamSlug !== opts.teamSlug);
+          const sorted = [newSession, ...forThis].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+          const kept = sorted.slice(0, 100);
+          return {
+            sessions: [...others, ...kept],
+            currentSessionId: id,
+            newChatNonce: state.newChatNonce + 1,
+          };
+        });
+        return id;
+      },
       listByTeam: (teamSlug) =>
         get()
           .sessions.filter((s) => s.teamSlug === teamSlug)

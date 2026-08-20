@@ -4,7 +4,7 @@ import { persist } from "zustand/middleware";
 
 /** 현재 활성 팀 slug 를 클라이언트 상태로 유지.
  *  localStorage 에 저장 → 새 탭에서도 마지막 팀 자동 복원.
- *  URL ?team=X 우선 → localStorage 값 override.
+ *  URL ?team=X 우선 → localStorage 값 override (page 컴포넌트에서 처리).
  *
  *  _hasHydrated: persist 하이드레이션 완료 flag. 이 값이 true 되기 전엔
  *  activeTeamSlug 가 아직 localStorage 에서 안 읽혔을 수 있으므로 wizard 자동 오픈 등
@@ -33,13 +33,3 @@ export const useTeamStore = create<TeamState>()(
     },
   ),
 );
-
-/** URL 에서 team 파라미터 읽어서 store 초기화 · store 상태를 URL 에 반영. */
-export function syncTeamFromUrl() {
-  if (typeof window === "undefined") return;
-  const params = new URLSearchParams(window.location.search);
-  const urlTeam = params.get("team");
-  if (urlTeam) {
-    useTeamStore.getState().setActiveTeam(urlTeam);
-  }
-}

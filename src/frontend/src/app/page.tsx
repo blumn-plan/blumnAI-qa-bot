@@ -9,7 +9,7 @@ import { DocsSidebar } from "@/components/docs-sidebar";
 import { DocViewer } from "@/components/doc-viewer";
 import { ChatPanel } from "@/components/chat-panel";
 import { UserDialog } from "@/components/user-dialog";
-import { useTeamStore, syncTeamFromUrl } from "@/lib/team-store";
+import { useTeamStore } from "@/lib/team-store";
 import { useUserStore } from "@/lib/user-store";
 import { useUsageStore, estimateKrw, totalTokens } from "@/lib/usage-store";
 import { useUiStore } from "@/lib/ui-store";
@@ -41,17 +41,14 @@ export default function Home() {
   const chatWidth = useLayoutStore((s) => s.chatWidth);
   const setSidebarWidth = useLayoutStore((s) => s.setSidebarWidth);
   const setChatWidth = useLayoutStore((s) => s.setChatWidth);
-  // 참고 문서 선택 여부 · 미선택이면 챗 패널 자체를 숨김 (사용자가 [새 문의] 로 리셋하면 다시 숨김)
+  // 참고 문서 선택 여부 · 미선택이면 챗 패널 자체를 숨김.
+  //  · 「새 문의」·과거 세션 클릭 시엔 currentSessionId 가 있으므로 문서 미선택이어도 챗 패널 노출
+  //    (과거 대화 열람 · 옛 세션 (docPaths 미저장) 도 챗 패널이 뜨도록).
   //  · scope 계산은 chat-panel 과 동일하지만, layout 결정을 위해 page 에서도 필요
   const useAllDocs = useUiStore((s) => s.useAllDocs);
   const selectedDocPaths = useUiStore((s) => s.selectedDocPaths);
-  const chatReady = useAllDocs || selectedDocPaths.length > 0;
-
-  // URL ?team=X → store 초기화 (하이드레이션 후 실행해서 localStorage 값을 URL 로 override).
-  useEffect(() => {
-    if (!hasHydrated) return;
-    syncTeamFromUrl();
-  }, [hasHydrated]);
+  const currentSessionId = useChatSessionsStore((s) => s.currentSessionId);
+  const chatReady = useAllDocs || selectedDocPaths.length > 0 || currentSessionId !== null;
 
   const loadTeam = useCallback(async (slug: string) => {
     setLoading(true);
@@ -69,10 +66,18 @@ export default function Home() {
     }
   }, [setActiveTeam]);
 
-  // activeTeamSlug 바뀌면 백엔드에서 팀 config 로드.
-  // 하이드레이션 완료 전까지는 아무것도 하지 않음 (리로드 시 wizard flash 방지).
+  // 팀 로드 · wizard 오픈 결정.
+  //  · URL ?team=X 우선 (초대 링크) → localStorage 값 override.
+  //  · URL 체크를 wizard 결정 로직 안에 두어야 초대 링크로 들어온 사람에게 wizard flash 안 뜸.
+  //  · 하이드레이션 완료 전까지 대기 (리로드 시 wizard flash 방지).
   useEffect(() => {
     if (!hasHydrated) return;
+    const urlTeam = new URLSearchParams(window.location.search).get("team");
+    // URL 초대 링크가 현재 저장된 팀과 다르면 URL 값을 우선 반영. 재렌더에서 loadTeam 진입.
+    if (urlTeam && urlTeam !== activeTeamSlug) {
+      setActiveTeam(urlTeam);
+      return;
+    }
     if (!activeTeamSlug) {
       setTeam(null);
       setLoading(false);
@@ -82,7 +87,7 @@ export default function Home() {
     // 저장된 팀이 있으면 자동으로 wizard 닫고 로드 진행
     setWizardOpen(false);
     loadTeam(activeTeamSlug);
-  }, [hasHydrated, activeTeamSlug, loadTeam]);
+  }, [hasHydrated, activeTeamSlug, loadTeam, setActiveTeam]);
 
   // 「새 문의」 요청 시 activeDoc 도 함께 리셋 — chat-panel · docs-sidebar 모두 requestNewChat() 을 호출하면
   //  newChatNonce 가 오르고, 각 컴포넌트가 자기 상태를 리셋. page 는 activeDoc 담당.

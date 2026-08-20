@@ -160,8 +160,8 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
       ? docs.filter((d) => d.title.toLowerCase().includes(q) || d.path.toLowerCase().includes(q))
       : docs;
     return {
-      filteredPolicies: filtered.filter((d) => d.kind === "policy"),
-      filteredStories: filtered.filter((d) => d.kind === "storyboard"),
+      filteredPolicies: keepLatestVersion(filtered.filter((d) => d.kind === "policy")),
+      filteredStories: keepLatestVersion(filtered.filter((d) => d.kind === "storyboard")),
     };
   }, [docs, docSearch]);
 
@@ -219,14 +219,14 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
           <StepMarker>① 새 문의 시작</StepMarker>
           <Button
             type="button"
-            onClick={requestNewChat}
+            onClick={() => requestNewChat({ teamSlug, requester: userName || undefined })}
             className="w-full h-9 gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm shadow-sm"
-            title="새 문의 시작 — 지금 대화·참고 문서 선택을 리셋하고 처음부터"
+            title="새 문의 시작 — 아래 목록에 새 행이 추가됩니다 (대화 안 해도 유지)"
           >
             <Plus className="w-4 h-4" /> 새 문의
           </Button>
           <div className="mt-1.5 text-[10px] text-slate-500 leading-snug">
-            지금 대화와 참고 문서 선택을 리셋합니다.
+            누르면 아래 목록에 새 행이 쌓입니다 · 대화하지 않아도 유지됩니다.
           </div>
         </div>
 
@@ -250,7 +250,7 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
             />
           ) : (
             <div className="px-3 pb-3 text-[11px] text-slate-400 leading-relaxed">
-              아직 문의가 없어요. 첫 질문을 보내면 여기에 자동으로 목록이 생기고 다시 열어볼 수 있어요.
+              아직 문의가 없어요. 위 [+ 새 문의] 를 누르면 여기에 새 행이 하나 쌓입니다.
             </div>
           )}
         </div>
@@ -585,23 +585,9 @@ function RecentSection({
               </div>
             </div>
           )}
-          {/* 리스트는 항상 렌더링 (진행 중 임시 카드가 최상단에 노출되어야 하므로).
-           *  · 저장된 세션이 없어도 currentId=null 이면 "🆕 새 문의 (진행 중)" 카드가 하나 보임 → 사용자가 지금 뭘 하는지 즉시 인지. */}
+          {/* 세션 리스트 · 「새 문의」 클릭 시 store 가 빈 세션을 실제 생성해 이 리스트 최상단에 쌓임.
+           *  대화가 없어도 유지 · 사용자가 명시적으로 삭제(🗑)해야 사라짐. */}
           <ul>
-            {currentId === null && (
-              <li>
-                <div
-                  className="w-full text-left pl-3 pr-3 py-1.5 text-[12px] border-l-2 border-l-indigo-500 bg-indigo-50 text-indigo-900 font-medium"
-                  title="지금 진행 중인 새 문의 · 첫 질문을 보내면 이 자리에 제목이 자동 생성됩니다"
-                >
-                  <div className="truncate leading-snug inline-flex items-center gap-1.5">
-                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse-dot" />
-                    🆕 새 문의 (진행 중)
-                  </div>
-                  <div className="text-[10px] text-indigo-500">첫 질문을 보내면 제목이 자동 생성됩니다</div>
-                </div>
-              </li>
-            )}
             {filtered.map((s) => {
                 const active = s.id === currentId;
                 return (
@@ -653,6 +639,39 @@ function RecentSection({
       )}
     </div>
   );
+}
+
+/** 파일명에 `_v0.1.5.md` 같은 SemVer 접미사가 있으면 base name 별로 그룹핑해서 가장 높은 버전만 남김.
+ *  · 팀 정책 폴더에 옛 버전 md 가 함께 있을 때 사이드바에 v1, v2, ... 다 뜨는 문제 방지.
+ *  · 버전 접미사가 없는 파일은 그대로 유지 (README.md 등).
+ *  · 정렬은 원본 순서 유지 (첫 등장 위치 기준). */
+function keepLatestVersion(docs: DocEntry[]): DocEntry[] {
+  const versionRe = /_v(\d+(?:\.\d+)*)$/;
+  const bestByBase = new Map<string, { doc: DocEntry; version: number[]; firstIdx: number }>();
+  const orderByBase: string[] = [];
+  docs.forEach((doc, idx) => {
+    const m = doc.title.match(versionRe);
+    const baseName = m ? doc.title.slice(0, m.index) : doc.title;
+    const version = m ? m[1].split(".").map((n) => Number(n) || 0) : [];
+    const existing = bestByBase.get(baseName);
+    if (!existing) {
+      bestByBase.set(baseName, { doc, version, firstIdx: idx });
+      orderByBase.push(baseName);
+      return;
+    }
+    if (compareVersion(version, existing.version) > 0) {
+      bestByBase.set(baseName, { doc, version, firstIdx: existing.firstIdx });
+    }
+  });
+  return orderByBase.map((b) => bestByBase.get(b)!.doc);
+}
+function compareVersion(a: number[], b: number[]): number {
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 /** ISO date → 'MM-DD HH:mm' 또는 다른 년도면 'YYYY-MM-DD'. */

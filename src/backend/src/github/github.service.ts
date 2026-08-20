@@ -22,7 +22,7 @@ export class GitHubService {
   private readonly baseUrl = 'https://api.github.com';
   private readonly userAgent = 'blumnai-qa-backend';
 
-  /** GitHub API 호출 wrapper. transient(429/5xx) 은 최대 3회 재시도.
+  /** GitHub API 호출 wrapper. 재시도: 429/5xx (transient) + 403 IP allow list (Cloudflare edge IP 라운드로빈).
    *  Content-Type · Authorization · User-Agent 자동 셋업. */
   async apiFetch(ctx: GitHubContext, path: string, init: RequestInit = {}): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
@@ -34,22 +34,25 @@ export class GitHubService {
       if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
     }
 
-    const maxAttempts = 3;
+    const maxAttempts = 4;
     let lastRes: Response | undefined;
     let lastErr: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const res = await fetch(url, { ...init, headers });
-        // 429 · 5xx 만 재시도. 4xx (401/403/404) 는 그대로 반환.
-        if (res.status !== 429 && !(res.status >= 500 && res.status < 600)) {
-          return res;
-        }
+        // 재시도 대상: 429 (rate limit) · 5xx (server error) · 403 IP allow list (Cloudflare edge IP 회전)
+        //  401/404/일반 403 (권한 부족) 등은 즉시 반환 (재시도해도 결과 안 바뀜)
+        const isRetryable =
+          res.status === 429 ||
+          (res.status >= 500 && res.status < 600) ||
+          (res.status === 403 && (await this.isIpAllowListError(res)));
+        if (!isRetryable) return res;
         lastRes = res;
       } catch (err) {
         lastErr = err;
       }
       if (attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 500 * attempt));
+        await new Promise((r) => setTimeout(r, 400 * attempt));
       }
     }
     if (lastRes) return lastRes;
@@ -58,15 +61,38 @@ export class GitHubService {
     });
   }
 
-  /** GitHub 응답 에러 시 원인 메시지 조합. */
+  /** 403 응답이 GitHub org IP allow list 거절인지 판별 (Cloudflare edge IP 회전 시 재시도 대상). */
+  private async isIpAllowListError(res: Response): Promise<boolean> {
+    try {
+      const body = await res.clone().text();
+      return /IP allow list/i.test(body);
+    } catch {
+      return false;
+    }
+  }
+
+  /** GitHub 응답 에러 시 원인 메시지 조합. 상태코드별 힌트 포함해서 사용자가 원인 파악 쉽게. */
   private async errorMessage(res: Response, prefix: string): Promise<string> {
+    if (res.status === 401) {
+      return `${prefix}: 401 · 팀 GitHub PAT 문제 (만료·revoke·SSO 미인증) — 우측 상단 ⚙️ 에서 새 PAT 재저장 필요`;
+    }
     if (res.status === 403) {
       try {
         const body = await res.clone().text();
         if (/IP allow list/i.test(body)) {
-          return `${prefix}: 403 IP allow list — 서버 IP 가 GitHub org 허용목록에 없음`;
+          return `${prefix}: 403 IP allow list — 서버 IP 가 GitHub org 허용목록에 없음 (재시도 4회 모두 실패)`;
+        }
+        if (/rate limit/i.test(body)) {
+          return `${prefix}: 403 rate limit — GitHub API 시간당 호출 한도 초과 · 잠시 후 재시도`;
+        }
+        if (/scope|permission/i.test(body)) {
+          return `${prefix}: 403 권한 부족 — PAT 의 repo scope 확인 (private 레포는 repo 체크 필수)`;
         }
       } catch { /* body read 실패 무시 */ }
+      return `${prefix}: 403 · repo 접근 거부 — PAT scope 또는 org 권한 확인`;
+    }
+    if (res.status === 404) {
+      return `${prefix}: 404 · 파일/폴더 없음 또는 PAT 이 이 repo 접근 권한 없음`;
     }
     return `${prefix}: ${res.status}`;
   }
