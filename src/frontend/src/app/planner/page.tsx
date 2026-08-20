@@ -39,7 +39,7 @@ import { PlannerAuthGate } from "@/components/planner-auth-gate";
 import { NotificationToggle, notifyNewPending } from "@/components/notification-toggle";
 import { UserDialog } from "@/components/user-dialog";
 import { ApplyDecisionDialog, HoldDecisionDialog } from "@/components/planner-status-dialogs";
-import { useUserStore } from "@/lib/user-store";
+import { useUserDisplayName } from "@/lib/user-store";
 import { BookOpen, User as UserIcon } from "lucide-react";
 
 export default function PlannerPage() {
@@ -283,7 +283,7 @@ function buildAntigravityPrompt(item: DecisionListItem, content: string): string
 
 function PlannerBody({ teamSlug, team }: { teamSlug: string; team: TeamResponse | null }) {
   const revoke = usePlannerAuthStore((s) => s.revoke);
-  const userName = useUserStore((s) => s.name);
+  const userName = useUserDisplayName();
   const [userDialogOpen, setUserDialogOpen] = useState(false);
   const [items, setItems] = useState<DecisionListItem[]>([]);
   const [loading, setLoading] = useState(true);

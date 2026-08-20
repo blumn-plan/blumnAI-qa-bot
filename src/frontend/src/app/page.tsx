@@ -10,7 +10,7 @@ import { DocViewer } from "@/components/doc-viewer";
 import { ChatPanel } from "@/components/chat-panel";
 import { UserDialog } from "@/components/user-dialog";
 import { useTeamStore } from "@/lib/team-store";
-import { useUserStore } from "@/lib/user-store";
+import { useUserDisplayName } from "@/lib/user-store";
 import { useUsageStore, estimateKrw, totalTokens } from "@/lib/usage-store";
 import { useUiStore } from "@/lib/ui-store";
 import { useLayoutStore } from "@/lib/layout-store";
@@ -22,7 +22,7 @@ export default function Home() {
   const activeTeamSlug = useTeamStore((s) => s.activeTeamSlug);
   const setActiveTeam = useTeamStore((s) => s.setActiveTeam);
   const hasHydrated = useTeamStore((s) => s._hasHydrated);
-  const userName = useUserStore((s) => s.name);
+  const userName = useUserDisplayName();
   const [team, setTeam] = useState<TeamResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);

@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { forward, feedback } from "@/lib/api";
 import { preventCasualDismiss } from "@/lib/utils";
-import { useUserStore } from "@/lib/user-store";
+import { useUserDisplayName } from "@/lib/user-store";
 
 interface ActionDialogProps {
   open: boolean;
@@ -41,7 +41,7 @@ export function ForwardDialog({
   hasProposal = false,
   onSuccess,
 }: ForwardDialogProps) {
-  const savedUserName = useUserStore((s) => s.name);
+  const savedUserName = useUserDisplayName();
   const [title, setTitle] = useState(initialTitle);
   const [body, setBody] = useState(initialBody);
   const [questioner, setQuestioner] = useState(savedUserName);

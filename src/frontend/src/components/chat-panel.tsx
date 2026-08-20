@@ -27,7 +27,7 @@ import { MockupDialog } from "@/components/mockup-dialog";
 import { buildForwardDraft, parseChangeProposal } from "@/lib/change-proposal";
 import { useUiStore } from "@/lib/ui-store";
 import { useUsageStore, estimateKrw, formatTokens, formatKrw } from "@/lib/usage-store";
-import { useUserStore } from "@/lib/user-store";
+import { useUserDisplayName } from "@/lib/user-store";
 import { useChatSessionsStore, deriveSessionTitle } from "@/lib/chat-sessions-store";
 
 interface ChatMessage {
@@ -64,7 +64,7 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
   const setSelectedDocs = useUiStore((s) => s.setSelectedDocs);
   const clearSelectedDocs = useUiStore((s) => s.clearSelectedDocs);
   const addUsage = useUsageStore((s) => s.add);
-  const userName = useUserStore((s) => s.name);
+  const userName = useUserDisplayName();
   const upsertSession = useChatSessionsStore((s) => s.upsert);
   const currentSessionId = useChatSessionsStore((s) => s.currentSessionId);
   const allSessions = useChatSessionsStore((s) => s.sessions);

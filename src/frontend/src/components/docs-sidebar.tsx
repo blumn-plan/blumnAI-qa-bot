@@ -34,7 +34,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Input } from "@/components/ui/input";
 import { useUiStore } from "@/lib/ui-store";
-import { useUserStore } from "@/lib/user-store";
+import { useUserDisplayName } from "@/lib/user-store";
 import { useChatSessionsStore, ChatSession } from "@/lib/chat-sessions-store";
 import { useDecisionsSeenStore } from "@/lib/decisions-seen-store";
 import { GuideDialog } from "@/components/guide-dialog";
@@ -60,7 +60,7 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
   const setDocSearch = useUiStore((s) => s.setDocSearch);
   const viewMode = useUiStore((s) => s.viewMode);
   const setViewMode = useUiStore((s) => s.setViewMode);
-  const userName = useUserStore((s) => s.name);
+  const userName = useUserDisplayName();
 
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [docs, setDocs] = useState<DocEntry[]>([]);
