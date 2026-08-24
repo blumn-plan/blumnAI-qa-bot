@@ -361,15 +361,16 @@ export function parseDecisionMeta(content: string, filename: string): {
   const status: DecisionStatus = normalizeStatus(bqStatus, newTableStatus || oldTableStatus, Boolean(content));
 
   // 요청자·관련 문서·접수: 표 셀 우선 · blockquote fallback (호환)
+  //   구세대 문서는 "질문자" "일자" 로 적혀 있어 별칭 함께 매칭
   const requester =
-    extract(/^\|\s*(?:[^\w\s|]+\s*)?요청자\s*\|\s*@?([^|]+?)\s*\|/im) ??
-    extract(/>\s*요청자\s*[:：]\s*@?(.+)/);
+    extract(/^\|\s*(?:[^\w\s|]+\s*)?(?:요청자|질문자)\s*\|\s*@?([^|]+?)\s*\|/im) ??
+    extract(/>\s*(?:요청자|질문자)\s*[:：]\s*@?(.+)/);
   const relatedDoc =
     extract(/^\|\s*(?:[^\w\s|]+\s*)?관련\s*문서\s*\|\s*`?([^`|]+?)`?\s*\|/im) ??
     extract(/>\s*관련\s*문서\s*[:：]\s*(.+)/);
   let createdAt =
-    extract(/^\|\s*(?:[^\w\s|]+\s*)?접수\s*\|\s*([^|]+?)\s*\|/im) ??
-    extract(/>\s*접수\s*[:：]\s*(.+)/);
+    extract(/^\|\s*(?:[^\w\s|]+\s*)?(?:접수|일자)\s*\|\s*([^|]+?)\s*\|/im) ??
+    extract(/>\s*(?:접수|일자)\s*[:：]\s*(.+)/);
   if (!createdAt) {
     // filename prefix 에서 timestamp 파생
     // 신형: 2026-08-05T12-34-56-slug.md  → 2026-08-05T12:34:56Z

@@ -255,6 +255,14 @@ function preprocessDecisionMd(content: string, itemTitle: string): string {
     out.push(line);
   }
 
+  // 3) 짝 안 맞는 orphan code fence 제거 — 옛 change-proposal 파서 버그로 남은 stray ``` 이
+  //  뒷 컨텐츠 전체를 검은 코드블록으로 감싸는 렌더 사고 방지. ``` 개수가 홀수면 마지막 것 제거.
+  const fenceIdx: number[] = [];
+  out.forEach((l, i) => { if (/^\s*```/.test(l)) fenceIdx.push(i); });
+  if (fenceIdx.length % 2 === 1) {
+    out.splice(fenceIdx[fenceIdx.length - 1], 1);
+  }
+
   return out.join("\n");
 }
 

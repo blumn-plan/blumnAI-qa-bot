@@ -11,10 +11,24 @@ export interface GenHtmlRequestDto {
   title?: string;
 }
 
+export interface MockupListItem {
+  path: string;
+  filename: string;
+  sizeBytes: number;
+  previewUrl: string;
+  rawUrl: string;
+}
+
 export interface GenHtmlResponseDto {
   savedPath: string;
   bytes: number;
   modelUsed: string;
+  /** GitHub 가 실제로 응답한 blob URL · 브랜치가 main 이 아닐 수도 있으므로 프론트가 임의로 조립하지 말 것 */
+  previewUrl?: string;
+  /** 위 previewUrl 에서 raw.githubusercontent.com 로 변환한 URL */
+  rawUrl?: string;
+  /** 근거로 쓴 정책 MD 의 GitHub blob URL (focusedDocPath 있을 때만) */
+  focusedDocUrl?: string;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -148,11 +162,30 @@ export class MockupsService {
 
     // GitHub 저장 시도 · 실패해도 html 자체는 응답에 실어 반환
     try {
-      await this.github.writeFile(ctx, targetPath, html, `mockup: ${filename}`);
+      const written = await this.github.writeFile(ctx, targetPath, html, `mockup: ${filename}`);
+      // GitHub 이 준 htmlUrl 예: https://github.com/{owner}/{repo}/blob/{branch}/{path}
+      //   raw 변환: https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}
+      const rawUrl = written.htmlUrl.replace(
+        /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\//,
+        'https://raw.githubusercontent.com/$1/$2/',
+      );
+      // 근거 MD URL — htmlUrl 에서 브랜치 정보를 뽑아 조립 (사설 레포도 정확)
+      let focusedDocUrl: string | undefined;
+      if (body.focusedDocPath) {
+        const m = written.htmlUrl.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)\/blob\/([^/]+)\//);
+        if (m) {
+          const encPath = body.focusedDocPath.split('/').map(encodeURIComponent).join('/');
+          focusedDocUrl = `${m[1]}/blob/${m[2]}/${encPath}`;
+        }
+      }
       return {
         savedPath: targetPath,
         bytes: html.length,
         modelUsed: model,
+        previewUrl: written.htmlUrl,
+        rawUrl,
+        focusedDocUrl,
+        html, // 프론트에서 blob URL 로 실제 렌더 미리보기 (사설 레포 지원)
         usage,
       };
     } catch (err) {
@@ -167,6 +200,43 @@ export class MockupsService {
         saveError: msg,
       };
     }
+  }
+
+  /** qa/mockups/ 목록 반환 · 최신 생성순 정렬 (파일명 접두 YYYY-MM-DD 기준 desc).
+   *  각 아이템은 GitHub preview URL · raw URL 을 포함해 프론트가 브랜치 조립할 필요 없음. */
+  async list(teamSlug: string | undefined): Promise<MockupListItem[]> {
+    const team = await this.teamContext.resolve(teamSlug);
+    const ctx = this.teamContext.toGitHubContext(team);
+    const entries = await this.github.listDir(ctx, 'qa/mockups');
+    const htmls = entries.filter((e) => e.type === 'file' && e.name.endsWith('.html'));
+    // download_url 예: https://raw.githubusercontent.com/{owner}/{repo}/{branch}/qa/mockups/{name}
+    //   사설 레포는 ?token=... 쿼리가 붙어옴 · blob URL 변환 시 쿼리 제거 필요
+    return htmls
+      .map<MockupListItem>((e) => {
+        const rawRaw = (e.download_url || '').split('?')[0];
+        const previewUrl = rawRaw.replace(
+          /^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\//,
+          'https://github.com/$1/$2/blob/$3/',
+        );
+        return {
+          path: e.path,
+          filename: e.name,
+          sizeBytes: e.size ?? 0,
+          previewUrl,
+          rawUrl: e.download_url || '', // 미리보기 폴백에는 토큰 포함된 원본 URL 이 유리
+        };
+      })
+      .sort((a, b) => (a.filename < b.filename ? 1 : -1));
+  }
+
+  /** GitHub 에서 저장된 목업 HTML 원문 · 미리보기용 (blob URL 렌더링) */
+  async fetchHtml(teamSlug: string | undefined, path: string): Promise<string> {
+    if (!path.startsWith('qa/mockups/') || path.includes('..')) {
+      throw new BadRequestException({ error: 'invalid mockup path' });
+    }
+    const team = await this.teamContext.resolve(teamSlug);
+    const ctx = this.teamContext.toGitHubContext(team);
+    return this.github.getFile(ctx, path);
   }
 
   /** Anthropic stream → 전체 텍스트 축적. SSE 파싱은 anthropic.createSseToNdjsonTransform 과 유사 로직. */

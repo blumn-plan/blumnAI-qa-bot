@@ -164,6 +164,17 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
     return () => { cancelled = true; };
   }, [teamSlug, activeProject]);
 
+  // 참고 문서가 체크됐는데 뷰어가 비어있거나 · 뷰어 문서가 선택 목록에 없으면 첫 선택 문서를 자동으로 뷰어에 로드.
+  //  · 사용자 요청 "정책문서가 선택되었다면 정책문서 내용이 보여야" · "문의목록 선택 시 그때의 정책문서로 자동 열림"
+  //  · activeDocPath 가 현재 selectedDocPaths 안에 있으면 유지 (사용자가 명시적으로 그 문서 보고 있는 것)
+  useEffect(() => {
+    if (selectedDocPaths.length === 0) return;
+    if (docs.length === 0) return;
+    if (activeDocPath && selectedDocPaths.includes(activeDocPath)) return;
+    const first = docs.find((d) => selectedDocPaths.includes(d.path));
+    if (first) onDocSelect(first);
+  }, [docs, selectedDocPaths, activeDocPath, onDocSelect]);
+
   const { filteredPolicies, filteredStories } = useMemo(() => {
     const q = docSearch.trim().toLowerCase();
     const filtered = q

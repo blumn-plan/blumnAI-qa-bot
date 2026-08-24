@@ -89,6 +89,23 @@ export default function Home() {
     loadTeam(activeTeamSlug);
   }, [hasHydrated, activeTeamSlug, loadTeam, setActiveTeam]);
 
+  // F5·초기 mount 후: currentSessionId 가 비어있는데 이 팀의 세션이 있으면 최신 세션으로 auto-select.
+  //  · 사용자 요청 "리셋 시 선택된 문의 없거나 최근 문의가 선택되어야" 대응
+  //  · 세션 스코프 복원은 chat-panel 의 currentSessionId useEffect 가 담당
+  const setCurrentSession = useChatSessionsStore((s) => s.setCurrent);
+  const allSessions = useChatSessionsStore((s) => s.sessions);
+  const sessionsHydrated = useRef(false);
+  useEffect(() => {
+    if (!hasHydrated || !team) return;
+    if (sessionsHydrated.current) return;
+    if (currentSessionId) { sessionsHydrated.current = true; return; }
+    const mostRecent = allSessions
+      .filter((s) => s.teamSlug === team.team_slug)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
+    if (mostRecent) setCurrentSession(mostRecent.id);
+    sessionsHydrated.current = true;
+  }, [hasHydrated, team, currentSessionId, allSessions, setCurrentSession]);
+
   // 「새 문의」 요청 시 activeDoc 도 함께 리셋 — chat-panel · docs-sidebar 모두 requestNewChat() 을 호출하면
   //  newChatNonce 가 오르고, 각 컴포넌트가 자기 상태를 리셋. page 는 activeDoc 담당.
   //  · 초기 mount 시엔 nonce=0 이라 useRef 로 첫 실행 무시
@@ -227,7 +244,17 @@ export default function Home() {
 
       {/* 메인 영역 · 3단 (사이드바 + 뷰어 + 챗) — 정책 열람과 AI 문의를 동시에 하는 flow */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {!team ? (
+        {!hasHydrated || loading ? (
+          // 하이드레이션 대기 or 팀 로드 중 → 로딩 인디케이터.
+          //  · loading 은 초기값 true → useEffect 가 "팀 없음" 결정 시에만 false 로 뒤집힘.
+          //  · activeTeamSlug 를 조건에 넣으면 하이드레이션 도중 잠깐 null 인 순간에 welcome flash 남 → 넣지 않음.
+          <div className="h-full flex items-center justify-center">
+            <div className="text-sm text-slate-500 inline-flex items-center gap-2">
+              <span className="inline-block w-4 h-4 border-2 border-slate-200 border-t-indigo-600 rounded-full animate-spin" />
+              팀 로딩 중…
+            </div>
+          </div>
+        ) : !team ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center max-w-md p-6">
               <div className="text-5xl mb-3">🎯</div>

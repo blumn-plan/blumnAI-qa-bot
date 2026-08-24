@@ -101,6 +101,11 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
     return () => clearTimeout(t);
   }, [successBanner]);
 
+  // 세션 로드로 인한 setMessages 인지 여부 — messages useEffect 에서 upsert skip 판단용.
+  //  · true → 지금 messages 는 사용자 액션이 아닌 세션 클릭 복원 → upsert 안 함 (updatedAt 갱신으로 목록이 상단 재정렬되는 어색함 방지).
+  //  · 사용자가 실제로 send 하면 다시 false 로 돌아옴 (upsert 진행).
+  const skipNextUpsertRef = useRef(false);
+
   // 사이드바에서 최근 대화 클릭 → currentSessionId 변경 → 여기서 messages + 참고 스코프 복원
   //  · 새 세션 (필드 저장됨) → 저장된 useAllDocs/docPaths/project 그대로 복원
   //  · 옛 세션 (필드 없음, undefined) → 대화 내용 있으면 useAllDocs=true fallback (챗 패널 뜨고 이어서 질문 가능)
@@ -110,6 +115,8 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
     if (currentSessionId === sessionId) return; // 이미 로드된 세션
     const target = allSessions.find((s) => s.id === currentSessionId);
     if (!target || target.teamSlug !== teamSlug) return;
+    // 세션 로드로 인한 messages 세팅 → 다음 messages upsert 는 skip (목록 상단 재정렬 방지)
+    skipNextUpsertRef.current = true;
     setMessages(
       target.messages.map((m) => ({
         role: m.role,
@@ -135,6 +142,11 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
   //  답변 완료 조건은 없음 → 첫 질문 즉시 사이드바에 새 항목이 뜨고 · 답변이 오면 업데이트.
   //  streaming 중인 assistant 메시지는 persistable 에서 제외 (스트림 중 저장 시 빈 content 유입 방지).
   useEffect(() => {
+    // 세션 로드로 인한 messages 세팅이면 upsert skip (사용자가 새로 send 한 게 아님).
+    if (skipNextUpsertRef.current) {
+      skipNextUpsertRef.current = false;
+      return;
+    }
     if (messages.length === 0) return;
     const hasUserMessage = messages.some((m) => m.role === "user" && m.content.trim());
     if (!hasUserMessage) return;

@@ -81,7 +81,16 @@ async function req<T = unknown>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   const text = await res.text();
-  const body = text ? JSON.parse(text) : null;
+  let body: unknown = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      // 프록시/게이트웨이가 돌려주는 HTML 500 등 · 사일런트 SyntaxError 대신 실제 응답 노출
+      const preview = text.length > 300 ? text.slice(0, 300) + "…" : text;
+      throw new ApiError(res.status || 502, { error: `상위 서버 응답이 JSON 이 아님 (${res.status}) — 프록시/네트워크 이슈일 가능성 · 원문: ${preview}` });
+    }
+  }
   if (!res.ok) throw new ApiError(res.status, body);
   return body as T;
 }
@@ -219,6 +228,9 @@ export interface GenHtmlResponse {
   savedPath: string;
   bytes: number;
   modelUsed: string;
+  previewUrl?: string;
+  rawUrl?: string;
+  focusedDocUrl?: string;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -234,6 +246,22 @@ export function generateHtmlMockup(team: string, body: GenHtmlRequest) {
     method: 'POST',
     body: JSON.stringify(body),
   });
+}
+
+export interface MockupListItem {
+  path: string;
+  filename: string;
+  sizeBytes: number;
+  previewUrl: string;
+  rawUrl: string;
+}
+
+export function listMockups(team: string) {
+  return req<{ items: MockupListItem[] }>(`/mockups?team=${encodeURIComponent(team)}`);
+}
+
+export function fetchMockupHtml(team: string, path: string) {
+  return req<{ html: string }>(`/mockup-html?team=${encodeURIComponent(team)}&path=${encodeURIComponent(path)}`);
 }
 
 // ─── Images ────────────────────────────────────────

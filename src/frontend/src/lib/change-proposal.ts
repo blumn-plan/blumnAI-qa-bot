@@ -10,15 +10,20 @@ export interface ChangeProposal {
   reason: string;
 }
 
-/** 답변 텍스트에서 「### 📋 변경 제안」 블록의 6필드 추출. 없으면 null. */
+/** 답변 텍스트에서 「### 📋 변경 제안」 블록의 6필드 추출. 없으면 null.
+ *  · 블록 종료 지점: 다음 `###` · `##` · 닫는 코드펜스 `\n```` · 문자열 끝 중 가장 이른 위치.
+ *    ← 닫는 fence 를 포함하지 않아야 마지막 필드 (💡 근거) 값에 orphan ``` 이 안 딸려옴.
+ *  · 각 필드 값은 trim + trailing ``` fence 제거 (Claude 가 fence 안에 값을 배치한 경우 대비). */
 export function parseChangeProposal(answer: string): ChangeProposal | null {
-  const m = answer.match(/### 📋 변경 제안\s*\n([\s\S]*?)(?=\n###|\n##|$)/);
+  const m = answer.match(/### 📋 변경 제안\s*\n([\s\S]*?)(?=\n###|\n##|\n```|$)/);
   if (!m) return null;
   const block = m[1];
   const get = (label: string) => {
     const re = new RegExp(`-\\s*${label}:?\\s*([\\s\\S]*?)(?=\\n-\\s*[📌📄📍✏️✅💡]|$)`);
     const r = block.match(re);
-    return r ? r[1].trim() : "";
+    if (!r) return "";
+    // 값 뒤에 남은 code fence · 빈 줄 정리 (안전망 · 위 outer regex 가 이미 걸러도 이중 방어)
+    return r[1].replace(/\n?```\s*$/g, "").trim();
   };
   return {
     title: get("📌\\s*요청\\s*제목"),
