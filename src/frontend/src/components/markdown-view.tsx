@@ -77,6 +77,7 @@ export function MarkdownView({
   assignHeadingIds,
   stripImages,
   stripChangeProposal,
+  onEditPlannerNote,
 }: {
   content: string;
   /** 내부 문서 링크 클릭 콜백. path 는 fragment 없는 경로, hash 는 있으면 '#4-2-1' 형태 */
@@ -92,6 +93,9 @@ export function MarkdownView({
    *  · 이 블록은 파싱 전용 (기획전달 초안 채우기) 이라 사용자에게 노출 불필요.
    *  · 원문 content 는 그대로 · parseChangeProposal 은 정상 동작. */
   stripChangeProposal?: boolean;
+  /** 있으면 planner-note (기획자 메모) 박스 우측 상단에 ✏️ 아이콘 노출 · 클릭 시 호출.
+   *  · 기획자 페이지에서만 넘김 (질문자 뷰어에선 편집 UI 감춤). */
+  onEditPlannerNote?: () => void;
 }) {
   let rawContent = content;
   if (stripChangeProposal) {
@@ -196,8 +200,21 @@ export function MarkdownView({
               const cls = kind === "apply"
                 ? "border-emerald-300 bg-emerald-50"
                 : "border-amber-300 bg-amber-50";
+              const btnCls = kind === "apply"
+                ? "text-emerald-700 hover:bg-emerald-100"
+                : "text-amber-700 hover:bg-amber-100";
               return (
-                <div className={`my-3 rounded-lg border-2 p-3 ${cls}`}>
+                <div className={`relative my-3 rounded-lg border-2 p-3 ${cls}`}>
+                  {onEditPlannerNote && (
+                    <button
+                      type="button"
+                      onClick={onEditPlannerNote}
+                      title={kind === "apply" ? "적용 메모 수정" : "보류 사유 수정"}
+                      className={`absolute top-2 right-2 h-6 w-6 rounded inline-flex items-center justify-center transition-colors ${btnCls}`}
+                    >
+                      ✏️
+                    </button>
+                  )}
                   {stripped}
                 </div>
               );

@@ -450,17 +450,24 @@ function PlannerBody({ teamSlug, team }: { teamSlug: string; team: TeamResponse 
   // 적용/보류 다이얼로그 open 상태 · pending 복귀는 다이얼로그 없이 즉시
   const [applyDialogOpen, setApplyDialogOpen] = useState(false);
   const [holdDialogOpen, setHoldDialogOpen] = useState(false);
+  // 메모 수정 모드 · true 면 다이얼로그가 편집 톤 + 저장 시 replaceNotes 로 기존 메모 교체
+  const [memoEditing, setMemoEditing] = useState(false);
 
   /** 실제 API 호출 + 리스트/상세 리로드. note 는 옵션. */
-  async function doStatusChange(newStatus: "pending" | "applied" | "hold", note?: string) {
+  async function doStatusChange(
+    newStatus: "pending" | "applied" | "hold",
+    note?: string,
+    opts?: { replaceNotes?: boolean },
+  ) {
     if (!selectedItem) return;
     setStatusChanging(true);
     try {
       await updateDecisionStatus(teamSlug, selectedItem.path, newStatus, {
         note: note?.trim() || undefined,
         plannerName: userName?.trim() || undefined,
+        replaceNotes: opts?.replaceNotes,
       });
-      const suffix = note?.trim() ? " (메모 저장됨)" : "";
+      const suffix = opts?.replaceNotes ? " (메모 수정됨)" : note?.trim() ? " (메모 저장됨)" : "";
       setBanner({ kind: "success", msg: `상태 변경: ${STATUS_META[newStatus]?.label}${suffix} — ${selectedItem.title}` });
       await loadList();
       try {
@@ -482,10 +489,42 @@ function PlannerBody({ teamSlug, team }: { teamSlug: string; team: TeamResponse 
     if (!selectedItem || statusChanging) return;
     if (newStatus === "unknown") return;
     if (selectedItem.status === newStatus) return;
+    setMemoEditing(false);
     if (newStatus === "applied") { setApplyDialogOpen(true); return; }
     if (newStatus === "hold") { setHoldDialogOpen(true); return; }
-    // pending 복귀는 즉시
+    // pending 복귀는 즉시 (백엔드가 기존 planner-note 자동 제거)
     void doStatusChange("pending");
+  }
+
+  /** 현재 md 상단 blockquote 에서 기획자 메모 본문 (첫 블록) 을 추출.
+   *  없으면 빈 문자열. 상단에 여러 개 stacked 되어 있으면 첫(가장 최근) 것만. */
+  function extractCurrentMemo(md: string): string {
+    const lines = md.split(/\r?\n/);
+    let i = 0;
+    // 첫 planner-note 헤더 찾기
+    while (i < lines.length && !/^>\s*📄?\s*\[planner-note:(apply|hold)\]/.test(lines[i].trimStart())) i += 1;
+    if (i >= lines.length) return "";
+    i += 1; // 헤더 skip
+    // 헤더 바로 다음 빈 `>` 라인 skip
+    if (i < lines.length && /^>\s*$/.test(lines[i].trimStart())) i += 1;
+    const body: string[] = [];
+    while (i < lines.length && /^>/.test(lines[i])) {
+      // 다음 planner-note 헤더가 나오면 이번 블록 종료
+      if (/^>\s*📄?\s*\[planner-note:(apply|hold)\]/.test(lines[i].trimStart())) break;
+      // '> ' 또는 '>' prefix 제거
+      body.push(lines[i].replace(/^>\s?/, ""));
+      i += 1;
+    }
+    return body.join("\n").trim();
+  }
+
+  /** [메모 수정] 진입점 · 현재 상태(applied/hold) 다이얼로그를 편집 모드로 오픈 */
+  function handleMemoEdit() {
+    if (!selectedItem || statusChanging) return;
+    if (selectedItem.status !== "applied" && selectedItem.status !== "hold") return;
+    setMemoEditing(true);
+    if (selectedItem.status === "applied") setApplyDialogOpen(true);
+    else setHoldDialogOpen(true);
   }
 
   return (
@@ -779,7 +818,7 @@ function PlannerBody({ teamSlug, team }: { teamSlug: string; team: TeamResponse 
                     disabled={statusChanging}
                     onClick={() => handleStatusChange("pending")}
                     className="text-[11px] text-slate-500 hover:text-slate-800 underline underline-offset-2 px-1 disabled:opacity-40 inline-flex items-center gap-1"
-                    title="대기로 되돌림"
+                    title="대기로 되돌리고 기존 기획자 메모 제거"
                   >
                     <RotateCcw className="w-3 h-3" /> 대기 초기화
                   </button>
@@ -833,7 +872,15 @@ function PlannerBody({ teamSlug, team }: { teamSlug: string; team: TeamResponse 
                     </button>
                   </div>
                 ) : detailContent ? (
-                  <MarkdownView content={preprocessDecisionMd(detailContent, selectedItem?.title || "")} stripImages />
+                  <MarkdownView
+                    content={preprocessDecisionMd(detailContent, selectedItem?.title || "")}
+                    stripImages
+                    onEditPlannerNote={
+                      selectedItem?.status === "applied" || selectedItem?.status === "hold"
+                        ? handleMemoEdit
+                        : undefined
+                    }
+                  />
                 ) : null}
               </div>
             </>
@@ -844,20 +891,24 @@ function PlannerBody({ teamSlug, team }: { teamSlug: string; team: TeamResponse 
       {/* 사용자 이름 변경 다이얼로그 */}
       <UserDialog open={userDialogOpen} onOpenChange={setUserDialogOpen} />
 
-      {/* 적용/보류 상태 변경 다이얼로그 · 기획자 메모를 md 상단에 기록 */}
+      {/* 적용/보류 상태 변경 다이얼로그 · 기획자 메모를 md 상단에 기록 · memoEditing=true 면 편집 톤 + 기존 메모 교체 */}
       {selectedItem && (
         <>
           <ApplyDecisionDialog
             open={applyDialogOpen}
-            onOpenChange={setApplyDialogOpen}
+            onOpenChange={(o) => { setApplyDialogOpen(o); if (!o) setMemoEditing(false); }}
             itemTitle={selectedItem.title}
-            onConfirm={(note) => doStatusChange("applied", note)}
+            initialNote={memoEditing ? extractCurrentMemo(detailContent ?? "") : undefined}
+            editMode={memoEditing}
+            onConfirm={(note) => doStatusChange("applied", note, { replaceNotes: memoEditing })}
           />
           <HoldDecisionDialog
             open={holdDialogOpen}
-            onOpenChange={setHoldDialogOpen}
+            onOpenChange={(o) => { setHoldDialogOpen(o); if (!o) setMemoEditing(false); }}
             itemTitle={selectedItem.title}
-            onConfirm={(note) => doStatusChange("hold", note)}
+            initialNote={memoEditing ? extractCurrentMemo(detailContent ?? "") : undefined}
+            editMode={memoEditing}
+            onConfirm={(note) => doStatusChange("hold", note, { replaceNotes: memoEditing })}
           />
         </>
       )}

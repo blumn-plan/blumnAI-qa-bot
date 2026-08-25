@@ -28,6 +28,8 @@ interface UpdateStatusBody {
   note?: string;
   /** 기획자 이름 (선택 · 표시용) */
   plannerName?: string;
+  /** true → 기존 planner-note 를 모두 지우고 새로 note 삽입 (메모 수정 UI 용) */
+  replaceNotes?: boolean;
 }
 
 @Controller()
@@ -95,6 +97,7 @@ export class DecisionsController {
       body.status,
       body.note,
       body.plannerName,
+      body.replaceNotes ?? false,
     );
   }
 }

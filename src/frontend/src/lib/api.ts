@@ -200,11 +200,20 @@ export function updateDecisionStatus(
   team: string,
   path: string,
   status: "pending" | "applied" | "hold",
-  opts?: { note?: string; plannerName?: string },
+  opts?: { note?: string; plannerName?: string; replaceNotes?: boolean },
 ) {
   return req<{ ok: true; path: string; status: string; commitSha: string }>(
     `/update-decision-status?team=${encodeURIComponent(team)}`,
-    { method: "POST", body: JSON.stringify({ path, status, note: opts?.note, plannerName: opts?.plannerName }) },
+    {
+      method: "POST",
+      body: JSON.stringify({
+        path,
+        status,
+        note: opts?.note,
+        plannerName: opts?.plannerName,
+        replaceNotes: opts?.replaceNotes,
+      }),
+    },
   );
 }
 

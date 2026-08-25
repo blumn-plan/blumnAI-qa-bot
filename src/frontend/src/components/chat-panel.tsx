@@ -440,31 +440,40 @@ export function ChatPanel({ teamSlug, activeDoc, githubRepo, onOpenDoc, onCitati
                   ? "제목은 첫 답변 완료 후 자동 생성돼요"
                   : "왼쪽에서 참고 문서를 고르고 아래 입력창에 질문하세요"}
             </div>
-            <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-1 min-w-0">
-              <span className="shrink-0 text-slate-400">참고 문서:</span>
+            <div className="flex items-start gap-1.5 text-[11px] text-slate-500 mt-1 min-w-0">
+              <span className="shrink-0 text-slate-400 pt-0.5">참고 문서:</span>
               {scope === "all" && (
-                <span className="inline-flex items-center gap-1 text-indigo-700 font-medium shrink-0">
+                <span className="inline-flex items-center gap-1 text-indigo-700 font-medium shrink-0 pt-0.5">
                   <Globe className="w-3 h-3" /> 전체 정책 종합
                 </span>
               )}
               {scope === "multi" && (
-                <span
-                  className="inline-flex items-center gap-1 text-emerald-700 font-medium shrink-0"
-                  title={`선택된 문서:\n${selectedDocPaths.join("\n")}`}
-                >
-                  <FileTextIcon className="w-3 h-3 shrink-0" /> 선택 {selectedDocPaths.length}개
-                  <button
-                    type="button"
-                    onClick={clearSelectedDocs}
-                    className="ml-1 text-slate-400 hover:text-red-600 underline underline-offset-2"
-                    title="선택 초기화"
-                  >
-                    초기화
-                  </button>
-                </span>
+                <div className="flex flex-wrap gap-1 min-w-0">
+                  {selectedDocPaths.map((path) => {
+                    const name = path.split("/").pop()?.replace(/\.md$/i, "") ?? path;
+                    return (
+                      <span
+                        key={path}
+                        title={path}
+                        className="inline-flex items-center gap-1 max-w-[220px] bg-emerald-50 text-emerald-800 border border-emerald-200 rounded px-1.5 py-0.5"
+                      >
+                        <FileTextIcon className="w-3 h-3 shrink-0" />
+                        <span className="truncate">{name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDocs(selectedDocPaths.filter((p) => p !== path))}
+                          className="ml-0.5 text-emerald-500 hover:text-red-600 shrink-0"
+                          title="이 문서 선택 해제"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
               )}
               {scope === "none" && (
-                <span className="inline-flex items-center gap-1 text-amber-700 font-medium shrink-0">
+                <span className="inline-flex items-center gap-1 text-amber-700 font-medium shrink-0 pt-0.5">
                   <AlertCircle className="w-3 h-3" /> 왼쪽에서 참고 문서를 체크하거나 [🌐 전체 종합] 을 켜세요
                 </span>
               )}

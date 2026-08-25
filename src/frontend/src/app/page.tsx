@@ -9,6 +9,9 @@ import { DocsSidebar } from "@/components/docs-sidebar";
 import { DocViewer } from "@/components/doc-viewer";
 import { ChatPanel } from "@/components/chat-panel";
 import { UserDialog } from "@/components/user-dialog";
+import { DecisionDetailPanel } from "@/components/decision-detail-panel";
+import { WelcomeDialog, hasSeenWelcome } from "@/components/welcome-dialog";
+import { HelpCircle } from "lucide-react";
 import { useTeamStore } from "@/lib/team-store";
 import { useUserDisplayName } from "@/lib/user-store";
 import { useUsageStore, estimateKrw, totalTokens } from "@/lib/usage-store";
@@ -16,7 +19,13 @@ import { useUiStore } from "@/lib/ui-store";
 import { useLayoutStore } from "@/lib/layout-store";
 import { useChatSessionsStore } from "@/lib/chat-sessions-store";
 import { ColumnResizer } from "@/components/column-resizer";
-import { getTeam, TeamResponse, DocEntry, ApiError } from "@/lib/api";
+import { getTeam, TeamResponse, DocEntry, DecisionListItem, ApiError } from "@/lib/api";
+
+function isLocalhostOrigin(): boolean {
+  if (typeof window === "undefined") return false;
+  const h = window.location.hostname;
+  return h === "localhost" || h === "127.0.0.1" || h.startsWith("192.168.");
+}
 
 export default function Home() {
   const activeTeamSlug = useTeamStore((s) => s.activeTeamSlug);
@@ -30,6 +39,10 @@ export default function Home() {
   const [activeDoc, setActiveDoc] = useState<DocEntry | null>(null);
   // 챗 답변의 §X-Y 클릭 → 도큐 뷰어 스크롤 트리거 (nonce 로 같은 anchor 재클릭도 감지)
   const [citationTarget, setCitationTarget] = useState<{ anchor: string; nonce: number } | null>(null);
+  // 협업자 · 기획자 전달이력 우측 상세 뷰 (챗 패널 자리에 표시). null 이면 챗 패널 노출
+  const [viewingDecision, setViewingDecision] = useState<DecisionListItem | null>(null);
+  // 온보딩 · 첫 진입 시 자동 오픈 (localStorage 로 재노출 제어) · 헤더 [?] 로 언제든 재열람
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
   // 프로젝트 변경 시 사이드바 강제 리로드용 counter
   const [refreshKey, setRefreshKey] = useState(0);
   // 사용량 배지용 · store 구독 (팀별 · 이달)
@@ -55,6 +68,17 @@ export default function Home() {
     try {
       const t = await getTeam(slug);
       setTeam(t);
+      // 로컬 개발자 편의 · 성공적으로 로드된 팀을 기억해서 다음 새 세션에서 [빠른 접속] 로 재사용
+      if (typeof window !== "undefined" && isLocalhostOrigin()) {
+        try {
+          localStorage.setItem(
+            "qa-bot:dev-last-team",
+            JSON.stringify({ slug: t.team_slug, name: t.team_name }),
+          );
+        } catch {
+          /* silent */
+        }
+      }
     } catch (err) {
       console.warn("[qa-bot] team load failed", err);
       if (err instanceof ApiError && err.status === 404) {
@@ -65,6 +89,20 @@ export default function Home() {
       setLoading(false);
     }
   }, [setActiveTeam]);
+
+  // 로컬 개발자 빠른 접속용 · 마지막 성공 로드한 팀 정보를 localStorage 에서 읽음
+  //  · localhost 접근일 때만 노출 (프로덕션에선 감춤)
+  const [devLastTeam, setDevLastTeam] = useState<{ slug: string; name: string } | null>(null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!isLocalhostOrigin()) return;
+    try {
+      const raw = localStorage.getItem("qa-bot:dev-last-team");
+      if (raw) setDevLastTeam(JSON.parse(raw));
+    } catch {
+      /* silent */
+    }
+  }, []);
 
   // 팀 로드 · wizard 오픈 결정.
   //  · URL ?team=X 우선 (초대 링크) → localStorage 값 override.
@@ -81,7 +119,12 @@ export default function Home() {
     if (!activeTeamSlug) {
       setTeam(null);
       setLoading(false);
-      setWizardOpen(true);
+      // 로컬 개발자에게 마지막 팀 기억이 있으면 wizard 대신 empty state 로 · [빠른 접속] 유도
+      const hasDevQuick =
+        isLocalhostOrigin() &&
+        typeof window !== "undefined" &&
+        !!localStorage.getItem("qa-bot:dev-last-team");
+      if (!hasDevQuick) setWizardOpen(true);
       return;
     }
     // 저장된 팀이 있으면 자동으로 wizard 닫고 로드 진행
@@ -128,6 +171,18 @@ export default function Home() {
       setNamePromptShown(true);
     }
   }, [hasHydrated, team, userName, namePromptShown]);
+
+  // 첫 진입 온보딩 · 팀 로드된 뒤 이름 프롬프트 이후에 한 번만 자동 오픈
+  //  · localStorage 로 재노출 억제 (헤더 [?] 로 언제든 다시 열람)
+  const [welcomeAutoShown, setWelcomeAutoShown] = useState(false);
+  useEffect(() => {
+    if (!hasHydrated || !team || welcomeAutoShown) return;
+    if (userDialogOpen) return; // 이름 다이얼로그가 먼저 뜨면 대기
+    if (!hasSeenWelcome()) {
+      setWelcomeOpen(true);
+    }
+    setWelcomeAutoShown(true);
+  }, [hasHydrated, team, userDialogOpen, welcomeAutoShown]);
 
   // URL ?doc=<path> → 문서 자동 선택 · 소속 프로젝트도 activeProject 로 세팅
   // (Planner 의 [📄 관련 정책 열기] 딥링크 지원)
@@ -226,6 +281,14 @@ export default function Home() {
         )}
         <button
           type="button"
+          onClick={() => setWelcomeOpen(true)}
+          title="QA봇 사용 안내"
+          className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors inline-flex items-center justify-center"
+        >
+          <HelpCircle className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
           onClick={() => setUserDialogOpen(true)}
           title="사용자 이름 변경"
           className="h-7 px-2 text-[12px] text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors inline-flex items-center gap-1"
@@ -264,7 +327,22 @@ export default function Home() {
                 <br />
                 시작하려면 팀 설정을 완료하세요.
               </p>
-              <Button size="lg" onClick={() => setWizardOpen(true)}>
+              {/* 로컬 개발자 편의 · 마지막 접속한 팀 있으면 원클릭 재접속 · localhost 에서만 노출 */}
+              {devLastTeam && (
+                <div className="mb-3">
+                  <Button
+                    size="lg"
+                    onClick={() => setActiveTeam(devLastTeam.slug)}
+                    className="bg-emerald-600 hover:bg-emerald-700 gap-1.5"
+                  >
+                    🛠️ 빠른 접속: <b>{devLastTeam.name}</b>
+                  </Button>
+                  <div className="text-[11px] text-slate-400 mt-1.5">
+                    로컬 개발용 · 이전 성공 접속한 팀으로 즉시 로드
+                  </div>
+                </div>
+              )}
+              <Button size="lg" variant={devLastTeam ? "outline" : "default"} onClick={() => setWizardOpen(true)}>
                 🚀 팀 설정 시작
               </Button>
               {activeTeamSlug && (
@@ -283,7 +361,7 @@ export default function Home() {
           <div
             className="h-full grid grid-rows-[minmax(0,1fr)]"
             style={{
-              gridTemplateColumns: chatReady
+              gridTemplateColumns: (chatReady || viewingDecision)
                 ? `${sidebarWidth}px 4px minmax(0,1fr) 4px ${chatWidth}px`
                 : `${sidebarWidth}px 4px minmax(0,1fr)`,
             }}
@@ -293,6 +371,18 @@ export default function Home() {
               teamSlug={team.team_slug}
               activeDocPath={activeDoc?.path ?? null}
               onDocSelect={setActiveDoc}
+              activeDecisionPath={viewingDecision?.path ?? null}
+              onOpenDecision={(d) => {
+                setViewingDecision(d);
+                // 관련 정책이 있으면 가운데 뷰어에 자동 로드 (기획자 모드와 유사한 문맥 제공)
+                if (d.relatedDoc) {
+                  setActiveDoc({
+                    path: d.relatedDoc,
+                    title: d.relatedDoc.split("/").pop()?.replace(/\.md$/i, "") ?? d.relatedDoc,
+                    kind: "policy",
+                  });
+                }
+              }}
             />
             <ColumnResizer
               direction="left"
@@ -311,33 +401,42 @@ export default function Home() {
                 }
               }}
             />
-            {chatReady && (
+            {(chatReady || viewingDecision) && (
               <>
                 <ColumnResizer
                   direction="right"
                   currentWidth={chatWidth}
                   onChange={setChatWidth}
-                  title="드래그하여 챗 패널 폭 조절"
+                  title="드래그하여 우측 패널 폭 조절"
                 />
                 <div className="border-l border-slate-200 min-h-0 overflow-hidden animate-chat-slide-in">
-                  <ChatPanel
-                    teamSlug={team.team_slug}
-                    activeDoc={activeDoc}
-                    githubRepo={team.github_repo}
-                    onOpenDoc={(path) => {
-                      // 답변 내 정책 링크 클릭 → 중앙 뷰어에 문서 로드 (같은 화면에서 동시 표시)
-                      const isStory = team.projects.some((p) => {
-                        const dirs = (p.storyboards_dir || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
-                        return dirs.some((d) => path.startsWith(d + "/") || path.startsWith(d));
-                      });
-                      setActiveDoc({
-                        path,
-                        title: path.split("/").pop()?.replace(/\.md$/i, "") ?? path,
-                        kind: isStory ? "storyboard" : "policy",
-                      });
-                    }}
-                    onCitation={(anchor) => setCitationTarget({ anchor, nonce: Date.now() })}
-                  />
+                  {viewingDecision ? (
+                    <DecisionDetailPanel
+                      teamSlug={team.team_slug}
+                      githubRepo={team.github_repo}
+                      decision={viewingDecision}
+                      onClose={() => setViewingDecision(null)}
+                    />
+                  ) : (
+                    <ChatPanel
+                      teamSlug={team.team_slug}
+                      activeDoc={activeDoc}
+                      githubRepo={team.github_repo}
+                      onOpenDoc={(path) => {
+                        // 답변 내 정책 링크 클릭 → 중앙 뷰어에 문서 로드 (같은 화면에서 동시 표시)
+                        const isStory = team.projects.some((p) => {
+                          const dirs = (p.storyboards_dir || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+                          return dirs.some((d) => path.startsWith(d + "/") || path.startsWith(d));
+                        });
+                        setActiveDoc({
+                          path,
+                          title: path.split("/").pop()?.replace(/\.md$/i, "") ?? path,
+                          kind: isStory ? "storyboard" : "policy",
+                        });
+                      }}
+                      onCitation={(anchor) => setCitationTarget({ anchor, nonce: Date.now() })}
+                    />
+                  )}
                 </div>
               </>
             )}
@@ -359,6 +458,7 @@ export default function Home() {
         }}
       />
       <UserDialog open={userDialogOpen} onOpenChange={setUserDialogOpen} />
+      <WelcomeDialog open={welcomeOpen} onOpenChange={setWelcomeOpen} />
     </div>
   );
 }

@@ -18,21 +18,25 @@ interface CommonProps {
   itemTitle: string;
   /** 저장 콜백 · note 는 trim 된 상태로 전달 (빈 문자열이면 메모 없음) */
   onConfirm: (note: string) => Promise<void>;
+  /** 편집 모드: 기존 메모 pre-fill · 다이얼로그 제목/버튼 라벨이 "수정" 톤으로 변경 */
+  initialNote?: string;
+  editMode?: boolean;
 }
 
-/** ✅ 적용 처리 다이얼로그 · 메모 선택 입력 · 비워두면 그대로 적용 */
-export function ApplyDecisionDialog({ open, onOpenChange, itemTitle, onConfirm }: CommonProps) {
+/** ✅ 적용 처리 다이얼로그 · 메모 선택 입력 · 비워두면 그대로 적용
+ *  editMode=true 면 기존 메모 pre-fill · "메모 수정" 톤 (기존 메모를 지우고 재삽입) */
+export function ApplyDecisionDialog({ open, onOpenChange, itemTitle, onConfirm, initialNote, editMode }: CommonProps) {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
-      setNote("");
+      setNote(initialNote ?? "");
       setError(null);
       setSaving(false);
     }
-  }, [open]);
+  }, [open, initialNote]);
 
   async function handle(withNote: boolean) {
     if (saving) return;
@@ -53,12 +57,21 @@ export function ApplyDecisionDialog({ open, onOpenChange, itemTitle, onConfirm }
       <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle className="inline-flex items-center gap-2 text-emerald-700">
-            <CheckCircle2 className="w-5 h-5" /> 적용 처리
+            <CheckCircle2 className="w-5 h-5" /> {editMode ? "적용 메모 수정" : "적용 처리"}
           </DialogTitle>
           <DialogDescription>
-            협업자가 요청한 내용과 <b>실제로 적용·배포한 내용이 다르면</b> 아래에 차이를 적어주세요.
-            입력한 내용은 합의문 상단에 <b>메모로 남아 협업자가 확인</b>합니다.
-            비워두면 그대로 적용 처리됩니다.
+            {editMode ? (
+              <>
+                기존 <b>기획자 적용 메모를 새 내용으로 교체</b>합니다. 협업자에게 최신 메모만 보입니다.
+                비우면 메모가 제거됩니다.
+              </>
+            ) : (
+              <>
+                협업자가 요청한 내용과 <b>실제로 적용·배포한 내용이 다르면</b> 아래에 차이를 적어주세요.
+                입력한 내용은 합의문 상단에 <b>메모로 남아 협업자가 확인</b>합니다.
+                비워두면 그대로 적용 처리됩니다.
+              </>
+            )}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2 py-2">
@@ -82,22 +95,24 @@ export function ApplyDecisionDialog({ open, onOpenChange, itemTitle, onConfirm }
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
             취소
           </Button>
-          <Button
-            variant="outline"
-            onClick={() => handle(false)}
-            disabled={saving}
-            className="border-emerald-300 text-emerald-800 hover:bg-emerald-50 gap-1"
-          >
-            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-            그대로 적용
-          </Button>
+          {!editMode && (
+            <Button
+              variant="outline"
+              onClick={() => handle(false)}
+              disabled={saving}
+              className="border-emerald-300 text-emerald-800 hover:bg-emerald-50 gap-1"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+              그대로 적용
+            </Button>
+          )}
           <Button
             onClick={() => handle(true)}
-            disabled={saving || !note.trim()}
+            disabled={saving || (!editMode && !note.trim())}
             className="bg-emerald-600 hover:bg-emerald-700 text-white gap-1"
           >
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-            메모 저장하고 적용
+            {editMode ? "메모 수정 저장" : "메모 저장하고 적용"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -105,19 +120,20 @@ export function ApplyDecisionDialog({ open, onOpenChange, itemTitle, onConfirm }
   );
 }
 
-/** 🚫 보류 처리 다이얼로그 · 사유 필수 · 합의문 상단에 남음 */
-export function HoldDecisionDialog({ open, onOpenChange, itemTitle, onConfirm }: CommonProps) {
+/** 🚫 보류 처리 다이얼로그 · 사유 필수 · 합의문 상단에 남음
+ *  editMode=true 면 기존 사유 pre-fill · "메모 수정" 톤 */
+export function HoldDecisionDialog({ open, onOpenChange, itemTitle, onConfirm, initialNote, editMode }: CommonProps) {
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
-      setNote("");
+      setNote(initialNote ?? "");
       setError(null);
       setSaving(false);
     }
-  }, [open]);
+  }, [open, initialNote]);
 
   async function handleSave() {
     if (saving) return;
@@ -142,10 +158,14 @@ export function HoldDecisionDialog({ open, onOpenChange, itemTitle, onConfirm }:
       <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle className="inline-flex items-center gap-2 text-amber-700">
-            <PauseCircle className="w-5 h-5" /> 보류 처리
+            <PauseCircle className="w-5 h-5" /> {editMode ? "보류 사유 수정" : "보류 처리"}
           </DialogTitle>
           <DialogDescription>
-            보류 사유를 적어주세요. 입력한 내용은 합의문 <b>상단 박스에 남아 협업자가 확인</b>합니다.
+            {editMode ? (
+              <>기존 <b>보류 사유를 새 내용으로 교체</b>합니다. 협업자에게 최신 사유만 보입니다.</>
+            ) : (
+              <>보류 사유를 적어주세요. 입력한 내용은 합의문 <b>상단 박스에 남아 협업자가 확인</b>합니다.</>
+            )}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2 py-2">
@@ -176,7 +196,7 @@ export function HoldDecisionDialog({ open, onOpenChange, itemTitle, onConfirm }:
             className="bg-amber-600 hover:bg-amber-700 text-white gap-1"
           >
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PauseCircle className="w-3.5 h-3.5" />}
-            보류로 저장
+            {editMode ? "사유 수정 저장" : "보류로 저장"}
           </Button>
         </DialogFooter>
       </DialogContent>

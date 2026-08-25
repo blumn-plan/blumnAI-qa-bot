@@ -39,11 +39,16 @@ import { useChatSessionsStore, ChatSession } from "@/lib/chat-sessions-store";
 import { useDecisionsSeenStore } from "@/lib/decisions-seen-store";
 import { GuideDialog } from "@/components/guide-dialog";
 import { SidebarDrawer } from "@/components/sidebar-drawer";
+import type { DecisionListItem } from "@/lib/api";
 
 interface DocsSidebarProps {
   teamSlug: string;
   activeDocPath: string | null;
   onDocSelect: (doc: DocEntry | null) => void;
+  /** 협업자 모드 · 기획자 전달이력 항목 클릭 시 부모에게 통지 (부모가 우측 패널 스왑) */
+  onOpenDecision?: (decision: DecisionListItem) => void;
+  /** 현재 우측 패널에 열려있는 이력 path · 사이드바에서 선택 표시 */
+  activeDecisionPath?: string | null;
 }
 
 interface ProjectListItem {
@@ -51,7 +56,7 @@ interface ProjectListItem {
   label: string;
 }
 
-export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSidebarProps) {
+export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect, onOpenDecision, activeDecisionPath }: DocsSidebarProps) {
   const activeProject = useUiStore((s) => s.activeProject);
   const setActiveProject = useUiStore((s) => s.setActiveProject);
   const useAllDocs = useUiStore((s) => s.useAllDocs);
@@ -451,6 +456,8 @@ export function DocsSidebar({ teamSlug, activeDocPath, onDocSelect }: DocsSideba
             viewMode={viewMode}
             setViewMode={setViewMode}
             hasUserName={Boolean(userName.trim())}
+            onOpenDecision={onOpenDecision}
+            activeDecisionPath={activeDecisionPath ?? null}
           />
           <FeedbacksSection
             items={feedbacks}
@@ -747,6 +754,8 @@ function DecisionsSection({
   viewMode,
   setViewMode,
   hasUserName,
+  onOpenDecision,
+  activeDecisionPath,
 }: {
   items: DecisionListItem[];
   totalCount: number;
@@ -756,9 +765,13 @@ function DecisionsSection({
   viewMode: "mine" | "all";
   setViewMode: (m: "mine" | "all") => void;
   hasUserName: boolean;
+  onOpenDecision?: (d: DecisionListItem) => void;
+  activeDecisionPath?: string | null;
 }) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [readFilter, setReadFilter] = useState<ReadFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [viewLimit, setViewLimit] = useState(20);
   const [guideOpen, setGuideOpen] = useState(false);
   const markSeen = useDecisionsSeenStore((s) => s.markSeen);
   const isUnread = useDecisionsSeenStore((s) => s.isUnread);
@@ -771,6 +784,7 @@ function DecisionsSection({
   };
 
   const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return items.filter((d) => {
       // status filter · pending 은 unknown 도 포함
       if (statusFilter !== "all") {
@@ -783,9 +797,18 @@ function DecisionsSection({
         if (readFilter === "unread" && !unread) return false;
         if (readFilter === "read" && unread) return false;
       }
+      if (q) {
+        const hay = [d.title, d.requester, d.relatedDoc].filter(Boolean).join(" ").toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
       return true;
     });
-  }, [items, statusFilter, readFilter, isUnread]);
+  }, [items, statusFilter, readFilter, isUnread, searchQuery]);
+
+  // 필터 · 검색 변경 시 페이지 크기 리셋 (안 그러면 결과가 확 줄었을 때 어색)
+  useEffect(() => {
+    setViewLimit(20);
+  }, [statusFilter, readFilter, searchQuery, viewMode]);
 
   const unreadCount = useMemo(
     () => items.filter((d) => isUnread(d.path, d.status)).length,
@@ -850,6 +873,29 @@ function DecisionsSection({
         }
       >
         <>
+          {/* 검색 (제목 · 요청자 · 관련 문서) */}
+          <div className="px-3 pb-1.5">
+            <div className="relative">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="검색 (제목·요청자·관련 문서)"
+                className="w-full text-[11px] border border-slate-200 rounded pl-6 pr-6 py-1 bg-white text-slate-700 focus:outline-none focus:border-slate-400"
+              />
+              <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-slate-400 text-[11px]">🔍</span>
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 text-[13px] leading-none"
+                  title="검색 지우기"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
           {/* 필터: 상태 (앞) · 확인/미확인 (뒤) */}
           <div className="px-3 pb-1.5 flex gap-1">
             <select
@@ -914,14 +960,22 @@ function DecisionsSection({
             </div>
           ) : (
             <ul className="text-sm">
-              {filtered.slice(0, 20).map((d) => {
+              {filtered.slice(0, viewLimit).map((d) => {
                 const unread = isUnread(d.path, d.status);
+                const isSelected = activeDecisionPath === d.path;
                 return (
                   <li key={d.path}>
-                    <a
-                      href={`/planner?team=${encodeURIComponent(teamSlug)}#${encodeURIComponent(d.path)}`}
-                      onClick={() => markSeen(d.path)}
-                      className="w-full text-left px-3 py-1 hover:bg-slate-50 flex items-center gap-1.5 text-[12px] truncate"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        markSeen(d.path);
+                        onOpenDecision?.(d);
+                      }}
+                      className={`w-full text-left px-3 py-1 flex items-center gap-1.5 text-[12px] truncate transition-colors ${
+                        isSelected
+                          ? "bg-emerald-50 border-l-2 border-emerald-500 pl-[10px]"
+                          : "hover:bg-slate-50 border-l-2 border-transparent"
+                      }`}
                       title={`${d.title} · ${d.status} · ${d.requester ?? ""}${unread ? "\n(미확인 · 상태가 변경된 후 아직 열어보지 않았어요)" : ""}`}
                     >
                       <span className="shrink-0">{StatusIcon(d.status)}</span>
@@ -931,16 +985,22 @@ function DecisionsSection({
                           aria-label="미확인"
                         />
                       )}
-                      <span className={`truncate ${unread ? "text-slate-900 font-medium" : "text-slate-700"}`}>
+                      <span className={`truncate ${isSelected ? "text-emerald-900 font-semibold" : unread ? "text-slate-900 font-medium" : "text-slate-700"}`}>
                         {d.title}
                       </span>
-                    </a>
+                    </button>
                   </li>
                 );
               })}
-              {filtered.length > 20 && (
-                <li className="px-3 py-1 text-[11px] text-slate-400">
-                  … 외 {filtered.length - 20}건 · 기획자 모드에서 전체 보기
+              {filtered.length > viewLimit && (
+                <li className="px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => setViewLimit((v) => v + 20)}
+                    className="w-full text-[11px] text-emerald-700 hover:text-emerald-900 hover:bg-emerald-50 border border-emerald-200 rounded py-1.5 font-medium transition-colors"
+                  >
+                    + 더 보기 ({Math.min(20, filtered.length - viewLimit)}건 · 전체 {filtered.length}건 중 {viewLimit}건 표시)
+                  </button>
                 </li>
               )}
             </ul>

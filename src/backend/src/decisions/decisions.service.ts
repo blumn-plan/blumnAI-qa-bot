@@ -143,14 +143,16 @@ export class DecisionsService {
   }
 
   /** decision md 의 상태를 새 값으로 교체 + (선택) 기획자 메모를 md 상단에 blockquote 로 삽입 후 커밋.
-   *  · applied/hold 시 note 를 넘기면 md 제목 아래 blockquote 로 append 되고, 프론트가 초록/앰버 박스로 렌더.
-   *  · 같은 상태로 여러 번 처리 시 메모는 시간순으로 계속 stacking (질문자가 히스토리 확인 가능). */
+   *  · applied/hold + note → 메모 append (또는 replaceNotes=true 면 기존 메모 삭제 후 재삽입 = "메모 수정")
+   *  · pending → 항상 기존 메모 모두 삭제 (되돌리기 = 검토 이력도 리셋)
+   *  · replaceNotes=true → 같은 상태 유지하면서 메모만 새로 씀 (수정 UI 용) */
   async updateDecisionStatus(
     team: ResolvedTeam,
     path: string,
     status: 'pending' | 'applied' | 'hold',
     note?: string,
     plannerName?: string,
+    replaceNotes = false,
   ) {
     if (!path.startsWith(`${DECISIONS_DIR}/`)) {
       throw new BadRequestException({ error: `path 는 ${DECISIONS_DIR}/ 로 시작해야 함` });
@@ -161,6 +163,11 @@ export class DecisionsService {
     const ctx = this.teamContext.toGitHubContext(team);
     const content = await this.github.getFile(ctx, path);
     let updated = rewriteStatusLine(content, status);
+    // 상태 변경 시 항상 기존 planner-note 를 제거 (스택 방지 · "최신 메모만 유지" 정책)
+    //  · pending → 메모 자체 제거 (되돌리기 = 검토 이력 리셋)
+    //  · applied/hold + note → 아래에서 새 메모 삽입
+    //  · applied/hold + note 없음 → 메모 없음 상태로 (그대로 적용/보류)
+    updated = removePlannerNotes(updated);
     if (note && note.trim() && (status === 'applied' || status === 'hold')) {
       updated = insertPlannerNote(updated, {
         status,
@@ -170,11 +177,12 @@ export class DecisionsService {
     }
     const label = STATUS_KO[status];
     const filename = path.split('/').pop() ?? path;
+    const verb = replaceNotes ? '메모 수정' : label;
     const result = await this.github.writeFile(
       ctx,
       path,
       updated,
-      `qa: 🔄 [${team.name}] ${label}: ${filename}`,
+      `qa: 🔄 [${team.name}] ${verb}: ${filename}`,
     );
     return { ok: true, path, status, commitSha: result.commitSha };
   }
@@ -251,10 +259,11 @@ const STATUS_EMOJI_KO: Record<string, string> = {
   rejected: '❌ 반려',
 };
 
-/** 상태 문자열 정규화. bq 우선 · 그다음 표 포맷 · 둘 다 없으면 fallback.
- *  표 포맷은 `⏳ 대기` `✅ 적용` `⏸ 보류` `❌ 반려` 등 이모지 prefix 를 포함할 수 있음. */
+/** 상태 문자열 정규화. 표 포맷 우선 · 그다음 blockquote · 둘 다 없으면 fallback.
+ *  · 답변 본문에 우연히 `> 상태: pending` 같은 텍스트가 들어있어 상태를 오판하는 사고 방지 (표가 더 신뢰 가능).
+ *  · 표 포맷은 `⏳ 대기` `✅ 적용` `⏸ 보류` `❌ 반려` 등 이모지 prefix 를 포함할 수 있음. */
 function normalizeStatus(bq: string | undefined, tbl: string | undefined, hasContent: boolean): DecisionStatus {
-  const src = (bq || tbl || '').toLowerCase();
+  const src = (tbl || bq || '').toLowerCase();
   if (!src) return hasContent ? 'pending' : 'unknown';
   // 표 포맷 이모지·공백 제거 후 keyword 매칭
   if (/pending|대기|⏳/.test(src)) return 'pending';
@@ -385,6 +394,37 @@ export function parseDecisionMeta(content: string, filename: string): {
   }
 
   return { title, status, requester, relatedDoc, createdAt };
+}
+
+/** 기획자 메모 blockquote 블록을 md 에서 제거.
+ *  · `> ... [planner-note:apply|hold] ...` 마커가 포함된 헤더 라인부터 시작하는
+ *     연속 blockquote 블록 (다음 non-> 라인까지) 을 통째로 제거.
+ *  · 앞뒤 빈 줄 하나로 압축. 여러 블록이 stack 되어 있어도 모두 제거.
+ *  · 상태 변경 (applied/hold/pending) 시 기존 메모 정리에 사용 (스택 방지). */
+export function removePlannerNotes(content: string): string {
+  const lines = content.split(/\r?\n/);
+  const out: string[] = [];
+  let i = 0;
+  const NOTE_MARKER = /\[planner-note:(apply|hold)\]/;
+  while (i < lines.length) {
+    const l = lines[i];
+    // blockquote 라인 이면서 planner-note 마커를 포함한 헤더인지 판정
+    //  · 이모지·라벨 위치가 유동적이라 마커 substring 만 체크 (regex 서로게이트 이슈 회피)
+    const isBlockquote = /^\s*>/.test(l);
+    const isNoteHeader = isBlockquote && NOTE_MARKER.test(l);
+    if (isNoteHeader) {
+      // 이 블록 (연속 `>` 라인) 을 skip
+      while (i < lines.length && /^\s*>/.test(lines[i])) i += 1;
+      // 이후 빈 라인들도 skip
+      while (i < lines.length && lines[i].trim() === '') i += 1;
+      // 이전 out 마지막이 non-empty 면 빈 줄 하나 삽입해서 다음 컨텐츠와 간격 유지
+      if (out.length > 0 && out[out.length - 1].trim() !== '') out.push('');
+      continue;
+    }
+    out.push(l);
+    i += 1;
+  }
+  return out.join('\n');
 }
 
 /** 기획자 메모를 md 제목 바로 아래에 blockquote 로 삽입.
