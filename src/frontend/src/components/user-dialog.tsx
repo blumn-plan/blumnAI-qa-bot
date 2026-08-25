@@ -13,7 +13,7 @@ interface UserDialogProps {
 }
 
 /** 사용자 이름·역할 설정 다이얼로그. 기획전달 questioner 필드로 쓰임.
- *  · 이름·역할을 별도 입력 → 표시할 때 자동으로 "이름-역할" 로 결합. */
+ *  · 이름·역할을 별도 입력 → 표시할 때 자동으로 "업무-닉네임" 로 결합 (예: QA-이반). */
 export function UserDialog({ open, onOpenChange }: UserDialogProps) {
   const savedName = useUserStore((s) => s.name);
   const savedRole = useUserStore((s) => s.role);
@@ -65,7 +65,7 @@ export function UserDialog({ open, onOpenChange }: UserDialogProps) {
               id="ud-role"
               value={role}
               onChange={(e) => setRole(e.target.value)}
-              placeholder="예: 기획팀 · 프론트개발 · QA"
+              placeholder="예: QA · DEV · 기획팀"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && name.trim()) handleSave();
               }}
@@ -75,7 +75,7 @@ export function UserDialog({ open, onOpenChange }: UserDialogProps) {
             표시명 미리보기 · <span className="font-mono font-semibold text-slate-900">{preview || "(닉네임을 먼저 입력하세요)"}</span>
           </div>
           <p className="text-xs text-muted-foreground">
-            닉네임만 입력하면 <span className="font-mono">닉네임</span> 만 표시 · 둘 다 입력하면 <span className="font-mono">닉네임-업무</span> 자동 결합.
+            닉네임만 입력하면 <span className="font-mono">닉네임</span> 만 표시 · 둘 다 입력하면 <span className="font-mono">업무-닉네임</span> 자동 결합 (예: <span className="font-mono">QA-이반</span>).
             <br />비워두면 &quot;게스트&quot; 로 표시됩니다.
           </p>
         </div>

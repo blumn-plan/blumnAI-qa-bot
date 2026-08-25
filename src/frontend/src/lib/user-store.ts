@@ -12,7 +12,7 @@ interface UserState {
 
 /** 현재 사용자 (질문자 표시 · 기획전달 questioner 필드로 전달).
  *  localStorage persist. 익명은 "게스트" fallback.
- *  · 이름·역할을 별도 필드로 저장 · 표시할 때는 자동으로 "이름-역할" 로 결합. */
+ *  · 이름·역할을 별도 필드로 저장 · 표시할 때는 자동으로 "역할-이름" 로 결합. */
 export const useUserStore = create<UserState>()(
   persist(
     (set) => ({
@@ -24,13 +24,15 @@ export const useUserStore = create<UserState>()(
   ),
 );
 
-/** 표시명 계산 · role 있으면 "이름-역할" · 없으면 "이름" · 이름 없으면 빈 문자열. */
+/** 표시명 계산 · role 있으면 "역할-이름" · 없으면 "이름" · 이름 없으면 빈 문자열.
+ *  · 예: name="제이", role="기획팀" → "기획팀-제이"
+ *  · 팀 · 소속을 앞에 두어 목록에서 그룹 인식이 쉽도록 함. */
 export function formatDisplayName(name: string, role: string): string {
   const n = name.trim();
   const r = role.trim();
   if (!n) return "";
   if (!r) return n;
-  return `${n}-${r}`;
+  return `${r}-${n}`;
 }
 
 /** 컴포넌트용 hook · store 구독 유지하면서 표시명 계산. */
