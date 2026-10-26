@@ -7,9 +7,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { deriveTeamSlug, upsertTeam, ProjectPayload, TeamResponse } from "@/lib/api";
+import { ApiError, deriveTeamSlug, upsertTeam, ProjectPayload, TeamResponse } from "@/lib/api";
 import { useTeamStore } from "@/lib/team-store";
 import { preventCasualDismiss } from "@/lib/utils";
+
+/** "팀 구분자" 입력값 → slug-safe suffix.
+ *  영문 소문자/숫자/하이픈만 허용. 그 외 문자는 하이픈으로. 양끝 하이픈 제거.
+ *  빈 결과면 null (= 접미사 없음). */
+function sanitizeSlugSuffix(raw: string): string | null {
+  const s = raw
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return s || null;
+}
 
 interface TeamWizardProps {
   open: boolean;
@@ -45,6 +58,7 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
   const [error, setError] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
   const [githubRepo, setGithubRepo] = useState("");
+  const [slugSuffix, setSlugSuffix] = useState(""); // 신규 모드에서만 사용 · 같은 레포로 여러 팀 분리
   const [projects, setProjects] = useState<WizardProject[]>([emptyProject(0)]);
   const [masterPat, setMasterPat] = useState("");
   const [anthropicKey, setAnthropicKey] = useState("");
@@ -71,6 +85,7 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
       setMasterPat("");
       setAnthropicKey("");
       setPlannerPassword("");
+      setSlugSuffix("");
       setError(null);
     } else {
       // 신규 생성 모드: 완전 리셋
@@ -80,6 +95,7 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
       setMasterPat("");
       setAnthropicKey("");
       setPlannerPassword("");
+      setSlugSuffix("");
       setError(null);
     }
   }, [open, existingTeam]);
@@ -137,11 +153,21 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
       return;
     }
 
-    const teamSlug = deriveTeamSlug(githubRepo.trim());
-    if (!teamSlug) {
-      setError("팀 slug 파생 실패 · GitHub 레포명 확인");
-      return;
+    // 편집 모드: 기존 slug 그대로 유지 (팀 식별자 변경 불가)
+    // 신규 모드: 레포파생 slug + (선택) 접미사 조합. 같은 레포로 두 번째 팀 만들 때 접미사 필수.
+    let teamSlug: string;
+    if (isEdit && existingTeam) {
+      teamSlug = existingTeam.team_slug;
+    } else {
+      const base = deriveTeamSlug(githubRepo.trim());
+      if (!base) {
+        setError("팀 slug 파생 실패 · GitHub 레포명 확인");
+        return;
+      }
+      const suffix = sanitizeSlugSuffix(slugSuffix);
+      teamSlug = suffix ? `${base}-${suffix}` : base;
     }
+
     setSaving(true);
     try {
       // 편집 모드: 시크릿은 사용자가 입력했을 때만 전송 (빈 값이면 undefined → backend 가 기존값 유지)
@@ -155,6 +181,8 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
         anthropic_key: keyValue || undefined,
         planner_password: pwValue || undefined,
         projects: cleanProjects,
+        // 신규 모드에선 "덮어쓰기 방지" · backend 가 같은 slug 발견 시 409 반환
+        create_only: isEdit ? undefined : true,
       });
       setActiveTeam(teamSlug);
       const url = new URL(window.location.href);
@@ -163,7 +191,15 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
       onSaved?.();
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // 409 Conflict: 같은 slug 팀이 이미 있음 → "팀 구분자" 로 분리하도록 안내
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          `같은 레포로 이미 등록된 팀이 있어요 (slug: ${teamSlug}). ` +
+          `아래 "팀 구분자" 필드에 영문/숫자 로 구별값을 입력하면 별도 팀으로 분리됩니다 (예: planner-a).`,
+        );
+      } else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setSaving(false);
     }
@@ -220,6 +256,36 @@ export function TeamWizard({ open, onOpenChange, existingTeam, onSaved }: TeamWi
                 {isEdit && " 이 값을 바꾸려면 새 팀을 만드세요."}
               </p>
             </div>
+            {/* 신규 모드에서만 노출 · 같은 레포로 여러 팀을 분리해 만들 때 사용 */}
+            {!isEdit && (
+              <div className="space-y-1">
+                <Label htmlFor="tw-slug-suffix">
+                  팀 구분자 <span className="text-muted-foreground text-xs">(선택)</span>
+                </Label>
+                <Input
+                  id="tw-slug-suffix"
+                  placeholder="예: planner-a · 비워두면 레포명만으로 식별"
+                  className="font-mono text-xs"
+                  value={slugSuffix}
+                  onChange={(e) => setSlugSuffix(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  같은 레포로 <b>여러 팀을 분리</b>해서 만들 때 사용 (영문 소문자·숫자·하이픈).
+                  {githubRepo.trim() && (() => {
+                    const base = deriveTeamSlug(githubRepo.trim());
+                    if (!base) return null;
+                    const sfx = sanitizeSlugSuffix(slugSuffix);
+                    const finalSlug = sfx ? `${base}-${sfx}` : base;
+                    return (
+                      <>
+                        <br />
+                        최종 팀 식별자: <code className="text-[11px] bg-slate-100 px-1 py-0.5 rounded">{finalSlug}</code>
+                      </>
+                    );
+                  })()}
+                </p>
+              </div>
+            )}
           </section>
 
           <Separator />

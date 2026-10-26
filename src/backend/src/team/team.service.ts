@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EncryptionService } from '../crypto/encryption.service';
 import { PasswordService } from '../crypto/password.service';
@@ -98,6 +98,15 @@ export class TeamService {
     }
 
     const existing = await this.prisma.team.findUnique({ where: { slug } });
+
+    // 신규 생성 전용 모드: 이미 있으면 409 (실수로 다른 팀 덮어쓰기 방지)
+    if (dto.create_only && existing) {
+      throw new ConflictException({
+        error: 'Team slug already exists',
+        slug,
+        hint: '같은 레포로 다른 팀을 만들려면 wizard 의 "팀 구분자" 를 다르게 입력하세요.',
+      });
+    }
 
     // 신규 생성: name + github_repo 필수 검증
     if (!existing) {

@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { Link2, Target, User as UserIcon, Settings } from "lucide-react";
+import { Link2, LogOut, Target, User as UserIcon, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TeamWizard } from "@/components/team-wizard";
@@ -227,6 +227,29 @@ export default function Home() {
     }
   }
 
+  // "다른 팀 쓰기" · 이 브라우저의 활성 팀 선택과 기획자 인증을 초기화하고 랜딩으로 복귀.
+  //  · 서버 DB 는 전혀 건드리지 않음 (팀/프로젝트/시크릿 모두 그대로).
+  //  · URL 의 ?team 파라미터도 지워야 리로드 시 다시 그 팀으로 복원되지 않음.
+  function switchTeam() {
+    const ok = window.confirm(
+      "로컬 세팅을 초기화하고 팀 선택 화면으로 돌아갑니다.\n\n" +
+      "· 서버의 팀 데이터는 그대로 유지됩니다 (상대방 세팅에 영향 없음)\n" +
+      "· 이 브라우저에서 다른 팀을 선택하거나 새 팀을 만들 수 있습니다\n\n" +
+      "계속할까요?",
+    );
+    if (!ok) return;
+    try {
+      localStorage.removeItem("blumnai-qa-active-team");
+      sessionStorage.removeItem("blumnai-qa-planner-auth");
+    } catch {
+      /* silent */
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("team");
+    url.searchParams.delete("doc");
+    window.location.href = url.pathname + (url.search || "");
+  }
+
   return (
     <div className="flex flex-col h-screen bg-white">
       {/* 상단 헤더 · 라이트 셸 · 시각 위계 3단 (brand · meta · actions) */}
@@ -295,6 +318,16 @@ export default function Home() {
         >
           <UserIcon className="w-3.5 h-3.5" /> {userName || "게스트"}
         </button>
+        {team && (
+          <button
+            type="button"
+            onClick={switchTeam}
+            title="이 브라우저의 활성 팀을 초기화하고 팀 선택 화면으로 (서버 데이터는 유지)"
+            className="h-7 px-2 text-[12px] text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors inline-flex items-center gap-1"
+          >
+            <LogOut className="w-3.5 h-3.5" /> 다른 팀
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setWizardOpen(true)}

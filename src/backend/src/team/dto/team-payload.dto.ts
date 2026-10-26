@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -80,4 +81,8 @@ export class UpsertTeamDto {
 
   @IsOptional() @IsString()
   code_repo?: string;
+
+  // 신규 생성 전용 모드. true 인데 slug 가 이미 있으면 409 Conflict (덮어쓰기 방지).
+  @IsOptional() @IsBoolean()
+  create_only?: boolean;
 }

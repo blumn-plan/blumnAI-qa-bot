@@ -21,6 +21,8 @@ export interface TeamPayload {
   policies_dir?: string;
   storyboards_dir?: string;
   code_repo?: string;
+  // true 로 보내면 slug 가 이미 존재할 때 backend 가 409 Conflict 반환 (덮어쓰기 방지).
+  create_only?: boolean;
 }
 
 export interface ProjectPayload {
